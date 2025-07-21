@@ -2,7 +2,7 @@
 
 <div align="center" style="display: flex; justify-content: center; margin-top: 10px;">
   <a href="https://boson.ai/blog/higgs-audio-m2"><img src='https://img.shields.io/badge/📝-Launch Blogpost-228B22' style="margin-right: 5px;"></a>
-  <a href="https://github.com/bosonai/higgs-audio"><img src="https://img.shields.io/badge/🚀-Playground-9C276A" style="margin-right: 5px;"></a>
+  <a href="https://boson.ai/demo/tts"><img src="https://img.shields.io/badge/🚀-Playground-9C276A" style="margin-right: 5px;"></a>
   <a href="https://huggingface.co/bosonai/higgs-audio-v2-generation-3B-base"><img src="https://img.shields.io/badge/🤗-Checkpoints (3.6B LLM + 2.2B audio adapter)-ED5A22.svg" style="margin-right: 5px;"></a>
 </div>
 
@@ -50,6 +50,9 @@ uv pip install -e .
 
 ## Usage
 
+> [!TIP]
+> For optimal performance, run the generation examples on a machine equipped with GPU.
+
 ### Get Started
 
 Here's a basic python snippet to help you get started.
@@ -88,8 +91,6 @@ output: HiggsAudioResponse = serve_engine.generate(
     chat_ml_sample=ChatMLSample(messages=messages),
     max_new_tokens=1024,
     temperature=0.3,
-    ras_win_len=7,
-    ras_win_max_num_repeat=2,
     top_p=0.95,
     top_k=50,
     stop_strings=["<|end_of_text|>", "<|eot_id|>"],
@@ -101,30 +102,35 @@ torchaudio.save(f"output.wav", torch.from_numpy(output.audio)[None, :], output.s
 We also provide a list of examples under [examples](./examples). In the following we highlight a few examples to help you use Higgs Audio v2.
 
 ### Zero-Shot Voice Cloning
-Generate audio that sounds similar as the provided reference audio.
+Generate audio that sounds similar as the provided [reference audio](./examples/voice_prompts/belinda.wav).
 
 ```bash
 python3 examples/generation.py \
 --transcript "The sun rises in the east and sets in the west. This simple fact has been observed by humans for thousands of years." \
 --ref_audio belinda \
---out_path generation.wav \
---ras_win_len 7 \
---ras_win_max_num_repeat 2 \
 --temperature 0.3 \
---seed 12345
+--out_path generation.wav
 ```
 
-You can also try other voices
+The generation script will automatically use `cuda:0` if it founds cuda is available. To change the device id, specify `--device_id`:
+
+```bash
+python3 examples/generation.py \
+--transcript "The sun rises in the east and sets in the west. This simple fact has been observed by humans for thousands of years." \
+--ref_audio belinda \
+--temperature 0.3 \
+--device_id 0 \
+--out_path generation.wav
+```
+
+You can also try other voices. Check more example voices in [examples/voice_prompts](./examples/voice_prompts). You can also add your own voice to the folder.
 
 ```bash
 python3 examples/generation.py \
 --transcript "The sun rises in the east and sets in the west. This simple fact has been observed by humans for thousands of years." \
 --ref_audio broom_salesman \
---out_path generation.wav \
---ras_win_len 7 \
---ras_win_max_num_repeat 2 \
 --temperature 0.3 \
---seed 12345
+--out_path generation.wav
 ```
 
 ### Single-speaker Generation with Smart Voice
@@ -133,11 +139,8 @@ If you do not specify reference voice, the model will decide the voice based on 
 ```bash
 python3 examples/generation.py \
 --transcript "The sun rises in the east and sets in the west. This simple fact has been observed by humans for thousands of years." \
---out_path generation.wav \
---ras_win_len 7 \
---ras_win_max_num_repeat 2 \
 --temperature 0.3 \
---seed 12345
+--out_path generation.wav
 ```
 
 
@@ -147,11 +150,8 @@ Generate multi-speaker dialog. The model will decide the voices based on the tra
 ```bash
 python3 examples/generation.py \
 --transcript examples/transcript/multi_speaker/en_argument.txt \
---out_path generation.wav \
---ras_win_len 7 \
---ras_win_max_num_repeat 2 \
---temperature 1.0 \
---seed 12345
+--seed 12345 \
+--out_path generation.wav
 ```
 
 ### Multi-speaker Dialog with Voice Clone
@@ -164,11 +164,8 @@ python3 examples/generation.py \
 --ref_audio belinda,broom_salesman \
 --ref_audio_in_system_message \
 --chunk_method speaker \
---out_path generation.wav \
---ras_win_len 7 \
---ras_win_max_num_repeat 2 \
---temperature 1.0 \
---seed 12345
+--seed 12345 \
+--out_path generation.wav
 ```
 
 
@@ -187,7 +184,7 @@ Here's the performance of Higgs Audio v2 on four benchmarks,  [Seed-TTS Eval](ht
 
 #### Seed-TTS Eval & ESD
 
-We prompt Higgs Audio v2 with `<ref_text, ref_audio, text>` for zero-shot TTS. We adopt the standard evaluation metric in Seed-TTS Eval and ESD.
+We prompt Higgs Audio v2 with the reference text, reference audio, and target text for zero-shot TTS. We use the standard evaluation metrics from Seed-TTS Eval and ESD.
 
 |                              | SeedTTS-Eval| | ESD   |                 |
 |------------------------------|--------|--------|---------|-------------------|
@@ -222,20 +219,19 @@ Following the [EmergentTTS-Eval Paper](https://arxiv.org/abs/2505.23009), we rep
 
 We also designed a multi-speaker evaluation benchmark to evaluate the capability of Higgs Audio v2 for multi-speaker dialog generation. The benchmark contains three subsets
 
-- `two-speaker-conversation`: 1000 synthetic dialogues involving two speakers. It contains two reference audio clips to evaluate the model’s ability in double voice cloning.
-- `small talk`: 250 synthetic dialogues characterized by short utterances and a limited number of turns (4–6). It also contains two reference audio clips to test double voice cloning, though the dialogues are shorter and simpler than those in two-speaker-conversation.
-- `small talk (no ref)`: 250 synthetic dialogues, also with short utterances and 4–6 turns. Unlike the other subsets, it does not include reference audio and is designed to evaluate the model’s ability to automatically assign appropriate voices to speakers.
+- `two-speaker-conversation`: 1000 synthetic dialogues involving two speakers. We fix two reference audio clips to evaluate the model's ability in double voice cloning for utterances ranging from 4 to 10 dialogues between two randomly chosen persona.
+- `small talk (no ref)`: 250 synthetic dialogues curated in the same way as above, but are characterized by short utterances and a limited number of turns (4–6), we do not fix reference audios in this case and this set is designed to evaluate the model's ability to automatically assign appropriate voices to speakers.
+- `small talk (ref)`: 250 synthetic dialogues similar to above, but contains even shorter utterances as this set is meant to include reference clips in it's context, similar to `two-speaker-conversation`.
 
 
-We evaluate the word-error-rate (WER) and the geometric mean between intra-speaker similarity and inter-speaker dis-similarity on these three subsets. Other than Higgs Audio v2, we also evaluated [MoonCast](https://github.com/jzq2000/MoonCast) and [nari-labs/dia](https://github.com/nari-labs/dia). Results are summarized in the following table. We are not able to run [nari-labs/dia](https://github.com/nari-labs/dia) on our "two-speaker-conversation" subset due to its strict limitation on the length of the utterances.
+We report the word-error-rate (WER) and the geometric mean between intra-speaker similarity and inter-speaker dis-similarity on these three subsets. Other than Higgs Audio v2, we also evaluated [MoonCast](https://github.com/jzq2000/MoonCast) and [nari-labs/Dia-1.6B-0626](https://huggingface.co/nari-labs/Dia-1.6B-0626), two of the most popular open-source models capable of multi-speaker dialog generation. Results are summarized in the following table. We are not able to run [nari-labs/Dia-1.6B-0626](https://huggingface.co/nari-labs/Dia-1.6B-0626) on our "two-speaker-conversation" subset due to its strict limitation on the length of the utterances and output audio.
 
 |                                                | two-speaker-conversation |                |small talk |                | small talk (no ref) |                |
 | ---------------------------------------------- | -------------- | ------------------ | ---------- | -------------- | ------------------- | -------------- |
 |                                                | WER ↓                      | Mean Sim & Dis-sim ↑ | WER ↓       |  Mean Sim & Dis-sim ↑ | WER ↓               | Mean Sim & Dis-sim ↑ |
 | [MoonCast](https://github.com/jzq2000/MoonCast) | 38.77                    | 46.02         | **8.33**       | 63.68          | 24.65               | 53.94 |
-| [nari-labs/dia](https://github.com/nari-labs/dia)         | \-                       | \-             | 17.62      | 63.15          | 19.46               | **61.14**          |
+| [nari-labs/Dia-1.6B-0626](https://huggingface.co/nari-labs/Dia-1.6B-0626)         | \-                       | \-             | 17.62      | 63.15          | 19.46               | **61.14**          |
 | Higgs Audio v2 (base)     | **18.88**                    | **51.95**          | 11.89      | **67.92**              | **14.65**               | 55.28              |
-
 
 
 ## Third-Party Licenses

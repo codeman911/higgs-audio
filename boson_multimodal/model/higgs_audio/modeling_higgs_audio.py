@@ -2255,13 +2255,17 @@ class HiggsAudioModel(HiggsAudioPreTrainedModel, GenerationMixin):
                 batch_size = 1
                 hidden_dim = self.config.hidden_size
 
-                hidden_states = torch.zeros((batch_size, 1, hidden_dim), dtype=self.config.torch_dtype, device="cuda")
-                causal_mask = torch.ones(
-                    (batch_size, 1, 1, kv_cache_length), dtype=self.config.torch_dtype, device="cuda"
+                hidden_states = torch.zeros(
+                    (batch_size, 1, hidden_dim), dtype=self.config.torch_dtype, device=self.device
                 )
-                position_ids = torch.zeros((batch_size, 1), dtype=torch.long, device="cuda")
-                audio_discrete_codes_mask = torch.tensor([[is_decoding_audio_token]], dtype=torch.bool, device="cuda")
-                cache_position = torch.tensor([kv_cache_length - 1], dtype=torch.long, device="cuda")
+                causal_mask = torch.ones(
+                    (batch_size, 1, 1, kv_cache_length), dtype=self.config.torch_dtype, device=self.device
+                )
+                position_ids = torch.zeros((batch_size, 1), dtype=torch.long, device=self.device)
+                audio_discrete_codes_mask = torch.tensor(
+                    [[is_decoding_audio_token]], dtype=torch.bool, device=self.device
+                )
+                cache_position = torch.tensor([kv_cache_length - 1], dtype=torch.long, device=self.device)
                 audio_attention_mask = torch.ones_like(causal_mask)
                 fast_forward_attention_mask = torch.ones_like(causal_mask)
 
@@ -2279,6 +2283,7 @@ class HiggsAudioModel(HiggsAudioPreTrainedModel, GenerationMixin):
                     output_hidden_states=False,
                     is_decoding_audio_token=is_decoding_audio_token,
                     is_using_cuda_graph=True,
+                    stream=torch.cuda.Stream(device=self.device),
                 )
 
                 self.decode_graph_runners[kv_cache_length][is_decoding_audio_token] = runner

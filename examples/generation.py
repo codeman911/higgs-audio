@@ -185,16 +185,15 @@ class HiggsAudioModelClient:
         kv_cache_lengths: List[int] = [1024, 4096, 8192],  # Multiple KV cache sizes,
         use_static_kv_cache=False,
     ):
-        self._audio_tokenizer = (
-            load_higgs_audio_tokenizer(audio_tokenizer, device=f"cuda:{device_id}")
-            if isinstance(audio_tokenizer, str)
-            else audio_tokenizer
-        )
         if device_id is None:
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
             self._device = f"cuda:{device_id}"
-
+        self._audio_tokenizer = (
+            load_higgs_audio_tokenizer(audio_tokenizer, device=self._device)
+            if isinstance(audio_tokenizer, str)
+            else audio_tokenizer
+        )
         self._model = HiggsAudioModel.from_pretrained(
             model_path,
             device_map=self._device,
@@ -259,12 +258,14 @@ class HiggsAudioModelClient:
         temperature=1.0,
         top_k=50,
         top_p=0.95,
-        ras_win_len=None,
+        ras_win_len=7,
         ras_win_max_num_repeat=2,
         seed=123,
         *args,
         **kwargs,
     ):
+        if ras_win_len is not None and ras_win_len <= 0:
+            ras_win_len = None
         sr = 24000
         audio_out_ids_l = []
         generated_audio_ids = []
@@ -522,8 +523,8 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
 @click.option(
     "--ras_win_len",
     type=int,
-    default=None,
-    help="The window length for RAS sampling. If not set, we won't use RAS sampling.",
+    default=7,
+    help="The window length for RAS sampling. If set to 0 or a negative value, we won't use RAS sampling.",
 )
 @click.option(
     "--ras_win_max_num_repeat",
@@ -654,6 +655,21 @@ def main(
     transcript = transcript.replace(")", " ")
     transcript = transcript.replace("°F", " degrees Fahrenheit")
     transcript = transcript.replace("°C", " degrees Celsius")
+
+    for tag, replacement in [
+        ("[laugh]", "<SE>[Laughter]</SE>"),
+        ("[humming start]", "<SE>[Humming]</SE>"),
+        ("[humming end]", "<SE_e>[Humming]</SE_e>"),
+        ("[music start]", "<SE_s>[Music]</SE_s>"),
+        ("[music end]", "<SE_e>[Music]</SE_e>"),
+        ("[music]", "<SE>[Music]</SE>"),
+        ("[sing start]", "<SE_s>[Singing]</SE_s>"),
+        ("[sing end]", "<SE_e>[Singing]</SE_e>"),
+        ("[applause]", "<SE>[Applause]</SE>"),
+        ("[cheering]", "<SE>[Cheering]</SE>"),
+        ("[cough]", "<SE>[Cough]</SE>"),
+    ]:
+        transcript = transcript.replace(tag, replacement)
     lines = transcript.split("\n")
     transcript = "\n".join([" ".join(line.split()) for line in lines if line.strip()])
     transcript = transcript.strip()
