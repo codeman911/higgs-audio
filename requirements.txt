@@ -5,6 +5,7 @@ librosa
 dacite
 boto3==1.35.36
 s3fs
+torchvision
 torchaudio
 json_repair
 pandas
@@ -17,5 +18,4 @@ omegaconf
 click
 langid
 jieba
-playsound
 accelerate>=0.26.0
