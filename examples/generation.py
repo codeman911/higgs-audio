@@ -182,8 +182,6 @@ class HiggsAudioModelClient:
         audio_tokenizer,
         device_id=None,
         max_new_tokens=2048,
-        top_k=50,
-        top_p=0.95,
         kv_cache_lengths: List[int] = [1024, 4096, 8192],  # Multiple KV cache sizes,
         use_static_kv_cache=False,
     ):
@@ -203,8 +201,6 @@ class HiggsAudioModelClient:
             torch_dtype=torch.bfloat16,
         )
         self._model.eval()
-        self._top_k = top_k
-        self._top_p = top_p
         self._kv_cache_lengths = kv_cache_lengths
         self._use_static_kv_cache = use_static_kv_cache
 
@@ -254,7 +250,21 @@ class HiggsAudioModelClient:
             kv_cache.reset()
 
     @torch.inference_mode()
-    def generate(self, messages, audio_ids, chunked_text, generation_chunk_buffer_size, seed=123, *args, **kwargs):
+    def generate(
+        self,
+        messages,
+        audio_ids,
+        chunked_text,
+        generation_chunk_buffer_size,
+        temperature=1.0,
+        top_k=50,
+        top_p=0.95,
+        ras_win_len=None,
+        ras_win_max_num_repeat=2,
+        seed=123,
+        *args,
+        **kwargs,
+    ):
         sr = 24000
         audio_out_ids_l = []
         generated_audio_ids = []
@@ -311,12 +321,12 @@ class HiggsAudioModelClient:
                 max_new_tokens=self._max_new_tokens,
                 use_cache=True,
                 do_sample=True,
-                temperature=1.0,
-                top_k=self._top_k,
-                top_p=self._top_p,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
                 past_key_values_buckets=self.kv_caches,
-                ras_win_len=None,
-                ras_win_max_num_repeat=1,
+                ras_win_len=ras_win_len,
+                ras_win_max_num_repeat=ras_win_max_num_repeat,
                 stop_strings=["<|end_of_text|>", "<|eot_id|>"],
                 tokenizer=self._tokenizer,
                 seed=seed,
@@ -464,13 +474,13 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
 @click.option(
     "--model_path",
     type=str,
-    default="bosonai/higgs-audio-v2-generation-3B-staging",
+    default="bosonai/higgs-audio-v2-generation-3B-base",
     help="Output wav file path.",
 )
 @click.option(
     "--audio_tokenizer",
     type=str,
-    default="bosonai/higgs-audio-v2-tokenizer-staging",
+    default="bosonai/higgs-audio-v2-tokenizer",
     help="Audio tokenizer path, if not set, use the default one.",
 )
 @click.option(
@@ -492,6 +502,12 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
     help="The scene description prompt to use for generation. If not set, or set to `empty`, we will leave it to empty.",
 )
 @click.option(
+    "--temperature",
+    type=float,
+    default=1.0,
+    help="The value used to module the next token probabilities.",
+)
+@click.option(
     "--top_k",
     type=int,
     default=50,
@@ -502,6 +518,18 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
     type=float,
     default=0.95,
     help="If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.",
+)
+@click.option(
+    "--ras_win_len",
+    type=int,
+    default=None,
+    help="The window length for RAS sampling. If not set, we won't use RAS sampling.",
+)
+@click.option(
+    "--ras_win_max_num_repeat",
+    type=int,
+    default=2,
+    help="The maximum number of times to repeat the RAS window. Only used when --ras_win_len is set.",
 )
 @click.option(
     "--ref_audio",
@@ -570,8 +598,11 @@ def main(
     max_new_tokens,
     transcript,
     scene_prompt,
+    temperature,
     top_k,
     top_p,
+    ras_win_len,
+    ras_win_max_num_repeat,
     ref_audio,
     ref_audio_in_system_message,
     chunk_method,
@@ -599,17 +630,14 @@ def main(
         audio_tokenizer=audio_tokenizer,
         device_id=device_id,
         max_new_tokens=max_new_tokens,
-        top_k=top_k,
-        top_p=top_p,
         use_static_kv_cache=use_static_kv_cache,
     )
     pattern = re.compile(r"\[(SPEAKER\d+)\]")
 
     if os.path.exists(transcript):
+        logger.info(f"Loading transcript from {transcript}")
         with open(transcript, "r", encoding="utf-8") as f:
             transcript = f.read().strip()
-    else:
-        raise ValueError(f"Transcript file {transcript} does not exist.")
 
     if scene_prompt is not None and scene_prompt != "empty" and os.path.exists(scene_prompt):
         with open(scene_prompt, "r", encoding="utf-8") as f:
@@ -621,9 +649,17 @@ def main(
 
     # Perform some basic normalization
     transcript = normalize_chinese_punctuation(transcript)
-    # Handle parentheses
+    # Other normalizations (e.g., parentheses and other symbols. Will be improved in the future)
     transcript = transcript.replace("(", " ")
     transcript = transcript.replace(")", " ")
+    transcript = transcript.replace("°F", " degrees Fahrenheit")
+    transcript = transcript.replace("°C", " degrees Celsius")
+    lines = transcript.split("\n")
+    transcript = "\n".join([" ".join(line.split()) for line in lines if line.strip()])
+    transcript = transcript.strip()
+
+    if not any([transcript.endswith(c) for c in [".", "!", "?", ",", ";", '"', "'", "</SE_e>", "</SE>"]]):
+        transcript += "."
 
     messages, audio_ids = prepare_generation_context(
         scene_prompt=scene_prompt,
@@ -650,6 +686,11 @@ def main(
         audio_ids=audio_ids,
         chunked_text=chunked_text,
         generation_chunk_buffer_size=generation_chunk_buffer_size,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        ras_win_len=ras_win_len,
+        ras_win_max_num_repeat=ras_win_max_num_repeat,
         seed=seed,
     )
 
