@@ -17,19 +17,24 @@ On [EmergentTTS-Eval](https://github.com/boson-ai/emergenttts-eval-public), it a
 
 Here's the demo video that shows some of its emergent capabilities (remember to unmute):
 
-<video width="320" height="240" src="https://github.com/user-attachments/assets/0fd73fad-097f-48a9-9f3f-bc2a63b3818d" type="video/mp4">
+<video src="https://github.com/user-attachments/assets/0fd73fad-097f-48a9-9f3f-bc2a63b3818d" type="video/mp4" width="80%" controls>
+</video>
+
+Here's another demo video that show-cases the model's multilingual capability and how it can be used to enable live translation (remember to unmute):
+
+<video src="https://github.com/user-attachments/assets/2b9b01ff-67fc-4bd9-9714-7c7df09e38d6" type="video/mp4" width="80%" controls>
 </video>
 
 ## Installation
 
 We recommend to use NVIDIA Deep Learning Container to manage the CUDA environment. Following are two docker images that we have verified:
-- nvcr.io/nvidia/pytorch:24.01-py3
+- nvcr.io/nvidia/pytorch:25.02-py3
 - nvcr.io/nvidia/pytorch:25.01-py3
 
 Here's an example command for launching a docker container environment. Please also check the [official NVIDIA documentations](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch).
 
 ```bash
-docker run --gpus all --ipc=host --net=host --ulimit memlock=-1 --ulimit stack=67108864 -it --rm nvcr.io/nvidia/pytorch:24.01-py3 bash
+docker run --gpus all --ipc=host --net=host --ulimit memlock=-1 --ulimit stack=67108864 -it --rm nvcr.io/nvidia/pytorch:25.02-py3 bash
 ```
 
 ### Option 1: Direct installation
