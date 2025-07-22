@@ -238,7 +238,7 @@ We prompt Higgs Audio v2 with the reference text, reference audio, and target te
 
 #### EmergentTTS-Eval ("Emotions" and "Questions")
 
-Following the [EmergentTTS-Eval Paper](https://arxiv.org/abs/2505.23009), we report the win-rate over "gpt-4o-mini-tts" with the "alloy" voice.
+Following the [EmergentTTS-Eval Paper](https://arxiv.org/abs/2505.23009), we report the win-rate over "gpt-4o-mini-tts" with the "alloy" voice. The judge model is Gemini 2.5 Pro.
 
 | Model                              | Emotions (%) ↑ | Questions (%) ↑ |
 |------------------------------------|--------------|----------------|
