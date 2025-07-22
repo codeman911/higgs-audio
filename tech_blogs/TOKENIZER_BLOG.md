@@ -32,7 +32,7 @@ We test on four subsets:
 
 We measure:
 
-- **Acoustic Quality**: STFT distance and waveform error between the original and reconstructed audio.  
+- **Acoustic Quality**: STFT distance between the original and reconstructed audio.  
 - **Semantic Integrity**: Semantic preservation of the original audio using [SeedTTS](https://arxiv.org/abs/2406.02430)[15] dataset on English and Chinese. 
 - **Aesthetics**: SOTA unified model-based quality assessment, [Meta Audiobox Aesthetics](https://github.com/facebookresearch/audiobox-aesthetics)[8], for Content Enjoyment (CE), Content Usefulness (CU) .
 
