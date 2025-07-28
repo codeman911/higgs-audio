@@ -275,6 +275,20 @@ We report the word-error-rate (WER) and the geometric mean between intra-speaker
 | Higgs Audio v2 (base)     | **18.88**                    | **51.95**          | 11.89      | **67.92**              | **14.65**               | 55.28              |
 
 
+## Citation
+
+If you feel the repository is helpful, please kindly cite as:
+
+```
+@misc{higgsaudio2025,
+  author       = {{Boson AI}},
+  title        = {{Higgs Audio V2: Redefining Expressiveness in Audio Generation}},
+  year         = {2025},
+  howpublished = {\url{https://github.com/boson-ai/higgs-audio}},
+  note         = {GitHub repository. Release blog available at \url{https://www.boson.ai/blog/higgs-audio-v2}},
+}
+```
+
 ## Third-Party Licenses
 
 The `boson_multimodal/audio_processing/` directory contains code derived from third-party repositories, primarily from [xcodec](https://github.com/zhenye234/xcodec). Please see the [`LICENSE`](boson_multimodal/audio_processing/LICENSE) in that directory for complete attribution and licensing information.
