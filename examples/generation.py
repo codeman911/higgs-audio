@@ -708,7 +708,7 @@ def main(
 
     for tag, replacement in [
         ("[laugh]", "<SE>[Laughter]</SE>"),
-        ("[humming start]", "<SE>[Humming]</SE>"),
+        ("[humming start]", "<SE_s>[Humming]</SE_s>"),
         ("[humming end]", "<SE_e>[Humming]</SE_e>"),
         ("[music start]", "<SE_s>[Music]</SE_s>"),
         ("[music end]", "<SE_e>[Music]</SE_e>"),
