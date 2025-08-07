@@ -42,17 +42,17 @@ class DatasetSample:
     language: str = "auto"  # Will be detected
 
 
-class ArabicEnglishProcessor:
-    """Processor for converting Arabic+English dataset to ChatML format"""
+class ZeroShotVoiceCloningProcessor:
+    """Processor for zero-shot voice cloning dataset with ChatML conversion"""
     
     def __init__(
         self,
         dataset_dir: str,
         output_dir: str,
         audio_tokenizer_path: str = "bosonai/higgs-audio-v2-tokenizer",
+        target_sample_rate: int = 16000,
         max_audio_duration: float = 30.0,
         min_audio_duration: float = 0.5,
-        target_sample_rate: int = 16000,
         num_workers: int = 8,
     ):
         self.dataset_dir = Path(dataset_dir)
