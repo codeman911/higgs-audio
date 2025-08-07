@@ -1,0 +1,98 @@
+{
+  "total_samples": 10,
+  "successful": 10,
+  "failed": 0,
+  "success_rate": 1.0,
+  "results": [
+    {
+      "sample_id": "sample_00000006",
+      "target_text": "مَرَّةً بَعْدَ مَرَّةٍ بَعْدَ مَرَّةٍ غَلْطَة بَعْدَ غَلْطَة يَصِيرُ عِنْدَكَ مُشْكِلَة انكَ تَغْلِطْ",
+      "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000006_default_8245423d.wav",
+      "generated_audio": "tested_samples/sample_00000006_generated.wav",
+      "sampling_rate": 24000,
+      "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nمَرَّةً بَعْدَ مَرَّةٍ بَعْدَ مَرَّةٍ غَلْطَة بَعْدَ غَلْطَة يَصِيرُ عِنْدَكَ مُشْكِلَة انكَ تَغْلِطْ<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|>",
+      "success": true
+    },
+    {
+      "sample_id": "sample_00000005",
+      "target_text": "إِذَا أَنَا بِسَوِي هَذِي الطَرِيقَة مُو مُشْكِلَة بس أَنْوِي أَقُولُ أَنَا هسُوِي كَذَا كَذَا كَذَا بِنِية التَفْرِيغِ مِنْ هَذِي الْمَشَاعِرِ اللي مَوْجُودَةً وَمَكْبُوطَة جُوَّتِي",
+      "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000005_default_abf0a7ad.wav",
+      "generated_audio": "tested_samples/sample_00000005_generated.wav",
+      "sampling_rate": 24000,
+      "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nإِذَا أَنَا بِسَوِي هَذِي الطَرِيقَة مُو مُشْكِلَة بس أَنْوِي أَقُولُ أَنَا هسُوِي كَذَا كَذَا كَذَا بِنِية التَفْرِيغِ مِنْ هَذِي الْمَشَاعِرِ اللي مَوْجُودَةً وَمَكْبُوطَة جُوَّتِي<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+      "success": true
+    },
+    {
+      "sample_id": "sample_00000001",
+      "target_text": "فلما جيت فتحت شركتي واشتغلت في ال production عموما",
+      "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000001_default_136d8878.wav",
+      "generated_audio": "tested_samples/sample_00000001_generated.wav",
+      "sampling_rate": 24000,
+      "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nفلما جيت فتحت شركتي واشتغلت في ال production عموما<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+      "success": true
+    },
+    {
+      "sample_id": "sample_00000000",
+      "target_text": "وَمِنْ ثُمَّ قَالُوا أَنَّهُ لا يُوجَدُ إِلا أَنْ نَأْخُذَ سَيَنْسَتِيلْ.",
+      "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000000_default_66b18748.wav",
+      "generated_audio": "tested_samples/sample_00000000_generated.wav",
+      "sampling_rate": 24000,
+      "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nوَمِنْ ثُمَّ قَالُوا أَنَّهُ لا يُوجَدُ إِلا أَنْ نَأْخُذَ سَيَنْسَتِيلْ.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+      "success": true
+    },
+    {
+      "sample_id": "sample_00000008",
+      "target_text": "فَأَعْتَقِدُ إِنَّكَ إِنْت لِمَا تَجِي تَشَوُّف سُبْحَانَ اللَّهْ",
+      "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000008_default_dd883f83.wav",
+      "generated_audio": "tested_samples/sample_00000008_generated.wav",
+      "sampling_rate": 24000,
+      "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nفَأَعْتَقِدُ إِنَّكَ إِنْت لِمَا تَجِي تَشَوُّف سُبْحَانَ اللَّهْ<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+      "success": true
+    },
+    {
+      "sample_id": "sample_00000004",
+      "target_text": "خلاص هتكلم مع راشد أقنعه بالالغريثم هو دا حين مبسوط كل مرة يفتح يلاقي الأرقام بتزيد",
+      "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000004_default_6968a0f8.wav",
+      "generated_audio": "tested_samples/sample_00000004_generated.wav",
+      "sampling_rate": 24000,
+      "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nخلاص هتكلم مع راشد أقنعه بالالغريثم هو دا حين مبسوط كل مرة يفتح يلاقي الأرقام بتزيد<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+      "success": true
+    },
+    {
+      "sample_id": "sample_00000002",
+      "target_text": "كسبنا معاك حلقة",
+      "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000002_default_ba04af33.wav",
+      "generated_audio": "tested_samples/sample_00000002_generated.wav",
+      "sampling_rate": 24000,
+      "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nكسبنا معاك حلقة<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+      "success": true
+    },
+    {
+      "sample_id": "sample_00000003",
+      "target_text": "لكن كنت أحب أن أشارككم بعض الأشياء التي جاءت في بالي",
+      "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000003_default_e2db9c47.wav",
+      "generated_audio": "tested_samples/sample_00000003_generated.wav",
+      "sampling_rate": 24000,
+      "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nلكن كنت أحب أن أشارككم بعض الأشياء التي جاءت في بالي<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+      "success": true
+    },
+    {
+      "sample_id": "sample_00000007",
+      "target_text": "freelancer مِنْ عِنْدِي عَلَى الْمَوْقِعِ بِتَاخد ثَانِيَة.",
+      "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000007_default_69ba6c36.wav",
+      "generated_audio": "tested_samples/sample_00000007_generated.wav",
+      "sampling_rate": 24000,
+      "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nfreelancer مِنْ عِنْدِي عَلَى الْمَوْقِعِ بِتَاخد ثَانِيَة.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+      "success": true
+    },
+    {
+      "sample_id": "sample_00000009",
+      "target_text": "الشاهد في الموضوع انه المايك هادا لو ما تبي تشبكو في الجوال تقدر تشبكو على اللابتوب عالطول",
+      "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000009_default_6c701fcc.wav",
+      "generated_audio": "tested_samples/sample_00000009_generated.wav",
+      "sampling_rate": 24000,
+      "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nالشاهد في الموضوع انه المايك هادا لو ما تبي تشبكو في الجوال تقدر تشبكو على اللابتوب عالطول<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+      "success": true
+    }
+  ]
+}

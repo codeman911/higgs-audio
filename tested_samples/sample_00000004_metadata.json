@@ -1,0 +1,9 @@
+{
+  "sample_id": "sample_00000004",
+  "target_text": "خلاص هتكلم مع راشد أقنعه بالالغريثم هو دا حين مبسوط كل مرة يفتح يلاقي الأرقام بتزيد",
+  "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000004_default_6968a0f8.wav",
+  "generated_audio": "tested_samples/sample_00000004_generated.wav",
+  "sampling_rate": 24000,
+  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nخلاص هتكلم مع راشد أقنعه بالالغريثم هو دا حين مبسوط كل مرة يفتح يلاقي الأرقام بتزيد<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+  "success": true
+}
