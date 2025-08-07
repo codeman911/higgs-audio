@@ -324,22 +324,44 @@ class InferenceTest:
                 # Add reference audio if available
                 if ref_audio_path and os.path.exists(ref_audio_path):
                     try:
-                        # Load and tokenize reference audio
-                        waveform, sample_rate = torchaudio.load(ref_audio_path)
-                        if sample_rate != 24000:
-                            waveform = torchaudio.functional.resample(waveform, sample_rate, 24000)
+                        print(f"   🔍 Loading reference audio: {ref_audio_path}")
                         
-                        # Tokenize audio
-                        audio_tokens = self.model_client._audio_tokenizer.encode(waveform.unsqueeze(0))
-                        audio_ids.append(audio_tokens[0])
+                        # Check file size and permissions
+                        file_stat = os.stat(ref_audio_path)
+                        print(f"   📏 Audio file size: {file_stat.st_size} bytes")
                         
-                        # Add reference audio message
-                        messages.append(Message(
-                            role="user",
-                            content=AudioContent(audio_url=ref_audio_path)
-                        ))
+                        if file_stat.st_size == 0:
+                            print(f"   ⚠️  Audio file is empty, skipping reference audio")
+                        else:
+                            # Load and tokenize reference audio
+                            waveform, sample_rate = torchaudio.load(ref_audio_path)
+                            print(f"   🎵 Loaded audio: {waveform.shape}, sample_rate: {sample_rate}")
+                            
+                            if sample_rate != 24000:
+                                waveform = torchaudio.functional.resample(waveform, sample_rate, 24000)
+                                print(f"   🔄 Resampled to 24kHz: {waveform.shape}")
+                            
+                            # Tokenize audio
+                            audio_tokens = self.model_client._audio_tokenizer.encode(waveform.unsqueeze(0))
+                            audio_ids.append(audio_tokens[0])
+                            print(f"   🎯 Audio tokenized: {audio_tokens[0].shape}")
+                            
+                            # Add reference audio message
+                            messages.append(Message(
+                                role="user",
+                                content=AudioContent(audio_url=ref_audio_path)
+                            ))
+                            print(f"   ✅ Reference audio loaded successfully")
+                            
                     except Exception as e:
-                        print(f"   ⚠️  Error processing reference audio: {e}")
+                        print(f"   ❌ Error processing reference audio: {type(e).__name__}: {str(e)}")
+                        print(f"   🔄 Continuing with text-only generation (no voice cloning)")
+                else:
+                    if ref_audio_path:
+                        print(f"   ⚠️  Reference audio file not found: {ref_audio_path}")
+                    else:
+                        print(f"   ℹ️  No reference audio path provided")
+                    print(f"   🔄 Proceeding with text-only generation")
                 
                 # Prepare chunked text (simple approach)
                 chunked_text = [target_text] if target_text else ["Generate speech."]
