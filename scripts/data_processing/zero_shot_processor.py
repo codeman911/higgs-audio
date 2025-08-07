@@ -30,11 +30,23 @@ import librosa
 import soundfile as sf
 import numpy as np
 
-# Add higgs-audio to path
+# Robust import handling for both CLI and module usage
 import sys
-sys.path.append('/workspace/higgs-audio')
+from pathlib import Path
 
-from boson_multimodal.data_types import ChatMLSample, Message, AudioContent, TextContent
+# Add project root to Python path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+try:
+    from boson_multimodal.data_types import ChatMLSample, Message, AudioContent, TextContent
+except ImportError:
+    # Fallback for different project structures
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(current_dir))
+    sys.path.insert(0, project_root)
+    from boson_multimodal.data_types import ChatMLSample, Message, AudioContent, TextContent
 
 
 class ZeroShotDataProcessor:

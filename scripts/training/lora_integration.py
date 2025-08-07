@@ -10,13 +10,24 @@ from typing import Dict, List, Optional, Union
 from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 from peft.tuners.lora import LoraLayer
 import re
-
-# Add higgs-audio to path
+from pathlib import Path
 import sys
-sys.path.append('/workspace/higgs-audio')
 
-from boson_multimodal.model.higgs_audio import HiggsAudioModel, HiggsAudioConfig
-from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioDualFFNDecoderLayer
+# Robust import handling for both CLI and module usage
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+try:
+    from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioDualFFNDecoderLayer
+    from boson_multimodal.model.higgs_audio import HiggsAudioModel, HiggsAudioConfig
+except ImportError:
+    # Fallback for different project structures
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(current_dir))
+    sys.path.insert(0, project_root)
+    from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioDualFFNDecoderLayer
+    from boson_multimodal.model.higgs_audio import HiggsAudioModel, HiggsAudioConfig
 
 
 class HiggsAudioLoRAConfig:

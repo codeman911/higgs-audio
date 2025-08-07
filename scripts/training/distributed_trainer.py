@@ -23,14 +23,26 @@ import numpy as np
 from dataclasses import dataclass, field
 import yaml
 
-# Add higgs-audio to path
-import sys
-sys.path.append('/workspace/higgs-audio')
+# Robust import handling for both CLI and module usage
+from pathlib import Path
 
-from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
-from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
-from scripts.training.lora_integration import HiggsAudioLoRAConfig, create_lora_model
-from scripts.data_processing.arabic_english_processor import ArabicEnglishProcessor
+# Add project root to Python path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+try:
+    from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
+    from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
+    from scripts.training.lora_integration import HiggsAudioLoRAConfig, create_lora_model
+except ImportError:
+    # Fallback for different project structures
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(current_dir))
+    sys.path.insert(0, project_root)
+    from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
+    from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
+    from scripts.training.lora_integration import HiggsAudioLoRAConfig, create_lora_model
 
 
 @dataclass
