@@ -46,8 +46,6 @@ class UnifiedDataLoader:
         self.stats = {
             'total_samples': 0,
             'valid_samples': 0,
-            'arabic_samples': 0,
-            'english_samples': 0,
             'total_duration': 0.0,
             'directories_processed': 0,
             'errors': []
@@ -56,18 +54,6 @@ class UnifiedDataLoader:
         logger.info(f"Initialized UnifiedDataLoader for {len(data_directories)} directories")
         logger.info(f"Target sample rate: {target_sample_rate} Hz")
         logger.info(f"Duration range: {min_duration}-{max_duration} seconds")
-
-    def detect_language(self, text: str) -> str:
-        """
-        Detect language from text content
-        Simple heuristic: if contains Arabic characters, it's Arabic, otherwise English
-        """
-        arabic_chars = set('ابتثجحخدذرزسشصضطظعغفقكلمنهوي')
-        
-        if any(char in arabic_chars for char in text):
-            return 'arabic'
-        else:
-            return 'english'
 
     def load_directory_metadata(self, directory_path: str) -> List[Dict[str, Any]]:
         """
@@ -119,9 +105,6 @@ class UnifiedDataLoader:
                 if not os.path.exists(ref_audio_path) or not os.path.exists(target_audio_path):
                     continue
                 
-                # Detect language
-                language = self.detect_language(target_transcript)
-                
                 # Create unified sample entry
                 unified_sample = {
                     'sample_id': f"{directory_name}_{sample_id}",
@@ -129,7 +112,6 @@ class UnifiedDataLoader:
                     'target_audio_path': target_audio_path,
                     'ref_transcript': ref_transcript,
                     'target_transcript': target_transcript,
-                    'language': language,
                     'duration': sample_data.get('duration', 0.0),
                     'sample_rate': sample_data.get('sample_rate', self.target_sample_rate),
                     'source_directory': directory_path
@@ -139,10 +121,6 @@ class UnifiedDataLoader:
                 
                 # Update statistics
                 self.stats['total_duration'] += unified_sample['duration']
-                if language == 'arabic':
-                    self.stats['arabic_samples'] += 1
-                else:
-                    self.stats['english_samples'] += 1
                 
             except Exception as e:
                 error_msg = f"Error processing sample {sample_id}: {str(e)}"
@@ -187,8 +165,6 @@ class UnifiedDataLoader:
             'metadata': {
                 'total_samples': len(manifest_data),
                 'total_duration_hours': self.stats['total_duration'] / 3600,
-                'arabic_samples': self.stats['arabic_samples'],
-                'english_samples': self.stats['english_samples'],
                 'directories_processed': self.stats['directories_processed'],
                 'target_sample_rate': self.target_sample_rate,
                 'created_by': 'UnifiedDataLoader',
@@ -217,10 +193,6 @@ class UnifiedDataLoader:
         logger.info(f"📊 Total Samples: {self.stats['total_samples']:,}")
         logger.info(f"⏱️  Total Duration: {self.stats['total_duration']/3600:.2f} hours")
         logger.info(f"📁 Directories Processed: {self.stats['directories_processed']}")
-        
-        logger.info(f"\n🌍 Language Distribution:")
-        logger.info(f"   • Arabic: {self.stats['arabic_samples']:,} samples")
-        logger.info(f"   • English: {self.stats['english_samples']:,} samples")
         
         if self.stats['errors']:
             logger.warning(f"\n⚠️  Errors encountered: {len(self.stats['errors'])}")
