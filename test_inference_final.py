@@ -55,13 +55,29 @@ class FinalInferenceTest:
         logger.info("Model loaded successfully!")
 
     def load_chatml_samples(self, json_file: str, max_samples: int = 10) -> List[Dict]:
-        """Load ChatML samples from JSON file."""
+        """Load ChatML samples from JSON file with robust structure handling."""
         logger.info(f"Loading ChatML samples from: {json_file}")
         
         with open(json_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        samples = data.get('samples', [])
+        # Handle different JSON structures
+        if isinstance(data, list):
+            # JSON file contains array of samples directly
+            samples = data
+            logger.info(f"Loaded JSON as direct array with {len(samples)} samples")
+        elif isinstance(data, dict):
+            # JSON file contains dictionary with 'samples' key
+            samples = data.get('samples', [])
+            if not samples:
+                # Try other common keys
+                samples = data.get('data', [])
+                if not samples:
+                    samples = data.get('items', [])
+            logger.info(f"Loaded JSON as dictionary with {len(samples)} samples")
+        else:
+            raise ValueError(f"Unexpected JSON structure in {json_file}. Expected list or dict, got {type(data)}")
+        
         if not samples:
             raise ValueError(f"No samples found in {json_file}")
         
@@ -159,20 +175,27 @@ class FinalInferenceTest:
         return messages, audio_ids
 
     def extract_target_text_from_chatml(self, chatml_sample: Dict) -> str:
-        """Extract target text from ChatML sample."""
+        """Extract target text from ChatML sample with robust error handling."""
         chatml_messages = chatml_sample.get('messages', [])
+        
+        # If no messages, try direct sample structure
+        if not chatml_messages and 'role' in chatml_sample:
+            chatml_messages = [chatml_sample]
         
         for msg in chatml_messages:
             if msg.get('role') == 'user':
                 content = msg.get('content', [])
                 if isinstance(content, list):
                     for item in content:
-                        if item.get('type') == 'text':
-                            return item.get('text', '')
+                        if isinstance(item, dict) and item.get('type') == 'text':
+                            text = item.get('text', '')
+                            if text:
+                                return text
                 elif isinstance(content, str):
                     return content
         
-        return ""
+        logger.warning("No target text found in ChatML sample")
+        return "Hello, this is a test."  # Fallback text
 
     def test_final_inference(self, chatml_samples: List[Dict], output_dir: str = "final_samples"):
         """Test final corrected zero-shot voice cloning inference."""
