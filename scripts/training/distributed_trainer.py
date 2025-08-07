@@ -253,40 +253,36 @@ class HiggsAudioDistributedTrainer:
         """Load and prepare datasets"""
         self.logger.info("Loading datasets...")
         
-        # Load processed ChatML data
-        all_samples = []
-        dataset_path = Path(self.config.dataset_path)
+        # Load training data from unified pipeline output
+        train_path = os.path.join(self.config.dataset_path, "chatml", "train_chatml_samples.json")
+        val_path = os.path.join(self.config.dataset_path, "chatml", "val_chatml_samples.json")
         
-        for lang_file in ["chatml_samples_arabic.json", "chatml_samples_english.json", "chatml_samples_mixed.json"]:
-            file_path = dataset_path / lang_file
-            if file_path.exists():
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    samples = json.load(f)
-                    
-                # Apply language-specific weighting
-                if "arabic" in lang_file:
-                    weight = self.config.arabic_weight
-                elif "english" in lang_file:
-                    weight = self.config.english_weight
-                else:  # mixed
-                    weight = self.config.mixed_weight
-                
-                # Duplicate samples based on weight
-                weighted_samples = samples * int(weight)
-                all_samples.extend(weighted_samples)
-                
-                self.logger.info(f"Loaded {len(samples)} samples from {lang_file} (weight: {weight})")
+        if not os.path.exists(train_path):
+            raise FileNotFoundError(f"Training data not found: {train_path}")
+        if not os.path.exists(val_path):
+            raise FileNotFoundError(f"Validation data not found: {val_path}")
         
-        self.logger.info(f"Total samples after weighting: {len(all_samples)}")
+        # Load ChatML samples
+        with open(train_path, 'r', encoding='utf-8') as f:
+            train_samples = json.load(f)
         
-        # Split into train/val
-        np.random.shuffle(all_samples)
-        split_idx = int(len(all_samples) * self.config.train_split_ratio)
-        train_samples = all_samples[:split_idx]
-        val_samples = all_samples[split_idx:]
+        with open(val_path, 'r', encoding='utf-8') as f:
+            val_samples = json.load(f)
         
-        self.logger.info(f"Train samples: {len(train_samples)}")
-        self.logger.info(f"Validation samples: {len(val_samples)}")
+        self.logger.info(f"Loaded {len(train_samples)} training samples")
+        self.logger.info(f"Loaded {len(val_samples)} validation samples")
+        
+        # Load processing statistics for monitoring
+        stats_path = os.path.join(self.config.dataset_path, "chatml", "processing_stats.json")
+        if os.path.exists(stats_path):
+            with open(stats_path, 'r', encoding='utf-8') as f:
+                stats = json.load(f)
+            
+            manifest_meta = stats.get('manifest_metadata', {})
+            self.logger.info(f"Dataset statistics:")
+            self.logger.info(f"  • Total duration: {manifest_meta.get('total_duration_hours', 0):.2f} hours")
+            self.logger.info(f"  • Total samples: {manifest_meta.get('total_samples', 0):,}")
+            self.logger.info(f"  • Directories processed: {manifest_meta.get('directories_processed', 0)}")
         
         return train_samples, val_samples
     

@@ -76,7 +76,16 @@ class UnifiedDataLoader:
         try:
             with open(metadata_file, 'r', encoding='utf-8') as f:
                 metadata = json.load(f)
-            logger.info(f"Loaded metadata with {len(metadata)} entries")
+            
+            # Handle the correct metadata structure with "samples" list
+            if "samples" in metadata and isinstance(metadata["samples"], list):
+                samples_list = metadata["samples"]
+                logger.info(f"Loaded metadata with {len(samples_list)} samples")
+            else:
+                # Fallback for old format (flat dictionary)
+                samples_list = [{"id": k, **v} for k, v in metadata.items() if isinstance(v, dict)]
+                logger.info(f"Loaded metadata with {len(samples_list)} samples (legacy format)")
+                
         except Exception as e:
             logger.error(f"Error loading metadata from {metadata_file}: {str(e)}")
             return []
@@ -85,16 +94,32 @@ class UnifiedDataLoader:
         unified_samples = []
         directory_name = Path(directory_path).name
         
-        for sample_id, sample_data in tqdm(metadata.items(), desc=f"Processing {directory_name}"):
+        for sample_data in tqdm(samples_list, desc=f"Processing {directory_name}"):
             try:
+                # Get sample ID
+                sample_id = sample_data.get('id', sample_data.get('sample_id', 'unknown'))
+                
                 # Extract sample information (adjust field names as needed)
                 ref_audio_file = sample_data.get('ref_audio_file', sample_data.get('audio_file', ''))
                 target_audio_file = sample_data.get('audio_file', sample_data.get('target_audio_file', ''))
                 ref_transcript = sample_data.get('ref_transcript', '')
-                target_transcript = sample_data.get('transcript', sample_data.get('target_transcript', ''))
+                
+                # Handle target transcript from file or direct field
+                target_transcript = ''
+                if 'transcript_file' in sample_data:
+                    transcript_file_path = os.path.join(directory_path, sample_data['transcript_file'])
+                    if os.path.exists(transcript_file_path):
+                        try:
+                            with open(transcript_file_path, 'r', encoding='utf-8') as f:
+                                target_transcript = f.read().strip()
+                        except Exception as e:
+                            logger.warning(f"Error reading transcript file {transcript_file_path}: {str(e)}")
+                else:
+                    target_transcript = sample_data.get('transcript', sample_data.get('target_transcript', ''))
                 
                 # Skip if missing essential data
                 if not ref_audio_file or not target_audio_file or not target_transcript:
+                    logger.debug(f"Skipping sample {sample_id}: missing essential data")
                     continue
                 
                 # Build full paths
@@ -102,7 +127,17 @@ class UnifiedDataLoader:
                 target_audio_path = os.path.join(directory_path, target_audio_file)
                 
                 # Validate files exist
-                if not os.path.exists(ref_audio_path) or not os.path.exists(target_audio_path):
+                if not os.path.exists(ref_audio_path):
+                    logger.debug(f"Skipping sample {sample_id}: ref_audio_file not found: {ref_audio_path}")
+                    continue
+                if not os.path.exists(target_audio_path):
+                    logger.debug(f"Skipping sample {sample_id}: target_audio_file not found: {target_audio_path}")
+                    continue
+                
+                # Validate duration constraints
+                duration = sample_data.get('duration', 0.0)
+                if duration < self.min_duration or duration > self.max_duration:
+                    logger.debug(f"Skipping sample {sample_id}: duration {duration}s outside range [{self.min_duration}, {self.max_duration}]")
                     continue
                 
                 # Create unified sample entry
@@ -112,7 +147,7 @@ class UnifiedDataLoader:
                     'target_audio_path': target_audio_path,
                     'ref_transcript': ref_transcript,
                     'target_transcript': target_transcript,
-                    'duration': sample_data.get('duration', 0.0),
+                    'duration': duration,
                     'sample_rate': sample_data.get('sample_rate', self.target_sample_rate),
                     'source_directory': directory_path
                 }
@@ -123,7 +158,7 @@ class UnifiedDataLoader:
                 self.stats['total_duration'] += unified_sample['duration']
                 
             except Exception as e:
-                error_msg = f"Error processing sample {sample_id}: {str(e)}"
+                error_msg = f"Error processing sample {sample_data.get('id', 'unknown')}: {str(e)}"
                 logger.warning(error_msg)
                 self.stats['errors'].append(error_msg)
         
