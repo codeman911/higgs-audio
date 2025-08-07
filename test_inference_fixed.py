@@ -34,7 +34,7 @@ try:
     from boson_multimodal.data_types import ChatMLSample, Message, TextContent, AudioContent
     from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
     from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
-    from boson_multimodal.data_collator import HiggsAudioSampleCollator
+    from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
     from boson_multimodal.audio_processing.delay_pattern import revert_delay_pattern
     from transformers import AutoTokenizer, AutoConfig
 except ImportError as e:
