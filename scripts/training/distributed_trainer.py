@@ -255,13 +255,23 @@ class HiggsAudioDistributedTrainer:
         self.logger.info("Loading datasets...")
         
         # Load training data from unified pipeline output
-        train_path = os.path.join(self.config.dataset_path, "chatml", "train_chatml_samples.json")
-        val_path = os.path.join(self.config.dataset_path, "chatml", "val_chatml_samples.json")
+        # Files are directly in the dataset_path directory
+        train_path = os.path.join(self.config.dataset_path, "train_chatml_samples.json")
+        val_path = os.path.join(self.config.dataset_path, "val_chatml_samples.json")
+        
+        # Alternative paths in case they're in a chatml subdirectory
+        if not os.path.exists(train_path):
+            train_path = os.path.join(self.config.dataset_path, "chatml", "train_chatml_samples.json")
+        if not os.path.exists(val_path):
+            val_path = os.path.join(self.config.dataset_path, "chatml", "val_chatml_samples.json")
         
         if not os.path.exists(train_path):
-            raise FileNotFoundError(f"Training data not found: {train_path}")
+            raise FileNotFoundError(f"Training data not found at: {train_path}")
         if not os.path.exists(val_path):
-            raise FileNotFoundError(f"Validation data not found: {val_path}")
+            raise FileNotFoundError(f"Validation data not found at: {val_path}")
+        
+        self.logger.info(f"Loading training data from: {train_path}")
+        self.logger.info(f"Loading validation data from: {val_path}")
         
         # Load ChatML samples
         with open(train_path, 'r', encoding='utf-8') as f:
@@ -274,7 +284,10 @@ class HiggsAudioDistributedTrainer:
         self.logger.info(f"Loaded {len(val_samples)} validation samples")
         
         # Load processing statistics for monitoring
-        stats_path = os.path.join(self.config.dataset_path, "chatml", "processing_stats.json")
+        stats_path = os.path.join(self.config.dataset_path, "processing_stats.json")
+        if not os.path.exists(stats_path):
+            stats_path = os.path.join(self.config.dataset_path, "chatml", "processing_stats.json")
+        
         if os.path.exists(stats_path):
             with open(stats_path, 'r', encoding='utf-8') as f:
                 stats = json.load(f)
