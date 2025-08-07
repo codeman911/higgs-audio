@@ -48,8 +48,8 @@ class InferenceTest:
         # Load serve engine
         try:
             self.serve_engine = HiggsAudioServeEngine(
-                model_path=model_path,
-                audio_tokenizer_path=audio_tokenizer_path,
+                model_name_or_path=model_path,
+                audio_tokenizer_name_or_path=audio_tokenizer_path,
                 device=device
             )
             print("✅ Model loaded successfully")
