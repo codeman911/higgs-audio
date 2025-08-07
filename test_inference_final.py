@@ -147,19 +147,20 @@ class FinalInferenceTest:
                                         logger.warning(f"Audio file very small ({file_size} bytes), might be corrupted")
                                         continue
                                     
-                                    # Tokenize reference audio
+                                    # Tokenize reference audio for audio_ids
                                     ref_audio_tokens = self.audio_tokenizer.encode(audio_url)
                                     logger.info(f"✅ Reference audio tokenized: {ref_audio_tokens.shape}")
                                     
-                                    # Add to message content and audio_ids
-                                    message_content.append(AudioContent(audio=ref_audio_tokens))
+                                    # Add to message content using audio_url (not tokens)
+                                    message_content.append(AudioContent(audio_url=audio_url))
+                                    # Add tokens to audio_ids for generation
                                     audio_ids.append(ref_audio_tokens)
                                     
                                 except Exception as e:
                                     logger.error(f"❌ Error processing reference audio {audio_url}: {str(e)}")
                                     continue
                             else:
-                                logger.warning(f"Reference audio not found: {audio_url}")
+                                logger.warning(f"Reference audio not found or empty: {audio_url}")
                     
                     if message_content:
                         messages.append(Message(role="user", content=message_content))
