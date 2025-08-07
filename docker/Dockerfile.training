@@ -1,0 +1,124 @@
+# Dockerfile for Higgs-Audio V2 LoRA Training Environment
+# Optimized for 8x H200 GPUs with Arabic+English support
+
+FROM nvcr.io/nvidia/pytorch:24.01-py3
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+ENV NCCL_DEBUG=INFO
+ENV NCCL_TREE_THRESHOLD=0
+
+# Set working directory
+WORKDIR /workspace
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    wget \
+    curl \
+    vim \
+    htop \
+    tmux \
+    screen \
+    build-essential \
+    cmake \
+    pkg-config \
+    libsndfile1-dev \
+    libfftw3-dev \
+    libsox-dev \
+    sox \
+    ffmpeg \
+    locales \
+    locales-all \
+    fonts-liberation \
+    fonts-dejavu-core \
+    fontconfig \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up Arabic locale support
+RUN locale-gen ar_SA.UTF-8 en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+
+# Install Python dependencies
+COPY requirements_lora_training.txt /tmp/requirements_lora_training.txt
+RUN pip install --no-cache-dir -r /tmp/requirements_lora_training.txt
+
+# Install additional audio processing libraries
+RUN pip install --no-cache-dir \
+    torch-audio-augmentations \
+    audiomentations \
+    noisereduce \
+    pyroomacoustics
+
+# Clone and install Higgs-Audio repository
+RUN git clone https://github.com/bosonai/higgs-audio.git /workspace/higgs-audio
+WORKDIR /workspace/higgs-audio
+
+# Install Higgs-Audio in development mode
+RUN pip install -e .
+
+# Create necessary directories
+RUN mkdir -p /workspace/data \
+    /workspace/outputs \
+    /workspace/logs \
+    /workspace/checkpoints
+
+# Copy training scripts and configs
+COPY scripts/ /workspace/higgs-audio/scripts/
+COPY configs/ /workspace/higgs-audio/configs/
+
+# Set permissions
+RUN chmod +x /workspace/higgs-audio/scripts/launch_training.sh
+RUN chmod +x /workspace/higgs-audio/scripts/training/*.py
+RUN chmod +x /workspace/higgs-audio/scripts/data_processing/*.py
+RUN chmod +x /workspace/higgs-audio/scripts/evaluation/*.py
+
+# Install additional development tools
+RUN pip install --no-cache-dir \
+    jupyter \
+    ipywidgets \
+    notebook \
+    jupyterlab
+
+# Configure git (for saving checkpoints)
+RUN git config --global user.email "training@higgs-audio.ai" && \
+    git config --global user.name "Higgs Audio Training"
+
+# Set up Weights & Biases
+RUN pip install --no-cache-dir wandb
+ENV WANDB_API_KEY=""
+ENV WANDB_PROJECT="higgs-audio-lora-arabic-english"
+
+# Create entrypoint script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+echo "=== Higgs-Audio V2 LoRA Training Environment ==="\n\
+echo "CUDA Devices: $CUDA_VISIBLE_DEVICES"\n\
+echo "Working Directory: $(pwd)"\n\
+echo "Python Version: $(python --version)"\n\
+echo "PyTorch Version: $(python -c \"import torch; print(torch.__version__)\")"\n\
+echo "CUDA Available: $(python -c \"import torch; print(torch.cuda.is_available())\")"\n\
+echo "Number of GPUs: $(python -c \"import torch; print(torch.cuda.device_count())\")"\n\
+echo "==============================================="\n\
+\n\
+# Check GPU status\n\
+nvidia-smi\n\
+\n\
+# Execute command\n\
+exec "$@"' > /workspace/entrypoint.sh
+
+RUN chmod +x /workspace/entrypoint.sh
+
+# Expose ports for Jupyter and TensorBoard
+EXPOSE 8888 6006
+
+# Set entrypoint
+ENTRYPOINT ["/workspace/entrypoint.sh"]
+
+# Default command
+CMD ["/bin/bash"]

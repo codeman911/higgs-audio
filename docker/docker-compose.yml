@@ -1,0 +1,103 @@
+version: '3.8'
+
+services:
+  higgs-audio-training:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.training
+    image: higgs-audio:lora-training
+    container_name: higgs-audio-lora-training
+    
+    # GPU configuration for 8x H200
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1', '2', '3', '4', '5', '6', '7']
+              capabilities: [gpu]
+    
+    # Environment variables
+    environment:
+      - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+      - NCCL_DEBUG=INFO
+      - NCCL_TREE_THRESHOLD=0
+      - NCCL_IB_DISABLE=0
+      - NCCL_SOCKET_IFNAME=eth0
+      - PYTHONPATH=/workspace/higgs-audio
+      - WANDB_PROJECT=higgs-audio-lora-arabic-english
+      - WANDB_API_KEY=${WANDB_API_KEY:-}
+      - HF_HOME=/workspace/.cache/huggingface
+      - TRANSFORMERS_CACHE=/workspace/.cache/huggingface/transformers
+      - HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets
+    
+    # Volume mounts
+    volumes:
+      - ../:/workspace/higgs-audio
+      - ${DATA_DIR:-./data}:/workspace/data
+      - ${OUTPUT_DIR:-./outputs}:/workspace/outputs
+      - ${CACHE_DIR:-./cache}:/workspace/.cache
+      - /tmp:/tmp
+    
+    # Network configuration
+    network_mode: host
+    
+    # Resource limits
+    shm_size: 32gb
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    
+    # Keep container running
+    tty: true
+    stdin_open: true
+    
+    # Working directory
+    working_dir: /workspace/higgs-audio
+    
+    # Command
+    command: /bin/bash
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import torch; print(torch.cuda.is_available())"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Optional: TensorBoard service
+  tensorboard:
+    image: tensorflow/tensorflow:latest-gpu
+    container_name: higgs-audio-tensorboard
+    ports:
+      - "6006:6006"
+    volumes:
+      - ${OUTPUT_DIR:-./outputs}:/workspace/outputs
+    command: tensorboard --logdir=/workspace/outputs --host=0.0.0.0 --port=6006
+    depends_on:
+      - higgs-audio-training
+
+  # Optional: Jupyter Lab service
+  jupyter:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.training
+    image: higgs-audio:lora-training
+    container_name: higgs-audio-jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - ../:/workspace/higgs-audio
+      - ${DATA_DIR:-./data}:/workspace/data
+      - ${OUTPUT_DIR:-./outputs}:/workspace/outputs
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=higgs-audio-training
+    command: >
+      bash -c "jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root 
+               --NotebookApp.token='higgs-audio-training' 
+               --NotebookApp.password='' 
+               --notebook-dir=/workspace"
+    depends_on:
+      - higgs-audio-training

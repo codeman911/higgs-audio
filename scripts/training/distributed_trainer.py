@@ -1,0 +1,575 @@
+#!/usr/bin/env python3
+"""
+Distributed Training Pipeline for Higgs-Audio V2 LoRA Fine-tuning
+Optimized for 8x H200 GPUs with DeepSpeed and Accelerate integration.
+"""
+
+import os
+import json
+import torch
+import torch.distributed as dist
+from torch.utils.data import DataLoader, DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+import deepspeed
+from accelerate import Accelerator, DistributedDataParallelKwargs
+from accelerate.utils import set_seed
+from transformers import get_linear_schedule_with_warmup
+import wandb
+from tqdm import tqdm
+import logging
+from pathlib import Path
+from typing import Dict, List, Optional, Union
+import numpy as np
+from dataclasses import dataclass, field
+import yaml
+
+# Add higgs-audio to path
+import sys
+sys.path.append('/workspace/higgs-audio')
+
+from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
+from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
+from scripts.training.lora_integration import HiggsAudioLoRAConfig, create_lora_model
+from scripts.data_processing.arabic_english_processor import ArabicEnglishProcessor
+
+
+@dataclass
+class TrainingConfig:
+    """Training configuration for distributed LoRA fine-tuning"""
+    
+    # Model and data paths
+    model_path: str = "bosonai/higgs-audio-v2-generation-3B-base"
+    audio_tokenizer_path: str = "bosonai/higgs-audio-v2-tokenizer"
+    dataset_path: str = "/workspace/data/processed_chatml"
+    output_dir: str = "/workspace/outputs/higgs-lora-arabic-english"
+    
+    # Training hyperparameters
+    num_epochs: int = 3
+    batch_size_per_device: int = 2
+    gradient_accumulation_steps: int = 8
+    learning_rate: float = 2e-4
+    weight_decay: float = 0.01
+    warmup_ratio: float = 0.1
+    max_grad_norm: float = 1.0
+    
+    # LoRA configuration
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.1
+    
+    # Audio-specific settings
+    max_audio_length: int = 1500  # Max audio tokens
+    max_text_length: int = 512    # Max text tokens
+    
+    # Distributed training
+    deepspeed_config: Optional[str] = None
+    use_deepspeed: bool = True
+    use_accelerate: bool = True
+    
+    # Logging and checkpointing
+    logging_steps: int = 10
+    save_steps: int = 500
+    eval_steps: int = 500
+    save_total_limit: int = 3
+    
+    # Wandb logging
+    use_wandb: bool = True
+    wandb_project: str = "higgs-audio-lora-arabic-english"
+    wandb_run_name: Optional[str] = None
+    
+    # Data processing
+    train_split_ratio: float = 0.9
+    val_split_ratio: float = 0.1
+    num_workers: int = 8
+    
+    # Mixed precision
+    fp16: bool = False
+    bf16: bool = True
+    
+    # Optimization
+    optimizer_type: str = "adamw"
+    scheduler_type: str = "linear"
+    
+    # Language-specific settings
+    arabic_weight: float = 1.0
+    english_weight: float = 1.0
+    mixed_weight: float = 1.5  # Higher weight for code-switching samples
+
+
+class ArabicEnglishDataset(torch.utils.data.Dataset):
+    """Dataset class for Arabic+English ChatML samples"""
+    
+    def __init__(
+        self,
+        chatml_samples: List[Dict],
+        tokenizer,
+        audio_tokenizer,
+        max_text_length: int = 512,
+        max_audio_length: int = 1500,
+    ):
+        self.samples = chatml_samples
+        self.tokenizer = tokenizer
+        self.audio_tokenizer = audio_tokenizer
+        self.max_text_length = max_text_length
+        self.max_audio_length = max_audio_length
+        
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        
+        try:
+            # Convert back to ChatML format
+            from boson_multimodal.data_types import ChatMLSample, Message, AudioContent, TextContent
+            
+            messages = []
+            for msg_data in sample['messages']:
+                content = msg_data['content']
+                if isinstance(content, str):
+                    message_content = content
+                else:
+                    # Handle multimodal content
+                    message_content = []
+                    for c in content:
+                        if c['type'] == 'text':
+                            message_content.append(TextContent(text=c['text']))
+                        elif c['type'] == 'audio':
+                            message_content.append(AudioContent(
+                                audio_url=c.get('audio_url', ''),
+                                raw_audio=c.get('raw_audio', ''),
+                                duration=c.get('duration'),
+                                offset=c.get('offset')
+                            ))
+                
+                messages.append(Message(
+                    role=msg_data['role'],
+                    content=message_content
+                ))
+            
+            chatml_sample = ChatMLSample(
+                messages=messages,
+                start_index=sample.get('start_index', 0),
+                speaker=sample.get('speaker'),
+                misc=sample.get('misc', {})
+            )
+            
+            # Prepare the sample for training
+            dataset_sample = prepare_chatml_sample(
+                chatml_sample,
+                self.tokenizer,
+                self.audio_tokenizer,
+                max_text_length=self.max_text_length,
+                max_audio_length=self.max_audio_length
+            )
+            
+            return dataset_sample
+            
+        except Exception as e:
+            logging.warning(f"Error processing sample {idx}: {e}")
+            # Return a dummy sample to avoid breaking the batch
+            return self._create_dummy_sample()
+    
+    def _create_dummy_sample(self):
+        """Create a dummy sample for error cases"""
+        return ChatMLDatasetSample(
+            input_ids=torch.tensor([1, 2, 3]),  # Dummy tokens
+            label_ids=torch.tensor([-100, -100, -100]),
+            audio_ids_concat=torch.tensor([[]]),
+            audio_ids_start=torch.tensor([]),
+            audio_waveforms_concat=torch.tensor([]),
+            audio_waveforms_start=torch.tensor([]),
+            audio_sample_rate=torch.tensor([]),
+            audio_speaker_indices=torch.tensor([])
+        )
+
+
+class HiggsAudioDistributedTrainer:
+    """Distributed trainer for Higgs-Audio LoRA fine-tuning"""
+    
+    def __init__(self, config: TrainingConfig):
+        self.config = config
+        self.accelerator = None
+        self.model = None
+        self.optimizer = None
+        self.scheduler = None
+        self.train_dataloader = None
+        self.val_dataloader = None
+        
+        # Setup logging
+        self._setup_logging()
+        
+        # Initialize distributed training
+        self._setup_distributed()
+        
+    def _setup_logging(self):
+        """Setup logging configuration"""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(f"{self.config.output_dir}/training.log"),
+                logging.StreamHandler()
+            ]
+        )
+        self.logger = logging.getLogger(__name__)
+        
+    def _setup_distributed(self):
+        """Setup distributed training with Accelerate"""
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
+            mixed_precision="bf16" if self.config.bf16 else ("fp16" if self.config.fp16 else "no"),
+            log_with="wandb" if self.config.use_wandb else None,
+            project_dir=self.config.output_dir,
+            kwargs_handlers=[ddp_kwargs]
+        )
+        
+        # Set seed for reproducibility
+        set_seed(42)
+        
+        # Setup wandb
+        if self.config.use_wandb and self.accelerator.is_main_process:
+            wandb.init(
+                project=self.config.wandb_project,
+                name=self.config.wandb_run_name,
+                config=self.config.__dict__
+            )
+    
+    def load_datasets(self):
+        """Load and prepare datasets"""
+        self.logger.info("Loading datasets...")
+        
+        # Load processed ChatML data
+        all_samples = []
+        dataset_path = Path(self.config.dataset_path)
+        
+        for lang_file in ["chatml_samples_arabic.json", "chatml_samples_english.json", "chatml_samples_mixed.json"]:
+            file_path = dataset_path / lang_file
+            if file_path.exists():
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    samples = json.load(f)
+                    
+                # Apply language-specific weighting
+                if "arabic" in lang_file:
+                    weight = self.config.arabic_weight
+                elif "english" in lang_file:
+                    weight = self.config.english_weight
+                else:  # mixed
+                    weight = self.config.mixed_weight
+                
+                # Duplicate samples based on weight
+                weighted_samples = samples * int(weight)
+                all_samples.extend(weighted_samples)
+                
+                self.logger.info(f"Loaded {len(samples)} samples from {lang_file} (weight: {weight})")
+        
+        self.logger.info(f"Total samples after weighting: {len(all_samples)}")
+        
+        # Split into train/val
+        np.random.shuffle(all_samples)
+        split_idx = int(len(all_samples) * self.config.train_split_ratio)
+        train_samples = all_samples[:split_idx]
+        val_samples = all_samples[split_idx:]
+        
+        self.logger.info(f"Train samples: {len(train_samples)}")
+        self.logger.info(f"Validation samples: {len(val_samples)}")
+        
+        return train_samples, val_samples
+    
+    def create_dataloaders(self, train_samples, val_samples):
+        """Create data loaders"""
+        from transformers import AutoTokenizer
+        from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
+        
+        # Load tokenizers
+        tokenizer = AutoTokenizer.from_pretrained(self.config.model_path)
+        audio_tokenizer = load_higgs_audio_tokenizer(
+            self.config.audio_tokenizer_path,
+            device=self.accelerator.device
+        )
+        
+        # Create datasets
+        train_dataset = ArabicEnglishDataset(
+            train_samples,
+            tokenizer,
+            audio_tokenizer,
+            max_text_length=self.config.max_text_length,
+            max_audio_length=self.config.max_audio_length
+        )
+        
+        val_dataset = ArabicEnglishDataset(
+            val_samples,
+            tokenizer,
+            audio_tokenizer,
+            max_text_length=self.config.max_text_length,
+            max_audio_length=self.config.max_audio_length
+        )
+        
+        # Create data collator
+        collator = HiggsAudioSampleCollator(
+            tokenizer=tokenizer,
+            audio_tokenizer=audio_tokenizer,
+            padding=True,
+            max_length=self.config.max_text_length
+        )
+        
+        # Create data loaders
+        train_sampler = DistributedSampler(train_dataset) if self.accelerator.num_processes > 1 else None
+        val_sampler = DistributedSampler(val_dataset, shuffle=False) if self.accelerator.num_processes > 1 else None
+        
+        train_dataloader = DataLoader(
+            train_dataset,
+            batch_size=self.config.batch_size_per_device,
+            sampler=train_sampler,
+            shuffle=(train_sampler is None),
+            collate_fn=collator,
+            num_workers=self.config.num_workers,
+            pin_memory=True
+        )
+        
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=self.config.batch_size_per_device,
+            sampler=val_sampler,
+            shuffle=False,
+            collate_fn=collator,
+            num_workers=self.config.num_workers,
+            pin_memory=True
+        )
+        
+        return train_dataloader, val_dataloader, tokenizer, audio_tokenizer
+    
+    def setup_model_and_optimizer(self, tokenizer, audio_tokenizer):
+        """Setup model and optimizer"""
+        self.logger.info("Setting up model and optimizer...")
+        
+        # Create LoRA configuration
+        lora_config = HiggsAudioLoRAConfig(
+            lora_r=self.config.lora_r,
+            lora_alpha=self.config.lora_alpha,
+            lora_dropout=self.config.lora_dropout,
+            freeze_base_model=True,
+            freeze_audio_tower=True,
+            freeze_audio_encoder_proj=False,
+            enable_audio_lora=True,
+            enable_multilingual_lora=True
+        )
+        
+        # Create LoRA model
+        trainer = create_lora_model(
+            model_path=self.config.model_path,
+            lora_config=lora_config,
+            device=str(self.accelerator.device)
+        )
+        
+        model = trainer.prepare_for_training()
+        
+        # Setup optimizer
+        if self.config.optimizer_type == "adamw":
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay,
+                betas=(0.9, 0.999),
+                eps=1e-8
+            )
+        else:
+            raise ValueError(f"Unsupported optimizer: {self.config.optimizer_type}")
+        
+        return model, optimizer, trainer
+    
+    def setup_scheduler(self, optimizer, num_training_steps):
+        """Setup learning rate scheduler"""
+        num_warmup_steps = int(self.config.warmup_ratio * num_training_steps)
+        
+        if self.config.scheduler_type == "linear":
+            scheduler = get_linear_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=num_training_steps
+            )
+        else:
+            raise ValueError(f"Unsupported scheduler: {self.config.scheduler_type}")
+        
+        return scheduler
+    
+    def train(self):
+        """Main training loop"""
+        self.logger.info("Starting training...")
+        
+        # Create output directory
+        Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Load datasets
+        train_samples, val_samples = self.load_datasets()
+        
+        # Create data loaders
+        train_dataloader, val_dataloader, tokenizer, audio_tokenizer = self.create_dataloaders(
+            train_samples, val_samples
+        )
+        
+        # Setup model and optimizer
+        model, optimizer, lora_trainer = self.setup_model_and_optimizer(tokenizer, audio_tokenizer)
+        
+        # Calculate training steps
+        num_training_steps = len(train_dataloader) * self.config.num_epochs
+        
+        # Setup scheduler
+        scheduler = self.setup_scheduler(optimizer, num_training_steps)
+        
+        # Prepare for distributed training
+        model, optimizer, train_dataloader, val_dataloader, scheduler = self.accelerator.prepare(
+            model, optimizer, train_dataloader, val_dataloader, scheduler
+        )
+        
+        # Training loop
+        global_step = 0
+        best_val_loss = float('inf')
+        
+        for epoch in range(self.config.num_epochs):
+            self.logger.info(f"Starting epoch {epoch + 1}/{self.config.num_epochs}")
+            
+            # Training
+            model.train()
+            train_loss = 0.0
+            
+            for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch + 1}")):
+                with self.accelerator.accumulate(model):
+                    # Forward pass
+                    outputs = model(**batch)
+                    
+                    # Compute loss
+                    loss = lora_trainer.compute_loss(batch, outputs)
+                    
+                    # Backward pass
+                    self.accelerator.backward(loss)
+                    
+                    # Gradient clipping
+                    if self.accelerator.sync_gradients:
+                        self.accelerator.clip_grad_norm_(model.parameters(), self.config.max_grad_norm)
+                    
+                    # Optimizer step
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                
+                train_loss += loss.item()
+                global_step += 1
+                
+                # Logging
+                if global_step % self.config.logging_steps == 0:
+                    avg_loss = train_loss / self.config.logging_steps
+                    self.logger.info(f"Step {global_step}: Loss = {avg_loss:.4f}")
+                    
+                    if self.config.use_wandb and self.accelerator.is_main_process:
+                        wandb.log({
+                            "train_loss": avg_loss,
+                            "learning_rate": scheduler.get_last_lr()[0],
+                            "global_step": global_step
+                        })
+                    
+                    train_loss = 0.0
+                
+                # Validation
+                if global_step % self.config.eval_steps == 0:
+                    val_loss = self.validate(model, val_dataloader, lora_trainer)
+                    
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        self.save_checkpoint(model, global_step, "best")
+                    
+                    if self.config.use_wandb and self.accelerator.is_main_process:
+                        wandb.log({"val_loss": val_loss, "global_step": global_step})
+                
+                # Save checkpoint
+                if global_step % self.config.save_steps == 0:
+                    self.save_checkpoint(model, global_step)
+        
+        # Final save
+        self.save_checkpoint(model, global_step, "final")
+        self.logger.info("Training completed!")
+    
+    def validate(self, model, val_dataloader, lora_trainer):
+        """Validation loop"""
+        model.eval()
+        val_loss = 0.0
+        num_batches = 0
+        
+        with torch.no_grad():
+            for batch in val_dataloader:
+                outputs = model(**batch)
+                loss = lora_trainer.compute_loss(batch, outputs)
+                val_loss += loss.item()
+                num_batches += 1
+        
+        avg_val_loss = val_loss / num_batches
+        self.logger.info(f"Validation loss: {avg_val_loss:.4f}")
+        
+        model.train()
+        return avg_val_loss
+    
+    def save_checkpoint(self, model, global_step, suffix=""):
+        """Save model checkpoint"""
+        if not self.accelerator.is_main_process:
+            return
+        
+        save_dir = Path(self.config.output_dir) / f"checkpoint-{global_step}"
+        if suffix:
+            save_dir = Path(self.config.output_dir) / f"checkpoint-{suffix}"
+        
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save LoRA adapters
+        unwrapped_model = self.accelerator.unwrap_model(model)
+        unwrapped_model.save_pretrained(save_dir)
+        
+        # Save training config
+        with open(save_dir / "training_config.json", 'w') as f:
+            json.dump(self.config.__dict__, f, indent=2)
+        
+        self.logger.info(f"Checkpoint saved to {save_dir}")
+
+
+def main():
+    """Main training function"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Distributed LoRA training for Higgs-Audio")
+    parser.add_argument("--config", type=str, help="Path to training config YAML file")
+    parser.add_argument("--dataset_path", type=str, required=True, help="Path to processed dataset")
+    parser.add_argument("--output_dir", type=str, required=True, help="Output directory")
+    parser.add_argument("--num_epochs", type=int, default=3, help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=2, help="Batch size per device")
+    parser.add_argument("--learning_rate", type=float, default=2e-4, help="Learning rate")
+    
+    args = parser.parse_args()
+    
+    # Load config
+    if args.config:
+        with open(args.config, 'r') as f:
+            config_dict = yaml.safe_load(f)
+        config = TrainingConfig(**config_dict)
+    else:
+        config = TrainingConfig()
+    
+    # Override with command line arguments
+    if args.dataset_path:
+        config.dataset_path = args.dataset_path
+    if args.output_dir:
+        config.output_dir = args.output_dir
+    if args.num_epochs:
+        config.num_epochs = args.num_epochs
+    if args.batch_size:
+        config.batch_size_per_device = args.batch_size
+    if args.learning_rate:
+        config.learning_rate = args.learning_rate
+    
+    # Start training
+    trainer = HiggsAudioDistributedTrainer(config)
+    trainer.train()
+
+
+if __name__ == "__main__":
+    main()
