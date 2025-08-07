@@ -238,7 +238,7 @@ class FinalInferenceTest:
                     audio_ids=audio_ids,
                     chunked_text=chunked_text,
                     generation_chunk_buffer_size=None,
-                    temperature=1.0,
+                    temperature=0.7,
                     top_k=50,
                     top_p=0.95,
                     ras_win_len=7,
