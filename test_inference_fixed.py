@@ -30,13 +30,16 @@ if project_root not in [Path(p) for p in sys.path]:
     sys.path.insert(0, str(project_root))
 
 try:
-    from boson_multimodal.model.higgs_audio import HiggsAudioModel
-    from boson_multimodal.data_types import ChatMLSample, Message, TextContent, AudioContent
-    from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
-    from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
+    # Use exact imports from examples/generation.py that work
+    from boson_multimodal.model.higgs_audio import HiggsAudioModel, HiggsAudioConfig
+    from boson_multimodal.data_types import Message, ChatMLSample, AudioContent, TextContent
     from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
-    from boson_multimodal.audio_processing.delay_pattern import revert_delay_pattern
-    from transformers import AutoTokenizer, AutoConfig
+    from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
+    from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
+    from boson_multimodal.model.higgs_audio.utils import revert_delay_pattern
+    from transformers import AutoConfig, AutoTokenizer
+    from transformers.cache_utils import StaticCache
+    from dataclasses import asdict
 except ImportError as e:
     print(f"❌ Import error: {e}")
     print("Make sure you're running from the project root directory")
