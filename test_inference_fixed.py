@@ -333,18 +333,11 @@ class InferenceTest:
                         if file_stat.st_size == 0:
                             print(f"   ⚠️  Audio file is empty, skipping reference audio")
                         else:
-                            # Load and tokenize reference audio
-                            waveform, sample_rate = torchaudio.load(ref_audio_path)
-                            print(f"   🎵 Loaded audio: {waveform.shape}, sample_rate: {sample_rate}")
-                            
-                            if sample_rate != 24000:
-                                waveform = torchaudio.functional.resample(waveform, sample_rate, 24000)
-                                print(f"   🔄 Resampled to 24kHz: {waveform.shape}")
-                            
-                            # Tokenize audio
-                            audio_tokens = self.model_client._audio_tokenizer.encode(waveform.unsqueeze(0))
-                            audio_ids.append(audio_tokens[0])
-                            print(f"   🎯 Audio tokenized: {audio_tokens[0].shape}")
+                            # Tokenize audio directly from file path (like in examples/generation.py)
+                            print(f"   🎵 Tokenizing audio from file path...")
+                            audio_tokens = self.model_client._audio_tokenizer.encode(ref_audio_path)
+                            audio_ids.append(audio_tokens)
+                            print(f"   🎯 Audio tokenized: {audio_tokens.shape}")
                             
                             # Add reference audio message
                             messages.append(Message(
