@@ -272,10 +272,33 @@ class HiggsAudioLoRATrainer:
         loss = 0.0
         
         # Text generation loss
-        if text_labels is not None:
+        if text_labels is not None and text_logits is not None:
+            # CRITICAL FIX: Handle sequence length mismatch between logits and labels
+            # The model generates logits for the entire sequence including audio positions,
+            # but labels only cover text token positions
+            
+            batch_size = text_labels.shape[0]
+            label_seq_len = text_labels.shape[1]
+            logit_seq_len = text_logits.shape[1]
+            
+            if logit_seq_len != label_seq_len:
+                # Truncate logits to match label length
+                # This handles cases where model generates extra positions for audio tokens
+                text_logits = text_logits[:, :label_seq_len, :]
+            
+            # Flatten and compute cross entropy
+            text_logits_flat = text_logits.contiguous().view(-1, text_logits.size(-1))
+            text_labels_flat = text_labels.contiguous().view(-1)
+            
+            # Ensure shapes match after alignment
+            if text_logits_flat.shape[0] != text_labels_flat.shape[0]:
+                min_len = min(text_logits_flat.shape[0], text_labels_flat.shape[0])
+                text_logits_flat = text_logits_flat[:min_len]
+                text_labels_flat = text_labels_flat[:min_len]
+            
             text_loss = nn.functional.cross_entropy(
-                text_logits.view(-1, text_logits.size(-1)),
-                text_labels.view(-1),
+                text_logits_flat,
+                text_labels_flat,
                 ignore_index=-100
             )
             loss += text_loss
@@ -289,9 +312,15 @@ class HiggsAudioLoRATrainer:
                 codebook_logits = audio_logits[..., codebook_idx, :]
                 codebook_labels = audio_labels[:, codebook_idx, :]
                 
+                # Handle potential shape mismatch for audio tokens too
+                if codebook_logits.shape[1] != codebook_labels.shape[1]:
+                    min_seq_len = min(codebook_logits.shape[1], codebook_labels.shape[1])
+                    codebook_logits = codebook_logits[:, :min_seq_len, :]
+                    codebook_labels = codebook_labels[:, :min_seq_len]
+                
                 codebook_loss = nn.functional.cross_entropy(
-                    codebook_logits.view(-1, codebook_logits.size(-1)),
-                    codebook_labels.view(-1),
+                    codebook_logits.contiguous().view(-1, codebook_logits.size(-1)),
+                    codebook_labels.contiguous().view(-1),
                     ignore_index=-100
                 )
                 audio_loss += codebook_loss
