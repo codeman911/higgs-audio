@@ -212,14 +212,26 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
         if target_audio_ids:
             target_audio_concat = torch.cat([audio.cpu() for audio in target_audio_ids], dim=1)
         
-        # Create ChatMLDatasetSample exactly like inference
+        # Create dummy tensors for required fields (will be processed by collator)
+        dummy_input_ids = torch.tensor([1, 2, 3], dtype=torch.long)  # Placeholder
+        dummy_label_ids = torch.tensor([-100, -100, -100], dtype=torch.long)  # Placeholder
+        
+        # Set default values for audio fields if None
+        if reference_audio_concat is None:
+            reference_audio_concat = torch.empty((8, 0), dtype=torch.long)
+        if target_audio_concat is None:
+            target_audio_concat = torch.empty((8, 0), dtype=torch.long)
+        
+        # Create ChatMLDatasetSample with correct constructor parameters
         return ChatMLDatasetSample(
-            messages=processed_messages,
-            start_index=0,
-            speaker="unknown",
-            misc={},
-            # CRITICAL: Set audio fields exactly like inference expects
+            input_ids=dummy_input_ids,
+            label_ids=dummy_label_ids,
             audio_ids_concat=reference_audio_concat,  # Reference audio for conditioning
+            audio_ids_start=torch.tensor([0], dtype=torch.long),
+            audio_waveforms_concat=torch.empty(0, dtype=torch.float32),
+            audio_waveforms_start=torch.tensor([0], dtype=torch.long),
+            audio_sample_rate=torch.tensor([16000.0], dtype=torch.float32),
+            audio_speaker_indices=torch.tensor([0], dtype=torch.long),
             audio_label_ids_concat=target_audio_concat,  # Target audio for loss
         )
 
