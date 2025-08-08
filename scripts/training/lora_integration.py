@@ -293,6 +293,20 @@ class HiggsAudioLoRATrainer:
                 print(f"  text_labels shape: {text_labels.shape if text_labels is not None else 'None'}")
                 print(f"  audio_labels shape: {audio_labels.shape if audio_labels is not None else 'None'}")
                 print(f"  audio_logits shape: {audio_logits.shape if audio_logits is not None else 'None'}")
+                
+                # CRITICAL DEBUG: Check reference audio processing
+                reference_audio = batch.get('audio_in_ids')
+                if reference_audio is not None:
+                    print(f"  REFERENCE AUDIO: {reference_audio.shape} tokens for conditioning")
+                else:
+                    print(f"  MISSING REFERENCE AUDIO: No audio_in_ids found!")
+                
+                # Check if audio_ids_concat is present (should map to audio_in_ids)
+                audio_ids_concat = batch.get('audio_ids_concat')
+                if audio_ids_concat is not None:
+                    print(f"  AUDIO_IDS_CONCAT: {audio_ids_concat.shape} (should become audio_in_ids)")
+                else:
+                    print(f"  MISSING AUDIO_IDS_CONCAT: No reference audio in batch!")
             
             # CRITICAL: Add NaN/Inf detection for model outputs
             if text_logits is not None:
