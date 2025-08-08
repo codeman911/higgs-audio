@@ -407,7 +407,7 @@ class HiggsAudioDistributedTrainer:
         tokenizer = AutoTokenizer.from_pretrained(self.config.model_path)
         audio_tokenizer = load_higgs_audio_tokenizer(
             self.config.audio_tokenizer_path,
-            device=self.accelerator.device
+            device="cpu"  # IMPORTANT: keep dataset outputs on CPU; Accelerate will move batches
         )
         
         # CRITICAL DEBUG: Check codebook configuration mismatch
@@ -542,9 +542,11 @@ class HiggsAudioDistributedTrainer:
         
         # Create LoRA model
         trainer = create_lora_model(
-            model_path=self.config.model_path,
+            base_model_path=self.config.model_path,
+            tokenizer=tokenizer,
+            audio_tokenizer=audio_tokenizer,
             lora_config=lora_config,
-            device=str(self.accelerator.device),
+            device="cpu",  # Build on CPU; Accelerate will place on the correct GPU
             model_config=self.corrected_model_config
         )
         
@@ -597,17 +599,17 @@ class HiggsAudioDistributedTrainer:
         # Setup model and optimizer
         model, optimizer, lora_trainer = self.setup_model_and_optimizer(tokenizer, audio_tokenizer)
         
+        # Use Accelerate to place model/optimizer/dataloaders on the correct device(s)
+        model, optimizer, train_dataloader, val_dataloader = self.accelerator.prepare(
+            model, optimizer, train_dataloader, val_dataloader
+        )
+        
         # Calculate training steps
         steps_per_epoch = max(1, (len(train_dataloader) + self.config.gradient_accumulation_steps - 1) // self.config.gradient_accumulation_steps)
         num_training_steps = steps_per_epoch * self.config.num_epochs
         
         # Setup scheduler
         scheduler = self.setup_scheduler(optimizer, num_training_steps)
-        
-        # Prepare for distributed training
-        model, optimizer, train_dataloader, val_dataloader, scheduler = self.accelerator.prepare(
-            model, optimizer, train_dataloader, val_dataloader, scheduler
-        )
         
         # Training loop
         global_step = 0

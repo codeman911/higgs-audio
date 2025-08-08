@@ -188,15 +188,20 @@ class UnifiedLoRADataPipeline:
                 logger.info("🔍 Validating processed ChatML data...")
                 
                 # Check a sample from the processed data
-                train_file = os.path.join(self.chatml_dir, "train_samples.json")
+                train_file = os.path.join(self.chatml_dir, "train_chatml_samples.json")
                 if os.path.exists(train_file):
                     with open(train_file, 'r', encoding='utf-8') as f:
                         samples = json.load(f)
                     
                     if samples:
                         sample = samples[0]
-                        if 'misc' in sample and 'codebook_count' in sample['misc']:
+                        codebook_count = None
+                        if 'metadata' in sample and 'codebook_count' in sample['metadata']:
+                            codebook_count = sample['metadata']['codebook_count']
+                        elif 'misc' in sample and 'codebook_count' in sample['misc']:
+                            # Backward-compat fallback
                             codebook_count = sample['misc']['codebook_count']
+                        if codebook_count is not None:
                             logger.info(f"Processed data codebook count: {codebook_count}")
                             
                             if codebook_count != 8:
@@ -206,7 +211,7 @@ class UnifiedLoRADataPipeline:
                             
                             logger.info(f"✅ Processed data validated: {codebook_count} codebooks")
                         else:
-                            logger.warning("⚠️  Could not validate codebook count from processed data")
+                            logger.warning("⚠️  Could not validate codebook count from processed data (missing metadata.misc.codebook_count)")
                 
                 logger.info("✅ ChatML processing completed successfully")
                 return True
@@ -226,8 +231,8 @@ class UnifiedLoRADataPipeline:
         
         required_files = [
             self.manifest_path,
-            os.path.join(self.chatml_dir, "train_samples.json"),
-            os.path.join(self.chatml_dir, "val_samples.json"),
+            os.path.join(self.chatml_dir, "train_chatml_samples.json"),
+            os.path.join(self.chatml_dir, "val_chatml_samples.json"),
             os.path.join(self.chatml_dir, "processing_stats.json")
         ]
         
