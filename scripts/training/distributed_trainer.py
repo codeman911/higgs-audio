@@ -117,10 +117,11 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
     Uses the same logic as test_inference_final.py and ZeroShotDataProcessor.
     """
     
-    def __init__(self, data_file, audio_tokenizer, text_tokenizer, max_length=2048):
+    def __init__(self, data_file, audio_tokenizer, text_tokenizer, max_length=2048, require_reference_audio: bool = True):
         self.audio_tokenizer = audio_tokenizer
         self.text_tokenizer = text_tokenizer
         self.max_length = max_length
+        self.require_reference_audio = require_reference_audio
         
         # Load ChatML samples
         with open(data_file, 'r', encoding='utf-8') as f:
@@ -133,8 +134,32 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
     
     def __getitem__(self, idx):
         """Process sample exactly like inference pipeline"""
-        sample = self.samples[idx]
-        messages = sample['messages']
+        # Optionally resample until a sample has both user ref audio and assistant target audio
+        attempts = 0
+        while True:
+            sample = self.samples[idx]
+            messages = sample['messages']
+            # Fast check for presence of audio entries
+            has_user_audio = False
+            has_assistant_audio = False
+            for m in messages:
+                role = m.get('role')
+                content = m.get('content')
+                if isinstance(content, list):
+                    for it in content:
+                        if isinstance(it, dict) and it.get('type') == 'audio':
+                            if role == 'user':
+                                has_user_audio = True
+                            elif role == 'assistant':
+                                has_assistant_audio = True
+            if not self.require_reference_audio or (has_user_audio and has_assistant_audio):
+                break
+            # Resample
+            attempts += 1
+            if attempts > 5:
+                # Give up and use current sample to avoid infinite loop
+                break
+            idx = (idx + 1) % len(self.samples)
         
         # 1) Build raw ChatML-like message dicts and collect audio tokens
         # IMPORTANT: prepare_chatml_sample expects a dict-structured ChatML sample,
@@ -415,12 +440,14 @@ class HiggsAudioDistributedTrainer:
             train_path,
             audio_tokenizer,
             tokenizer,
+            require_reference_audio=True
         )
         
         val_dataset = UnifiedChatMLDataset(
             val_path,
             audio_tokenizer,
             tokenizer,
+            require_reference_audio=True
         )
         
         # Create data collator with correct signature
