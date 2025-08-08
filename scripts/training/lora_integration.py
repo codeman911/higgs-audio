@@ -6,7 +6,7 @@ Integrates PEFT LoRA adapters with the existing Higgs-Audio architecture.
 
 import torch
 import torch.nn as nn
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
 from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 from peft.tuners.lora import LoraLayer
 import re
@@ -306,7 +306,8 @@ class HiggsAudioLoRATrainer:
 def create_lora_model(
     model_path: str,
     lora_config: HiggsAudioLoRAConfig,
-    device: str = "cuda"
+    device: str = "cuda",
+    model_config: Optional[Any] = None
 ) -> HiggsAudioLoRATrainer:
     """Create a LoRA-enabled Higgs-Audio model"""
     
@@ -317,6 +318,24 @@ def create_lora_model(
         torch_dtype=torch.bfloat16,
         device_map="auto" if device == "cuda" else None
     )
+    
+    # Apply corrected model configuration if provided
+    if model_config is not None:
+        print(f"Applying corrected model configuration...")
+        print(f"  • Original audio_num_codebooks: {model.config.audio_num_codebooks}")
+        print(f"  • Corrected audio_num_codebooks: {model_config.audio_num_codebooks}")
+        
+        # Update the model's configuration to match the corrected config
+        model.config.audio_num_codebooks = model_config.audio_num_codebooks
+        model.audio_num_codebooks = model_config.audio_num_codebooks
+        
+        # Update other relevant configuration parameters
+        for attr in ['audio_in_token_idx', 'audio_out_token_idx', 'audio_stream_bos_id', 
+                     'audio_stream_eos_id', 'use_delay_pattern', 'encode_whisper_embed']:
+            if hasattr(model_config, attr):
+                setattr(model.config, attr, getattr(model_config, attr))
+        
+        print(f"Model configuration updated successfully!")
     
     # Load tokenizers
     from transformers import AutoTokenizer
