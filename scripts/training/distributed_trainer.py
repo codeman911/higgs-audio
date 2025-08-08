@@ -179,15 +179,23 @@ class ArabicEnglishDataset(torch.utils.data.Dataset):
             audio_waveforms = []
             audio_ids_list = []
             audio_sample_rates = []
-            audio_waveforms_start = [0]
-            audio_ids_start = [0]
+            audio_waveforms_start = []
+            audio_ids_start = []
+            
+            current_waveform_pos = 0
+            current_audio_pos = 0
             
             for audio_content in audio_contents:
+                # Always add start positions for each audio (even if loading fails)
+                audio_waveforms_start.append(current_waveform_pos)
+                audio_ids_start.append(current_audio_pos)
+                
                 try:
                     if audio_content.raw_audio:
                         # Load audio from raw_audio path
                         waveform, sr = librosa.load(audio_content.raw_audio, sr=16000)
                         audio_waveforms.extend(waveform.tolist())
+                        current_waveform_pos += len(waveform)
                         audio_sample_rates.append(sr)
                         
                         # Tokenize audio
@@ -197,16 +205,26 @@ class ArabicEnglishDataset(torch.utils.data.Dataset):
                             if len(audio_tokens.shape) == 1:
                                 audio_tokens = audio_tokens.unsqueeze(0)  # Add codebook dim
                             audio_ids_list.append(audio_tokens)
-                            
-                            # Update start indices
-                            if len(audio_waveforms_start) > 1:
-                                audio_waveforms_start.append(len(audio_waveforms))
-                            if len(audio_ids_start) > 1:
-                                audio_ids_start.append(audio_ids_start[-1] + audio_tokens.shape[1])
-                        
+                            current_audio_pos += audio_tokens.shape[1]
+                        else:
+                            # Add empty audio tokens to maintain alignment
+                            empty_tokens = torch.zeros((4, 1), dtype=torch.long)  # 4 codebooks, 1 token
+                            audio_ids_list.append(empty_tokens)
+                            current_audio_pos += 1
+                    else:
+                        # No audio file - add empty placeholders
+                        audio_sample_rates.append(16000)  # Default sample rate
+                        empty_tokens = torch.zeros((4, 1), dtype=torch.long)
+                        audio_ids_list.append(empty_tokens)
+                        current_audio_pos += 1
+                
                 except Exception as e:
                     logging.warning(f"Failed to process audio in sample {idx}: {e}")
-                    continue
+                    # Add empty placeholders even on error to maintain alignment
+                    audio_sample_rates.append(16000)
+                    empty_tokens = torch.zeros((4, 1), dtype=torch.long)
+                    audio_ids_list.append(empty_tokens)
+                    current_audio_pos += 1
             
             # Concatenate audio data
             if audio_ids_list:
@@ -218,12 +236,6 @@ class ArabicEnglishDataset(torch.utils.data.Dataset):
                 audio_waveforms_concat = torch.tensor(audio_waveforms, dtype=torch.float32)
             else:
                 audio_waveforms_concat = torch.empty(0, dtype=torch.float32)
-            
-            # Remove the last start index (it's the end position)
-            if len(audio_waveforms_start) > 1:
-                audio_waveforms_start = audio_waveforms_start[:-1]
-            if len(audio_ids_start) > 1:
-                audio_ids_start = audio_ids_start[:-1]
             
             # Create ChatMLDatasetSample
             dataset_sample = ChatMLDatasetSample(
