@@ -136,103 +136,92 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
         sample = self.samples[idx]
         messages = sample['messages']
         
-        # Convert to ChatML format exactly like inference
-        chatml_sample = self._create_chatml_sample(messages)
-        return chatml_sample
-    
-    def _create_chatml_sample(self, messages):
-        """Create ChatML sample using same logic as inference"""
-        # Process messages exactly like test_inference_final.py
-        processed_messages = []
-        reference_audio_ids = []
-        target_audio_ids = []
-        
+        # 1) Build Message/TextContent/AudioContent objects and collect audio tokens
+        processed_messages: list[Message] = []
+        reference_audio_ids: list[torch.Tensor] = []
+        target_audio_ids: list[torch.Tensor] = []
+
         for message in messages:
-            role = message['role']
-            content = message['content']
-            
+            role = message["role"]
+            content = message["content"]
+
             if isinstance(content, str):
-                # Simple text content
                 processed_messages.append(Message(role=role, content=content))
-            elif isinstance(content, list):
-                # Mixed content (text + audio)
-                processed_content = []
-                
+                continue
+
+            if isinstance(content, list):
+                proc_content = []
                 for item in content:
-                    if item['type'] == 'text':
-                        processed_content.append(TextContent(text=item['text']))
-                    elif item['type'] == 'audio':
-                        audio_url = item['audio_url']
-                        
-                        # Load and tokenize audio exactly like inference
+                    if item.get("type") == "text":
+                        proc_content.append(TextContent(text=item["text"]))
+                    elif item.get("type") == "audio":
+                        audio_url = item["audio_url"]
                         try:
                             if os.path.exists(audio_url):
-                                # Tokenize audio using the same method as inference
-                                audio_tokens = self.audio_tokenizer.encode(audio_url)
-                                
-                                # Separate reference vs target audio
-                                if role == 'user':
-                                    # Reference audio for conditioning
+                                audio_tokens = self.audio_tokenizer.encode(audio_url)  # (num_codebooks, seq_len)
+                                if role == "user":
                                     reference_audio_ids.append(audio_tokens)
-                                elif role == 'assistant':
-                                    # Target audio for prediction
+                                elif role == "assistant":
                                     target_audio_ids.append(audio_tokens)
-                                
-                                processed_content.append(AudioContent(
-                                    audio_url=audio_url,
-                                    raw_audio=audio_url,
-                                    duration=None
-                                ))
+                                proc_content.append(
+                                    AudioContent(audio_url=audio_url, raw_audio=audio_url, duration=None)
+                                )
                             else:
                                 print(f"Warning: Audio file not found: {audio_url}")
-                                # Add empty audio content
-                                processed_content.append(AudioContent(
-                                    audio_url=audio_url,
-                                    raw_audio="",
-                                    duration=0.0
-                                ))
+                                proc_content.append(
+                                    AudioContent(audio_url=audio_url, raw_audio="", duration=0.0)
+                                )
                         except Exception as e:
                             print(f"Error processing audio {audio_url}: {e}")
-                            # Add empty audio content
-                            processed_content.append(AudioContent(
-                                audio_url=audio_url,
-                                raw_audio="",
-                                duration=0.0
-                            ))
-                
-                processed_messages.append(Message(role=role, content=processed_content))
-        
-        # Concatenate audio tokens exactly like inference
-        reference_audio_concat = None
-        target_audio_concat = None
-        
+                            proc_content.append(
+                                AudioContent(audio_url=audio_url, raw_audio="", duration=0.0)
+                            )
+                processed_messages.append(Message(role=role, content=proc_content))
+
+        # 2) Use prepare_chatml_sample to create proper text input/labels with <AUDIO>/<AUDIO_OUT> placeholders
+        chatml_like = {
+            "messages": processed_messages,
+            "speaker": None,
+            "start_index": None,
+        }
+        input_tokens, label_tokens, _audio_contents, _speaker_id = prepare_chatml_sample(chatml_like, self.text_tokenizer)
+
+        # 3) Concatenate audio tokens
         if reference_audio_ids:
-            reference_audio_concat = torch.cat([audio.cpu() for audio in reference_audio_ids], dim=1)
-        
-        if target_audio_ids:
-            target_audio_concat = torch.cat([audio.cpu() for audio in target_audio_ids], dim=1)
-        
-        # Create dummy tensors for required fields (will be processed by collator)
-        dummy_input_ids = torch.tensor([1, 2, 3], dtype=torch.long)  # Placeholder
-        dummy_label_ids = torch.tensor([-100, -100, -100], dtype=torch.long)  # Placeholder
-        
-        # Set default values for audio fields if None
-        if reference_audio_concat is None:
+            reference_audio_concat = torch.cat([a.cpu() for a in reference_audio_ids], dim=1)
+        else:
             reference_audio_concat = torch.empty((8, 0), dtype=torch.long)
-        if target_audio_concat is None:
+
+        if target_audio_ids:
+            target_audio_concat = torch.cat([a.cpu() for a in target_audio_ids], dim=1)
+        else:
             target_audio_concat = torch.empty((8, 0), dtype=torch.long)
-        
-        # Create ChatMLDatasetSample with correct constructor parameters
+
+        # Build starts aligned to concatenation order (reference first, then target) —
+        # they are mainly used by utility methods; the trainer provides precise starts via the collate fn.
+        total_segments = (len(reference_audio_ids) + len(target_audio_ids))
+        audio_ids_start = torch.tensor([], dtype=torch.long)
+        if total_segments > 0:
+            starts = []
+            pos = 0
+            for a in reference_audio_ids:
+                starts.append(pos)
+                pos += a.shape[1]
+            for a in target_audio_ids:
+                starts.append(pos)
+                pos += a.shape[1]
+            audio_ids_start = torch.tensor(starts, dtype=torch.long)
+
         return ChatMLDatasetSample(
-            input_ids=dummy_input_ids,
-            label_ids=dummy_label_ids,
-            audio_ids_concat=reference_audio_concat,  # Reference audio for conditioning
-            audio_ids_start=torch.tensor([0], dtype=torch.long),
+            input_ids=torch.tensor(input_tokens, dtype=torch.long),
+            label_ids=torch.tensor(label_tokens, dtype=torch.long),
+            audio_ids_concat=reference_audio_concat,
+            audio_ids_start=audio_ids_start,
             audio_waveforms_concat=torch.empty(0, dtype=torch.float32),
-            audio_waveforms_start=torch.tensor([0], dtype=torch.long),
-            audio_sample_rate=torch.tensor([16000.0], dtype=torch.float32),
-            audio_speaker_indices=torch.tensor([0], dtype=torch.long),
-            audio_label_ids_concat=target_audio_concat,  # Target audio for loss
+            audio_waveforms_start=torch.tensor([], dtype=torch.long),
+            audio_sample_rate=torch.tensor([], dtype=torch.float32),
+            audio_speaker_indices=torch.tensor([], dtype=torch.long),
+            audio_label_ids_concat=target_audio_concat,
         )
 
 
