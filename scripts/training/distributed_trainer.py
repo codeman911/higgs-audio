@@ -217,13 +217,26 @@ class HiggsAudioDistributedTrainer:
         
     def _setup_logging(self):
         """Setup logging configuration"""
+        # Ensure output directory exists before creating file handler
+        try:
+            os.makedirs(self.config.output_dir, exist_ok=True)
+        except Exception as e:
+            # We'll still set up console logging below
+            pass
+        
+        handlers = [logging.StreamHandler()]
+        # Try to attach a file handler; if it fails, continue with stream only
+        try:
+            log_path = os.path.join(self.config.output_dir, "training.log")
+            handlers.insert(0, logging.FileHandler(log_path))
+        except Exception as e:
+            # Fallback silently; console logs will still work
+            pass
+        
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(f"{self.config.output_dir}/training.log"),
-                logging.StreamHandler()
-            ]
+            handlers=handlers,
         )
         self.logger = logging.getLogger(__name__)
         
