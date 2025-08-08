@@ -271,10 +271,28 @@ class HiggsAudioLoRATrainer:
             audio_logits = outputs.audio_logits
             
             text_labels = batch.get('labels')
+            # CRITICAL FIX: Get target audio tokens from correct batch key
             audio_labels = batch.get('label_audio_ids')  # Target audio tokens
+            if audio_labels is None:
+                # Fallback to check other possible keys
+                audio_labels = batch.get('audio_labels')
+                if audio_labels is None:
+                    audio_labels = batch.get('audio_out_ids')  # Last resort
             
             text_loss = 0.0
             audio_loss = 0.0
+            
+            # Debug logging
+            if hasattr(self, 'step_count'):
+                self.step_count += 1
+            else:
+                self.step_count = 1
+                
+            if self.step_count % 20 == 0:
+                print(f"DEBUG Step {self.step_count}:")
+                print(f"  text_labels shape: {text_labels.shape if text_labels is not None else 'None'}")
+                print(f"  audio_labels shape: {audio_labels.shape if audio_labels is not None else 'None'}")
+                print(f"  audio_logits shape: {audio_logits.shape if audio_logits is not None else 'None'}")
             
             # CRITICAL: Add NaN/Inf detection for model outputs
             if text_logits is not None:
@@ -326,14 +344,26 @@ class HiggsAudioLoRATrainer:
                         print(f"WARNING: Invalid text_loss detected")
                         text_loss = torch.tensor(0.0, device=text_loss.device, requires_grad=True)
             
-            # Audio generation loss (multi-codebook)
-            if audio_labels is not None and audio_logits is not None:
+            # CRITICAL FIX: Audio generation loss (multi-codebook) - ONLY on target audio
+            if audio_labels is not None and audio_logits is not None and audio_labels.numel() > 0:
+                if self.step_count % 20 == 0:
+                    print(f"  Processing audio loss with {audio_labels.numel()} audio label tokens")
+                
                 valid_codebook_count = 0
                 
-                # Handle tensor dimensions
+                # Handle tensor dimensions - audio_labels should be (num_codebooks, seq_len)
                 if audio_labels.dim() == 2:
-                    audio_labels = audio_labels.unsqueeze(0)
-                elif audio_labels.dim() != 3:
+                    # Already correct shape (num_codebooks, seq_len)
+                    pass
+                elif audio_labels.dim() == 3:
+                    # Remove batch dimension if present (batch_size, num_codebooks, seq_len)
+                    if audio_labels.shape[0] == 1:
+                        audio_labels = audio_labels.squeeze(0)
+                    else:
+                        print(f"WARNING: Unexpected audio_labels batch dimension: {audio_labels.shape}")
+                        # Take first batch item
+                        audio_labels = audio_labels[0]
+                else:
                     print(f"WARNING: Unexpected audio_labels shape: {audio_labels.shape}")
                     return {
                         'text_loss': text_loss,
@@ -341,12 +371,17 @@ class HiggsAudioLoRATrainer:
                         'combined_loss': text_loss + torch.tensor(1e-6, device=audio_labels.device, requires_grad=True)
                     }
                 
+                # Handle audio_logits dimensions
                 if audio_logits is not None:
                     if audio_logits.dim() == 3:
-                        audio_logits = audio_logits.unsqueeze(0)
+                        # (num_codebooks, seq_len, vocab_size) - correct
+                        pass
                     elif audio_logits.dim() == 4:
-                        if audio_logits.shape[1] != audio_labels.shape[1]:
-                            audio_logits = audio_logits.transpose(1, 2)
+                        # (batch_size, num_codebooks, seq_len, vocab_size)
+                        if audio_logits.shape[0] == 1:
+                            audio_logits = audio_logits.squeeze(0)
+                        else:
+                            audio_logits = audio_logits[0]  # Take first batch
                     else:
                         print(f"WARNING: Unexpected audio_logits shape: {audio_logits.shape}")
                         return {
@@ -355,27 +390,23 @@ class HiggsAudioLoRATrainer:
                             'combined_loss': text_loss + torch.tensor(1e-6, device=audio_logits.device, requires_grad=True)
                         }
                 
-                num_codebooks = audio_labels.shape[0]
+                num_codebooks = min(audio_labels.shape[0], audio_logits.shape[0])
                 
                 for codebook_idx in range(num_codebooks):
                     try:
-                        if audio_logits.dim() == 4:
-                            codebook_logits = audio_logits[:, codebook_idx, :, :]
-                        else:
-                            codebook_logits = audio_logits[..., codebook_idx, :]
-                            
-                        codebook_labels = audio_labels[:, codebook_idx, :]
+                        codebook_logits = audio_logits[codebook_idx]  # (seq_len, vocab_size)
+                        codebook_labels = audio_labels[codebook_idx]  # (seq_len,)
                         
-                        if codebook_logits.shape[1] != codebook_labels.shape[1]:
-                            min_seq_len = min(codebook_logits.shape[1], codebook_labels.shape[1])
-                            codebook_logits = codebook_logits[:, :min_seq_len, :]
-                            codebook_labels = codebook_labels[:, :min_seq_len]
+                        if codebook_logits.shape[0] != codebook_labels.shape[0]:
+                            min_seq_len = min(codebook_logits.shape[0], codebook_labels.shape[0])
+                            codebook_logits = codebook_logits[:min_seq_len]
+                            codebook_labels = codebook_labels[:min_seq_len]
                         
                         valid_mask = codebook_labels != -100
                         if valid_mask.sum() > 0:
                             codebook_loss = nn.functional.cross_entropy(
-                                codebook_logits.contiguous().view(-1, codebook_logits.size(-1)),
-                                codebook_labels.contiguous().view(-1),
+                                codebook_logits,
+                                codebook_labels,
                                 ignore_index=-100,
                                 reduction='mean'
                             )
@@ -393,9 +424,16 @@ class HiggsAudioLoRATrainer:
                 
                 if valid_codebook_count > 0:
                     audio_loss = audio_loss / valid_codebook_count
+                    if self.step_count % 20 == 0:
+                        print(f"  Computed audio_loss: {audio_loss.item():.4f} from {valid_codebook_count} codebooks")
+                else:
+                    if self.step_count % 20 == 0:
+                        print(f"  No valid audio tokens found for loss computation")
+            else:
+                if self.step_count % 20 == 0:
+                    print(f"  No audio labels or logits available for loss computation")
         
             # Combine losses with adaptive weighting to prevent one modality from dominating
-            # Use adaptive weighting based on loss magnitudes to ensure balanced training
             if text_loss > 0 and audio_loss > 0:
                 # Normalize losses to similar scales before combining
                 text_weight = 1.0

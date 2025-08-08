@@ -569,12 +569,37 @@ class HiggsAudioDistributedTrainer:
         train_sampler = DistributedSampler(train_dataset) if self.accelerator.num_processes > 1 else None
         val_sampler = DistributedSampler(val_dataset, shuffle=False) if self.accelerator.num_processes > 1 else None
         
+        def custom_collate_fn(batch):
+            """Custom collate function to handle target audio tokens correctly"""
+            # Use the standard collator first
+            collated_batch = collator(batch)
+            
+            # Extract target audio tokens from the original batch samples
+            target_audio_tokens = []
+            for sample in batch:
+                if hasattr(sample, 'audio_label_ids_concat') and sample.audio_label_ids_concat is not None:
+                    if sample.audio_label_ids_concat.numel() > 0:
+                        target_audio_tokens.append(sample.audio_label_ids_concat)
+            
+            # Add target audio tokens to the collated batch
+            if target_audio_tokens:
+                # Concatenate all target audio tokens
+                label_audio_ids = torch.cat(target_audio_tokens, dim=1)
+                # Convert to dict if needed
+                if hasattr(collated_batch, '__dict__'):
+                    collated_batch.label_audio_ids = label_audio_ids
+                else:
+                    # If it's already a dict, add the key
+                    collated_batch['label_audio_ids'] = label_audio_ids
+            
+            return collated_batch
+        
         train_dataloader = DataLoader(
             train_dataset,
             batch_size=self.config.batch_size_per_device,
             sampler=train_sampler,
             shuffle=(train_sampler is None),
-            collate_fn=collator,
+            collate_fn=custom_collate_fn,  # Use custom collate function
             num_workers=self.config.num_workers,
             pin_memory=True
         )
