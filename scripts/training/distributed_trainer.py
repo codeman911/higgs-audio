@@ -674,6 +674,19 @@ class HiggsAudioDistributedTrainer:
                     if step == 0:
                         self.logger.info(f"Calling model type: {type(actual_model)}")
                     
+                    # CRITICAL FIX: Ensure all model inputs are on the same device as the model
+                    model_device = next(actual_model.parameters()).device
+                    model_inputs = {
+                        k: v.to(model_device) if torch.is_tensor(v) else v 
+                        for k, v in model_inputs.items()
+                    }
+                    
+                    # Also ensure labels are on the correct device
+                    if torch.is_tensor(labels):
+                        labels = labels.to(model_device)
+                    if torch.is_tensor(audio_labels):
+                        audio_labels = audio_labels.to(model_device)
+                    
                     # Call the actual model forward with clean inputs (no labels)
                     outputs = actual_model(**model_inputs)
                 
@@ -756,6 +769,19 @@ class HiggsAudioDistributedTrainer:
                     actual_model = model.module
                 else:
                     actual_model = model
+                
+                # CRITICAL FIX: Ensure all model inputs are on the same device as the model
+                model_device = next(actual_model.parameters()).device
+                model_inputs = {
+                    k: v.to(model_device) if torch.is_tensor(v) else v 
+                    for k, v in model_inputs.items()
+                }
+                
+                # Also ensure labels are on the correct device
+                if torch.is_tensor(labels):
+                    labels = labels.to(model_device)
+                if torch.is_tensor(audio_labels):
+                    audio_labels = audio_labels.to(model_device)
                 
                 # Call the actual model forward with clean inputs (no labels)
                 outputs = actual_model(**model_inputs)
