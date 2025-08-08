@@ -390,8 +390,16 @@ class HiggsAudioLoRATrainer:
             if valid_codebook_count > 0:
                 audio_loss = audio_loss / valid_codebook_count
         
-        # Combine losses with weighting
-        combined_loss = text_loss + (audio_loss * 2.0)
+        # Combine losses with adaptive weighting to prevent one modality from dominating
+        # Use adaptive weighting based on loss magnitudes to ensure balanced training
+        if text_loss > 0 and audio_loss > 0:
+            # Normalize losses to similar scales before combining
+            text_weight = 1.0
+            audio_weight = min(text_loss.item() / max(audio_loss.item(), 1e-6), 2.0)  # Cap at 2.0
+            combined_loss = text_loss * text_weight + audio_loss * audio_weight
+        else:
+            # Fallback for edge cases
+            combined_loss = text_loss + audio_loss
         
         # Final validation
         if torch.isnan(combined_loss) or torch.isinf(combined_loss):
