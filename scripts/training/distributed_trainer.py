@@ -614,8 +614,24 @@ class HiggsAudioDistributedTrainer:
                     if step == 0:
                         self.logger.info(f"Final model inputs: {list(model_inputs.keys())}")
                     
-                    # Call forward directly to bypass any middleware transformation
-                    outputs = model.forward(**model_inputs)
+                    # ULTIMATE FIX: Access the underlying HiggsAudioModel directly
+                    # The 'model' object is wrapped by PEFT and Accelerate, causing argument injection
+                    # We need to bypass ALL wrappers and call the base model directly
+                    if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
+                        # PEFT wrapped model: model -> base_model -> model (actual HiggsAudioModel)
+                        base_model = model.base_model.model
+                    elif hasattr(model, 'module'):
+                        # Accelerate wrapped model: model -> module (actual HiggsAudioModel)
+                        base_model = model.module
+                    else:
+                        # Fallback: use the model directly
+                        base_model = model
+                    
+                    if step == 0:
+                        self.logger.info(f"Using base model type: {type(base_model)}")
+                    
+                    # Call the actual HiggsAudioModel.forward() directly, bypassing all wrappers
+                    outputs = base_model.forward(**model_inputs)
                 
                 loss = lora_trainer.compute_loss({"labels": labels, "audio_labels": audio_labels}, outputs)
                 train_loss += loss.item()
@@ -689,8 +705,21 @@ class HiggsAudioDistributedTrainer:
                 # Remove None values
                 model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                 
-                # Call forward directly to bypass any middleware transformation
-                outputs = model.forward(**model_inputs)
+                # ULTIMATE FIX: Access the underlying HiggsAudioModel directly
+                # The 'model' object is wrapped by PEFT and Accelerate, causing argument injection
+                # We need to bypass ALL wrappers and call the base model directly
+                if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
+                    # PEFT wrapped model: model -> base_model -> model (actual HiggsAudioModel)
+                    base_model = model.base_model.model
+                elif hasattr(model, 'module'):
+                    # Accelerate wrapped model: model -> module (actual HiggsAudioModel)
+                    base_model = model.module
+                else:
+                    # Fallback: use the model directly
+                    base_model = model
+                
+                # Call the actual HiggsAudioModel.forward() directly, bypassing all wrappers
+                outputs = base_model.forward(**model_inputs)
                 
                 # Compute loss using LoRA trainer with extracted labels
                 loss_batch = {"labels": labels, "audio_labels": audio_labels}
