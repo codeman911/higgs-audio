@@ -241,9 +241,16 @@ class HiggsAudioLoRATrainer:
     def prepare_for_training(self):
         """Prepare model for training"""
         
-        # Enable gradient checkpointing for memory efficiency
-        self.peft_model.gradient_checkpointing_enable()
-        
+        # Try to enable gradient checkpointing for memory efficiency (optional)
+        gc_enable = getattr(self.peft_model, "gradient_checkpointing_enable", None)
+        if callable(gc_enable):
+            try:
+                gc_enable()
+            except Exception as e:
+                print(f"[WARN] Gradient checkpointing not enabled: {e}. Continuing without it.")
+        else:
+            print("[WARN] Gradient checkpointing API not found on model. Continuing without it.")
+         
         # Print trainable parameters
         param_stats = self.lora_wrapper.get_trainable_parameters()
         print(f"Trainable parameters: {param_stats['trainable_parameters']:,}")
