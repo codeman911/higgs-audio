@@ -574,7 +574,7 @@ class HiggsAudioDistributedTrainer:
             
             for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch + 1}")):
                 with self.accelerator.accumulate(model):
-                    # Convert batch to dict and separate model inputs from labels
+                    # Convert batch to dict - HiggsAudioModel DOES accept label_ids and label_audio_ids
                     from dataclasses import asdict
                     batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
                     
@@ -582,24 +582,18 @@ class HiggsAudioDistributedTrainer:
                     if step == 0:
                         self.logger.info(f"Batch keys: {list(batch_dict.keys())}")
                     
-                    # Extract ALL label-related keys for loss computation
-                    labels = batch_dict.pop("label_ids", None)
-                    audio_labels = batch_dict.pop("label_audio_ids", None)
-                    
-                    # Remove any other label-related keys that might cause issues
-                    batch_dict.pop("labels", None)  # Remove if present
-                    batch_dict.pop("audio_labels", None)  # Remove if present
-                    
-                    # Debug: Print remaining keys after label extraction
-                    if step == 0:
-                        self.logger.info(f"Model input keys: {list(batch_dict.keys())}")
-                     
-                    # Forward pass (model doesn't accept labels)
+                    # Forward pass with labels - let model compute loss internally
                     outputs = model(**batch_dict)
                     
-                    # Compute loss
-                    loss_batch = {"labels": labels, "audio_labels": audio_labels}
-                    loss = lora_trainer.compute_loss(loss_batch, outputs)
+                    # Extract loss from model outputs (HiggsAudio returns loss when labels provided)
+                    if hasattr(outputs, 'loss') and outputs.loss is not None:
+                        loss = outputs.loss
+                    else:
+                        # Fallback: compute loss using LoRA trainer
+                        labels = batch_dict.get("label_ids", None)
+                        audio_labels = batch_dict.get("label_audio_ids", None)
+                        loss_batch = {"labels": labels, "audio_labels": audio_labels}
+                        loss = lora_trainer.compute_loss(loss_batch, outputs)
                     
                     # Backward pass
                     self.accelerator.backward(loss)
@@ -660,16 +654,18 @@ class HiggsAudioDistributedTrainer:
                 from dataclasses import asdict
                 batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
                 
-                # Extract labels for loss computation
-                labels = batch_dict.pop("label_ids", None)
-                audio_labels = batch_dict.pop("label_audio_ids", None)
-                
                 # Forward pass
                 outputs = model(**batch_dict)
                 
-                # Compute loss
-                loss_batch = {"labels": labels, "audio_labels": audio_labels}
-                loss = lora_trainer.compute_loss(loss_batch, outputs)
+                # Extract loss from model outputs (HiggsAudio returns loss when labels provided)
+                if hasattr(outputs, 'loss') and outputs.loss is not None:
+                    loss = outputs.loss
+                else:
+                    # Fallback: compute loss using LoRA trainer
+                    labels = batch_dict.get("label_ids", None)
+                    audio_labels = batch_dict.get("label_audio_ids", None)
+                    loss_batch = {"labels": labels, "audio_labels": audio_labels}
+                    loss = lora_trainer.compute_loss(loss_batch, outputs)
                 val_loss += loss.item()
                 num_batches += 1
         
