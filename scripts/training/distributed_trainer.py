@@ -574,38 +574,31 @@ class HiggsAudioDistributedTrainer:
             
             for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch + 1}")):
                 with self.accelerator.accumulate(model):
-                    # Convert batch to dict - HiggsAudioModel DOES accept label_ids and label_audio_ids
+                    # Convert batch to dict
                     from dataclasses import asdict
                     batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
                     
                     # Debug: Print batch keys to understand what we're getting
                     if step == 0:
-                        self.logger.info(f"Batch keys: {list(batch_dict.keys())}")
+                        self.logger.info(f"Original batch keys: {list(batch_dict.keys())}")
                     
-                    # Forward pass with labels - let model compute loss internally
+                    # CRITICAL: Extract labels BEFORE model forward to prevent PEFT/Accelerate transformation
+                    # The issue is that PEFT/Accelerate middleware transforms label_ids -> labels
+                    # but HiggsAudioModel expects label_ids, not labels
+                    labels = batch_dict.pop("label_ids", None)
+                    audio_labels = batch_dict.pop("label_audio_ids", None)
+                    
+                    # Debug: Print model input keys after label extraction
+                    if step == 0:
+                        self.logger.info(f"Model input keys (no labels): {list(batch_dict.keys())}")
+                        self.logger.info(f"Extracted labels shapes: labels={labels.shape if labels is not None else None}, audio_labels={audio_labels.shape if audio_labels is not None else None}")
+                    
+                    # Forward pass WITHOUT labels (prevents middleware transformation)
                     outputs = model(**batch_dict)
                     
-                    # Extract loss from model outputs (HiggsAudio returns loss when labels provided)
-                    if hasattr(outputs, 'loss') and outputs.loss is not None:
-                        loss = outputs.loss
-                    else:
-                        # Fallback: compute loss using LoRA trainer
-                        labels = batch_dict.get("label_ids", None)
-                        audio_labels = batch_dict.get("label_audio_ids", None)
-                        loss_batch = {"labels": labels, "audio_labels": audio_labels}
-                        loss = lora_trainer.compute_loss(loss_batch, outputs)
-                    
-                    # Backward pass
-                    self.accelerator.backward(loss)
-                    
-                    # Gradient clipping
-                    if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(model.parameters(), self.config.max_grad_norm)
-                    
-                    # Optimizer step
-                    optimizer.step()
-                    scheduler.step()
-                    optimizer.zero_grad()
+                    # Compute loss using LoRA trainer with extracted labels
+                    loss_batch = {"labels": labels, "audio_labels": audio_labels}
+                    loss = lora_trainer.compute_loss(loss_batch, outputs)
                 
                 train_loss += loss.item()
                 global_step += 1
@@ -654,18 +647,18 @@ class HiggsAudioDistributedTrainer:
                 from dataclasses import asdict
                 batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
                 
-                # Forward pass
+                # CRITICAL: Extract labels BEFORE model forward to prevent PEFT/Accelerate transformation
+                # The issue is that PEFT/Accelerate middleware transforms label_ids -> labels
+                # but HiggsAudioModel expects label_ids, not labels
+                labels = batch_dict.pop("label_ids", None)
+                audio_labels = batch_dict.pop("label_audio_ids", None)
+                
+                # Forward pass WITHOUT labels (prevents middleware transformation)
                 outputs = model(**batch_dict)
                 
-                # Extract loss from model outputs (HiggsAudio returns loss when labels provided)
-                if hasattr(outputs, 'loss') and outputs.loss is not None:
-                    loss = outputs.loss
-                else:
-                    # Fallback: compute loss using LoRA trainer
-                    labels = batch_dict.get("label_ids", None)
-                    audio_labels = batch_dict.get("label_audio_ids", None)
-                    loss_batch = {"labels": labels, "audio_labels": audio_labels}
-                    loss = lora_trainer.compute_loss(loss_batch, outputs)
+                # Compute loss using LoRA trainer with extracted labels
+                loss_batch = {"labels": labels, "audio_labels": audio_labels}
+                loss = lora_trainer.compute_loss(loss_batch, outputs)
                 val_loss += loss.item()
                 num_batches += 1
         
