@@ -144,7 +144,7 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
     Uses the same logic as test_inference_final.py and ZeroShotDataProcessor.
     """
     
-    def __init__(self, data_file, audio_tokenizer, text_tokenizer, max_length=2048, require_reference_audio: bool = True, data_file_path: str | None = None, audio_base_dir: str | None = None):
+    def __init__(self, data_file, audio_tokenizer, text_tokenizer, max_length=2048, require_reference_audio: bool = True, data_file_path: str | None = None, audio_base_dir: str | None = None, debug_audio: bool = False, debug_warn_limit: int = 50):
         self.audio_tokenizer = audio_tokenizer
         self.text_tokenizer = text_tokenizer
         self.max_length = max_length
@@ -153,6 +153,10 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
         self.data_file_path = data_file_path
         self.dataset_dir = os.path.dirname(data_file_path) if data_file_path else os.getcwd()
         self.audio_base_dir = audio_base_dir or self.dataset_dir
+        # Debug controls
+        self.debug_audio = debug_audio
+        self._warn_limit = max(0, int(debug_warn_limit))
+        self._warn_count = 0
         
         # Load ChatML samples
         with open(data_file, 'r', encoding='utf-8') as f:
@@ -232,10 +236,14 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
                                 proc_content.append({"type": "audio", "audio_url": raw_audio_url})
                             else:
                                 # Keep placeholder for ChatML parity even if file missing, but log clearly
-                                print(f"[WARN] Audio file not found: raw='{raw_audio_url}'. Tried CWD/dataset_dir/audio_base_dir. Placeholders will exist but no tokens.")
+                                if self.debug_audio and self._warn_count < self._warn_limit:
+                                    print(f"[WARN] Audio file not found: raw='{raw_audio_url}'. Tried CWD/dataset_dir/audio_base_dir. Placeholders will exist but no tokens.")
+                                    self._warn_count += 1
                                 proc_content.append({"type": "audio", "audio_url": raw_audio_url})
                         except Exception as e:
-                            print(f"[ERROR] Tokenizing audio failed: raw='{raw_audio_url}' resolved='{resolved_path}'. Error: {e}")
+                            if self.debug_audio and self._warn_count < self._warn_limit:
+                                print(f"[ERROR] Tokenizing audio failed: raw='{raw_audio_url}' resolved='{resolved_path}'. Error: {e}")
+                                self._warn_count += 1
                             proc_content.append({"type": "audio", "audio_url": raw_audio_url})
                 processed_messages.append({"role": role, "content": proc_content})
 
@@ -481,7 +489,9 @@ class HiggsAudioDistributedTrainer:
             audio_tokenizer,
             tokenizer,
             require_reference_audio=True,
-            data_file_path=train_path
+            data_file_path=train_path,
+            debug_audio=self.config.debug_audio_flow,
+            debug_warn_limit=self.config.debug_audio_warn_limit,
         )
         
         val_dataset = UnifiedChatMLDataset(
@@ -489,7 +499,9 @@ class HiggsAudioDistributedTrainer:
             audio_tokenizer,
             tokenizer,
             require_reference_audio=True,
-            data_file_path=val_path
+            data_file_path=val_path,
+            debug_audio=self.config.debug_audio_flow,
+            debug_warn_limit=self.config.debug_audio_warn_limit,
         )
         
         # Create data collator with correct signature
@@ -969,11 +981,16 @@ def main():
     # Dataloader
     parser.add_argument("--num_workers", type=int, default=None, help="Number of DataLoader workers")
     # Wandb
-    parser.add_argument("--use_wandb", type=str2bool, nargs='?', const=True, default=None, help="Enable Weights & Biases logging")
+    parser.add_argument("--use_wandb", type=str2bool, default=True)
     parser.add_argument("--wandb_project", type=str, default=None, help="Wandb project name")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="Wandb run name")
     # DeepSpeed
     parser.add_argument("--deepspeed_config", type=str, default=None, help="Path to DeepSpeed JSON config")
+    # Debug controls for audio flow logging
+    parser.add_argument("--debug_audio_flow", action="store_true", default=False,
+                        help="Enable verbose logs for reference/target audio resolution and batching.")
+    parser.add_argument("--debug_audio_warn_limit", type=int, default=50,
+                        help="Max number of dataset-level audio warnings to print when debug_audio_flow is on.")
     
     args = parser.parse_args()
     
@@ -1027,6 +1044,8 @@ def main():
         config.wandb_run_name = args.wandb_run_name
     if args.deepspeed_config is not None:
         config.deepspeed_config = args.deepspeed_config
+    config.debug_audio_flow = args.debug_audio_flow
+    config.debug_audio_warn_limit = args.debug_audio_warn_limit
     
     # Start training
     trainer = HiggsAudioDistributedTrainer(config)
