@@ -7,13 +7,19 @@ Uses the proven ChatML format from successful inference pipeline
 
 import os
 import json
-import argparse
-from pathlib import Path
-from typing import List, Dict, Any, Optional
-from loguru import logger
-from tqdm import tqdm
 import random
+import argparse
+from typing import Dict, Any, List, Optional, Tuple
+from pathlib import Path
+from tqdm import tqdm
+from loguru import logger
+import sys
 
+# Add project root to path for imports
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from boson_multimodal.audio_processing.higgs_audio_tokenizer import HiggsAudioTokenizer
 
 class ManifestChatMLProcessor:
     """
@@ -55,6 +61,9 @@ class ManifestChatMLProcessor:
             'errors': []
         }
         
+        # Initialize audio tokenizer
+        self.audio_tokenizer = HiggsAudioTokenizer()
+        
         logger.info(f"Initialized ManifestChatMLProcessor")
         logger.info(f"Manifest: {manifest_path}")
         logger.info(f"Output: {output_dir}")
@@ -86,8 +95,8 @@ class ManifestChatMLProcessor:
 
     def create_chatml_sample(self, sample: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Create ChatML sample from manifest entry
-        Uses the exact format validated in our inference pipeline
+        Create ChatML sample from manifest entry with audio tokenization
+        Uses the exact format validated in our inference/training pipeline
         """
         try:
             # Extract sample information
@@ -103,7 +112,26 @@ class ManifestChatMLProcessor:
             if not os.path.exists(target_audio_path):
                 raise FileNotFoundError(f"Target audio not found: {target_audio_path}")
             
-            # Create ChatML structure - EXACT format from successful inference
+            # Generate 8-codebook audio tokens
+            logger.debug(f"Tokenizing reference audio: {ref_audio_path}")
+            try:
+                ref_audio_tokens = self.audio_tokenizer.encode(ref_audio_path)
+                logger.debug(f"Reference audio tokens shape: {ref_audio_tokens.shape}")
+                if ref_audio_tokens.shape[0] != 8:
+                    raise ValueError(f"Reference audio tokens have {ref_audio_tokens.shape[0]} codebooks, expected 8")
+            except Exception as e:
+                raise Exception(f"Error tokenizing reference audio {ref_audio_path}: {e}")
+            
+            logger.debug(f"Tokenizing target audio: {target_audio_path}")
+            try:
+                target_audio_tokens = self.audio_tokenizer.encode(target_audio_path)
+                logger.debug(f"Target audio tokens shape: {target_audio_tokens.shape}")
+                if target_audio_tokens.shape[0] != 8:
+                    raise ValueError(f"Target audio tokens have {target_audio_tokens.shape[0]} codebooks, expected 8")
+            except Exception as e:
+                raise Exception(f"Error tokenizing target audio {target_audio_path}: {e}")
+            
+            # Create ChatML structure with audio tokens and urls
             chatml_sample = {
                 "messages": [
                     {
@@ -111,25 +139,16 @@ class ManifestChatMLProcessor:
                         "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
                     },
                     {
-                        "role": "user", 
+                        "role": "user",
                         "content": [
-                            {
-                                "type": "text",
-                                "text": target_transcript
-                            },
-                            {
-                                "type": "audio",
-                                "audio_url": ref_audio_path
-                            }
+                            {"type": "text", "text": target_transcript},
+                            {"type": "audio", "audio_url": ref_audio_path, "audio_tokens": ref_audio_tokens.tolist()}
                         ]
                     },
                     {
                         "role": "assistant",
                         "content": [
-                            {
-                                "type": "audio", 
-                                "audio_url": target_audio_path
-                            }
+                            {"type": "audio", "audio_url": target_audio_path, "audio_tokens": target_audio_tokens.tolist()}
                         ]
                     }
                 ],
@@ -139,7 +158,10 @@ class ManifestChatMLProcessor:
                     "target_transcript": target_transcript,
                     "duration": sample.get('duration', 0.0),
                     "sample_rate": sample.get('sample_rate', 24000),
-                    "source_directory": sample.get('source_directory', '')
+                    "source_directory": sample.get('source_directory', ''),
+                    "ref_audio_tokens_shape": list(ref_audio_tokens.shape),
+                    "target_audio_tokens_shape": list(target_audio_tokens.shape),
+                    "codebook_count": 8
                 }
             }
             
