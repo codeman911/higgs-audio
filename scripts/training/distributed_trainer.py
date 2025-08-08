@@ -556,7 +556,7 @@ class HiggsAudioDistributedTrainer:
             batch_size=self.config.batch_size_per_device,
             sampler=val_sampler,
             shuffle=False,
-            collate_fn=collator,
+            collate_fn=custom_collate_fn,  # Use custom collate function
             num_workers=self.config.num_workers,
             pin_memory=True
         )
@@ -659,8 +659,11 @@ class HiggsAudioDistributedTrainer:
                 model.train()
                 
                 # Convert batch to dict
-                from dataclasses import asdict
-                batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
+                if hasattr(batch, "__dict__"):
+                    batch_dict = {k: v for k, v in vars(batch).items() if v is not None}
+                else:
+                    from dataclasses import asdict
+                    batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
                 
                 # Extract labels before removing them from batch
                 labels = batch_dict.get('label_ids')
@@ -783,8 +786,11 @@ class HiggsAudioDistributedTrainer:
         with torch.no_grad():
             for batch in val_dataloader:
                 # Convert batch to dict
-                from dataclasses import asdict
-                batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
+                if hasattr(batch, "__dict__"):
+                    batch_dict = {k: v for k, v in vars(batch).items() if v is not None}
+                else:
+                    from dataclasses import asdict
+                    batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
                 
                 # Extract labels before removing them from batch
                 labels = batch_dict.get('label_ids')
