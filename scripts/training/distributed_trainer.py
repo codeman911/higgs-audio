@@ -353,12 +353,32 @@ class HiggsAudioDistributedTrainer:
             max_audio_length=self.config.max_audio_length
         )
         
-        # Create data collator
+        # Create data collator with correct signature
+        from transformers import AutoProcessor
+        from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
+        
+        model_config = HiggsAudioConfig.from_pretrained(self.config.model_path)
+        whisper_processor = None
+        if getattr(model_config, "encode_whisper_embed", False):
+            try:
+                whisper_processor = AutoProcessor.from_pretrained(
+                    "openai/whisper-large-v3-turbo",
+                    trust_remote=True,
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to load Whisper processor: {e}. Proceeding without it.")
+        
         collator = HiggsAudioSampleCollator(
-            tokenizer=tokenizer,
-            audio_tokenizer=audio_tokenizer,
-            padding=True,
-            max_length=self.config.max_text_length
+            whisper_processor=whisper_processor,
+            encode_whisper_embed=getattr(model_config, "encode_whisper_embed", False),
+            audio_in_token_id=model_config.audio_in_token_idx,
+            audio_out_token_id=model_config.audio_out_token_idx,
+            audio_stream_bos_id=model_config.audio_stream_bos_id,
+            audio_stream_eos_id=model_config.audio_stream_eos_id,
+            pad_token_id=model_config.pad_token_id,
+            return_audio_in_tokens=True,  # training needs reference audio tokens
+            use_delay_pattern=getattr(model_config, "use_delay_pattern", False),
+            audio_num_codebooks=getattr(model_config, "audio_num_codebooks", None),
         )
         
         # Create data loaders
