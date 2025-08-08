@@ -425,11 +425,22 @@ class HiggsAudioDistributedTrainer:
             self.logger.error(f"Audio tokenizer provides {audio_tokenizer.num_codebooks} codebooks")
             self.logger.error(f"This will cause tensor size mismatch in _embed_audio_ids")
             
-            # Try to fix by overriding the collator configuration
-            self.logger.info(f"Attempting to fix by using audio tokenizer's codebook count...")
+            # CRITICAL FIX: Update model config to match audio tokenizer
+            self.logger.info(f"FIXING: Updating model config to use audio tokenizer's codebook count...")
+            original_codebooks = model_config.audio_num_codebooks
             model_config.audio_num_codebooks = audio_tokenizer.num_codebooks
+            self.logger.info(f"Updated: {original_codebooks} -> {model_config.audio_num_codebooks} codebooks")
+            
+            # Also update the model's internal configuration to prevent runtime mismatch
+            # This ensures the model's _embed_audio_ids uses the correct codebook count
+            self.logger.info(f"Model config updated to match audio tokenizer capabilities")
+        else:
+            self.logger.info(f"✅ Codebook configurations match: {model_config.audio_num_codebooks}")
         
         self.logger.info(f"=== END CODEBOOK DEBUG ===")
+        
+        # Store the corrected model config for use in model loading
+        self.corrected_model_config = model_config
         
         # Create datasets
         train_dataset = ArabicEnglishDataset(
@@ -448,9 +459,10 @@ class HiggsAudioDistributedTrainer:
         from transformers import AutoProcessor
         from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
         
-        model_config = HiggsAudioConfig.from_pretrained(self.config.model_path)
+        # Use the corrected model config (already loaded above)
+        
         whisper_processor = None
-        if getattr(model_config, "encode_whisper_embed", False):
+        if getattr(self.corrected_model_config, "encode_whisper_embed", False):
             try:
                 whisper_processor = AutoProcessor.from_pretrained(
                     "openai/whisper-large-v3-turbo",
@@ -461,15 +473,15 @@ class HiggsAudioDistributedTrainer:
         
         collator = HiggsAudioSampleCollator(
             whisper_processor=whisper_processor,
-            encode_whisper_embed=getattr(model_config, "encode_whisper_embed", False),
-            audio_in_token_id=model_config.audio_in_token_idx,
-            audio_out_token_id=model_config.audio_out_token_idx,
-            audio_stream_bos_id=model_config.audio_stream_bos_id,
-            audio_stream_eos_id=model_config.audio_stream_eos_id,
-            pad_token_id=model_config.pad_token_id,
+            encode_whisper_embed=getattr(self.corrected_model_config, "encode_whisper_embed", False),
+            audio_in_token_id=self.corrected_model_config.audio_in_token_idx,
+            audio_out_token_id=self.corrected_model_config.audio_out_token_idx,
+            audio_stream_bos_id=self.corrected_model_config.audio_stream_bos_id,
+            audio_stream_eos_id=self.corrected_model_config.audio_stream_eos_id,
+            pad_token_id=self.corrected_model_config.pad_token_id,
             return_audio_in_tokens=True,  # training needs reference audio tokens
-            use_delay_pattern=getattr(model_config, "use_delay_pattern", False),
-            audio_num_codebooks=getattr(model_config, "audio_num_codebooks", None),
+            use_delay_pattern=getattr(self.corrected_model_config, "use_delay_pattern", False),
+            audio_num_codebooks=getattr(self.corrected_model_config, "audio_num_codebooks", None),
         )
         
         # Create data loaders
@@ -518,7 +530,8 @@ class HiggsAudioDistributedTrainer:
         trainer = create_lora_model(
             model_path=self.config.model_path,
             lora_config=lora_config,
-            device=str(self.accelerator.device)
+            device=str(self.accelerator.device),
+            model_config=self.corrected_model_config
         )
         
         model = trainer.prepare_for_training()
