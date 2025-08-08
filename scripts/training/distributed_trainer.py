@@ -110,31 +110,29 @@ class TrainingConfig:
 
 
 class ArabicEnglishDataset(torch.utils.data.Dataset):
-    """Dataset class for Arabic+English ChatML samples"""
+    """Dataset for Arabic-English ChatML samples"""
     
     def __init__(
         self,
         chatml_samples: List[Dict],
         tokenizer,
         audio_tokenizer,
-        max_text_length: int = 512,
-        max_audio_length: int = 1500,
     ):
         self.samples = chatml_samples
         self.tokenizer = tokenizer
         self.audio_tokenizer = audio_tokenizer
-        self.max_text_length = max_text_length
-        self.max_audio_length = max_audio_length
-        
+         
     def __len__(self):
         return len(self.samples)
-    
+     
     def __getitem__(self, idx):
         sample = self.samples[idx]
-        
+         
         try:
             # Convert back to ChatML format
             from boson_multimodal.data_types import ChatMLSample, Message, AudioContent, TextContent
+            import librosa
+            import numpy as np
             
             messages = []
             for msg_data in sample['messages']:
@@ -167,13 +165,77 @@ class ArabicEnglishDataset(torch.utils.data.Dataset):
                 misc=sample.get('misc', {})
             )
             
-            # Prepare the sample for training
-            dataset_sample = prepare_chatml_sample(
-                chatml_sample,
-                self.tokenizer,
-                self.audio_tokenizer,
-                max_text_length=self.max_text_length,
-                max_audio_length=self.max_audio_length
+            # Get tokens from prepare_chatml_sample
+            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(chatml_sample, self.tokenizer)
+            
+            if input_tokens is None:
+                return self._create_dummy_sample()
+            
+            # Convert to tensors
+            input_ids = torch.tensor(input_tokens, dtype=torch.long)
+            label_ids = torch.tensor(label_tokens, dtype=torch.long)
+            
+            # Process audio contents
+            audio_waveforms = []
+            audio_ids_list = []
+            audio_sample_rates = []
+            audio_waveforms_start = [0]
+            audio_ids_start = [0]
+            
+            for audio_content in audio_contents:
+                try:
+                    if audio_content.raw_audio:
+                        # Load audio from raw_audio path
+                        waveform, sr = librosa.load(audio_content.raw_audio, sr=16000)
+                        audio_waveforms.extend(waveform.tolist())
+                        audio_sample_rates.append(sr)
+                        
+                        # Tokenize audio
+                        audio_tokens = self.audio_tokenizer.encode(waveform, sr)
+                        if audio_tokens is not None and len(audio_tokens) > 0:
+                            # audio_tokens should be (num_codebooks, seq_len)
+                            if len(audio_tokens.shape) == 1:
+                                audio_tokens = audio_tokens.unsqueeze(0)  # Add codebook dim
+                            audio_ids_list.append(audio_tokens)
+                            
+                            # Update start indices
+                            if len(audio_waveforms_start) > 1:
+                                audio_waveforms_start.append(len(audio_waveforms))
+                            if len(audio_ids_start) > 1:
+                                audio_ids_start.append(audio_ids_start[-1] + audio_tokens.shape[1])
+                        
+                except Exception as e:
+                    logging.warning(f"Failed to process audio in sample {idx}: {e}")
+                    continue
+            
+            # Concatenate audio data
+            if audio_ids_list:
+                audio_ids_concat = torch.cat(audio_ids_list, dim=1)  # (num_codebooks, total_seq_len)
+            else:
+                audio_ids_concat = torch.empty((4, 0), dtype=torch.long)  # 4 codebooks default
+            
+            if audio_waveforms:
+                audio_waveforms_concat = torch.tensor(audio_waveforms, dtype=torch.float32)
+            else:
+                audio_waveforms_concat = torch.empty(0, dtype=torch.float32)
+            
+            # Remove the last start index (it's the end position)
+            if len(audio_waveforms_start) > 1:
+                audio_waveforms_start = audio_waveforms_start[:-1]
+            if len(audio_ids_start) > 1:
+                audio_ids_start = audio_ids_start[:-1]
+            
+            # Create ChatMLDatasetSample
+            dataset_sample = ChatMLDatasetSample(
+                input_ids=input_ids,
+                label_ids=label_ids,
+                audio_ids_concat=audio_ids_concat,
+                audio_ids_start=torch.tensor(audio_ids_start, dtype=torch.long),
+                audio_waveforms_concat=audio_waveforms_concat,
+                audio_waveforms_start=torch.tensor(audio_waveforms_start, dtype=torch.long),
+                audio_sample_rate=torch.tensor(audio_sample_rates, dtype=torch.float32) if audio_sample_rates else torch.empty(0),
+                audio_speaker_indices=torch.tensor([0] * len(audio_sample_rates), dtype=torch.long) if audio_sample_rates else torch.empty(0, dtype=torch.long),
+                audio_label_ids_concat=audio_ids_concat.clone() if audio_ids_list else None,  # For training, labels = inputs
             )
             
             return dataset_sample
@@ -182,18 +244,18 @@ class ArabicEnglishDataset(torch.utils.data.Dataset):
             logging.warning(f"Error processing sample {idx}: {e}")
             # Return a dummy sample to avoid breaking the batch
             return self._create_dummy_sample()
-    
+     
     def _create_dummy_sample(self):
         """Create a dummy sample for error cases"""
         return ChatMLDatasetSample(
-            input_ids=torch.tensor([1, 2, 3]),  # Dummy tokens
-            label_ids=torch.tensor([-100, -100, -100]),
-            audio_ids_concat=torch.tensor([[]]),
+            input_ids=torch.tensor([1, 2, 3], dtype=torch.long),  # Dummy tokens
+            label_ids=torch.tensor([-100, -100, -100], dtype=torch.long),
+            audio_ids_concat=torch.empty((4, 0), dtype=torch.long),
             audio_ids_start=torch.tensor([]),
-            audio_waveforms_concat=torch.tensor([]),
+            audio_waveforms_concat=torch.empty(0, dtype=torch.float32),
             audio_waveforms_start=torch.tensor([]),
-            audio_sample_rate=torch.tensor([]),
-            audio_speaker_indices=torch.tensor([])
+            audio_sample_rate=torch.empty(0, dtype=torch.float32),
+            audio_speaker_indices=torch.empty(0, dtype=torch.long)
         )
 
 
@@ -341,16 +403,12 @@ class HiggsAudioDistributedTrainer:
             train_samples,
             tokenizer,
             audio_tokenizer,
-            max_text_length=self.config.max_text_length,
-            max_audio_length=self.config.max_audio_length
         )
         
         val_dataset = ArabicEnglishDataset(
             val_samples,
             tokenizer,
             audio_tokenizer,
-            max_text_length=self.config.max_text_length,
-            max_audio_length=self.config.max_audio_length
         )
         
         # Create data collator with correct signature
@@ -504,18 +562,20 @@ class HiggsAudioDistributedTrainer:
             
             for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch + 1}")):
                 with self.accelerator.accumulate(model):
-                    # Forward pass
+                    # Convert batch to dict and separate model inputs from labels
                     from dataclasses import asdict
                     batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
-                    # Align keys with trainer.compute_loss expectations
-                    if "label_ids" in batch_dict:
-                        batch_dict["labels"] = batch_dict.pop("label_ids")
-                    if "label_audio_ids" in batch_dict:
-                        batch_dict["audio_labels"] = batch_dict.pop("label_audio_ids")
+                    
+                    # Extract labels for loss computation
+                    labels = batch_dict.pop("label_ids", None)
+                    audio_labels = batch_dict.pop("label_audio_ids", None)
+                    
+                    # Forward pass (model doesn't accept labels)
                     outputs = model(**batch_dict)
                     
                     # Compute loss
-                    loss = lora_trainer.compute_loss(batch_dict, outputs)
+                    loss_batch = {"labels": labels, "audio_labels": audio_labels}
+                    loss = lora_trainer.compute_loss(loss_batch, outputs)
                     
                     # Backward pass
                     self.accelerator.backward(loss)
@@ -575,12 +635,17 @@ class HiggsAudioDistributedTrainer:
             for batch in val_dataloader:
                 from dataclasses import asdict
                 batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
-                if "label_ids" in batch_dict:
-                    batch_dict["labels"] = batch_dict.pop("label_ids")
-                if "label_audio_ids" in batch_dict:
-                    batch_dict["audio_labels"] = batch_dict.pop("label_audio_ids")
+                
+                # Extract labels for loss computation
+                labels = batch_dict.pop("label_ids", None)
+                audio_labels = batch_dict.pop("label_audio_ids", None)
+                
+                # Forward pass
                 outputs = model(**batch_dict)
-                loss = lora_trainer.compute_loss(batch_dict, outputs)
+                
+                # Compute loss
+                loss_batch = {"labels": labels, "audio_labels": audio_labels}
+                loss = lora_trainer.compute_loss(loss_batch, outputs)
                 val_loss += loss.item()
                 num_batches += 1
         
