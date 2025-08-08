@@ -111,6 +111,33 @@ class TrainingConfig:
     mixed_weight: float = 1.5  # Higher weight for code-switching samples
 
 
+def _resolve_path_multi(raw_path: str, dataset_dir: str, audio_base_dir: str) -> str | None:
+    """Resolve an audio path by trying multiple bases in order:
+    1) If raw_path is absolute and exists -> use it
+    2) CWD + raw_path
+    3) dataset_dir + raw_path
+    4) audio_base_dir + raw_path
+    Returns the first existing resolved path, else None.
+    """
+    if not raw_path:
+        return None
+    try_order = []
+    # 1) Absolute
+    if os.path.isabs(raw_path):
+        try_order.append(raw_path)
+    # 2) CWD
+    try_order.append(os.path.normpath(os.path.join(os.getcwd(), raw_path)))
+    # 3) Dataset dir
+    try_order.append(os.path.normpath(os.path.join(dataset_dir, raw_path)))
+    # 4) Audio base dir
+    try_order.append(os.path.normpath(os.path.join(audio_base_dir, raw_path)))
+
+    for p in try_order:
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
 class UnifiedChatMLDataset(torch.utils.data.Dataset):
     """
     Unified dataset that processes ChatML data exactly like inference pipeline.
@@ -145,9 +172,11 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
                     if isinstance(content, list):
                         for it in content:
                             if isinstance(it, dict) and it.get('type') == 'audio':
-                                if role == 'user':
+                                raw = it.get('audio_url', '')
+                                resolved = _resolve_path_multi(raw, self.dataset_dir, self.audio_base_dir)
+                                if role == 'user' and resolved is not None:
                                     has_user_audio = True
-                                elif role == 'assistant':
+                                elif role == 'assistant' and resolved is not None:
                                     has_assistant_audio = True
                 if has_user_audio and has_assistant_audio:
                     self.eligible_indices.append(i)
@@ -188,27 +217,25 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
                     if item.get("type") == "text":
                         proc_content.append({"type": "text", "text": item["text"]})
                     elif item.get("type") == "audio":
-                        raw_audio_url = item["audio_url"]
-                        # Resolve path similar to test_inference_final.py but with dataset-relative base
-                        audio_url = raw_audio_url
-                        if audio_url and not os.path.isabs(audio_url):
-                            # Prefer explicit audio_base_dir, else dataset json dir
-                            audio_url = os.path.join(self.audio_base_dir, audio_url)
+                        raw_audio_url = item.get("audio_url", "")
+                        # Robust multi-base resolution (CWD, dataset dir, audio_base_dir)
+                        resolved_path = _resolve_path_multi(raw_audio_url, self.dataset_dir, self.audio_base_dir)
                         try:
-                            if audio_url and os.path.exists(audio_url):
+                            if resolved_path is not None and os.path.exists(resolved_path):
                                 # Tokenize reference/target audio into codebooks
-                                audio_tokens = self.audio_tokenizer.encode(audio_url)  # (num_codebooks, seq_len)
+                                audio_tokens = self.audio_tokenizer.encode(resolved_path)  # (num_codebooks, seq_len)
                                 if role == "user":
                                     reference_audio_ids.append(audio_tokens)
                                 elif role == "assistant":
                                     target_audio_ids.append(audio_tokens)
-                                proc_content.append({"type": "audio", "audio_url": audio_url})
+                                # Keep the original raw url in ChatML to match training/inference format
+                                proc_content.append({"type": "audio", "audio_url": raw_audio_url})
                             else:
                                 # Keep placeholder for ChatML parity even if file missing, but log clearly
-                                print(f"[WARN] Audio file not found: raw='{raw_audio_url}' resolved='{audio_url}'. Placeholders will exist but no tokens.")
+                                print(f"[WARN] Audio file not found: raw='{raw_audio_url}'. Tried CWD/dataset_dir/audio_base_dir. Placeholders will exist but no tokens.")
                                 proc_content.append({"type": "audio", "audio_url": raw_audio_url})
                         except Exception as e:
-                            print(f"[ERROR] Tokenizing audio failed: raw='{raw_audio_url}' resolved='{audio_url}'. Error: {e}")
+                            print(f"[ERROR] Tokenizing audio failed: raw='{raw_audio_url}' resolved='{resolved_path}'. Error: {e}")
                             proc_content.append({"type": "audio", "audio_url": raw_audio_url})
                 processed_messages.append({"role": role, "content": proc_content})
 
