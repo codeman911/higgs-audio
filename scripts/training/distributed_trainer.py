@@ -576,21 +576,36 @@ class HiggsAudioDistributedTrainer:
             
             # Extract target audio tokens from the original batch samples
             target_audio_tokens = []
+            target_audio_starts = []
+            current_pos = 0
+            
             for sample in batch:
                 if hasattr(sample, 'audio_label_ids_concat') and sample.audio_label_ids_concat is not None:
                     if sample.audio_label_ids_concat.numel() > 0:
                         target_audio_tokens.append(sample.audio_label_ids_concat)
+                        target_audio_starts.append(current_pos)
+                        current_pos += sample.audio_label_ids_concat.shape[1]
             
-            # Add target audio tokens to the collated batch
+            # CRITICAL FIX: Add target audio tokens to the collated batch for BOTH forward pass and loss
             if target_audio_tokens:
                 # Concatenate all target audio tokens
-                label_audio_ids = torch.cat(target_audio_tokens, dim=1)
+                target_audio_concat = torch.cat(target_audio_tokens, dim=1)
+                
                 # Convert to dict if needed
                 if hasattr(collated_batch, '__dict__'):
-                    collated_batch.label_audio_ids = label_audio_ids
+                    # For model forward pass - target audio prediction
+                    collated_batch.audio_out_ids = target_audio_concat
+                    collated_batch.audio_out_ids_start = torch.tensor(target_audio_starts, dtype=torch.long)
+                    collated_batch.audio_out_ids_start_group_loc = torch.zeros(len(target_audio_starts), dtype=torch.long)
+                    
+                    # For loss computation - target audio labels
+                    collated_batch.label_audio_ids = target_audio_concat
                 else:
-                    # If it's already a dict, add the key
-                    collated_batch['label_audio_ids'] = label_audio_ids
+                    # If it's already a dict, add the keys
+                    collated_batch['audio_out_ids'] = target_audio_concat
+                    collated_batch['audio_out_ids_start'] = torch.tensor(target_audio_starts, dtype=torch.long)
+                    collated_batch['audio_out_ids_start_group_loc'] = torch.zeros(len(target_audio_starts), dtype=torch.long)
+                    collated_batch['label_audio_ids'] = target_audio_concat
             
             return collated_batch
         
