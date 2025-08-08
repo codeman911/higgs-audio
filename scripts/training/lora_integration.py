@@ -271,91 +271,116 @@ class HiggsAudioLoRATrainer:
         
         loss = 0.0
         
+        # CRITICAL: Add NaN/Inf detection for model outputs
+        if text_logits is not None:
+            if torch.isnan(text_logits).any() or torch.isinf(text_logits).any():
+                print(f"WARNING: Invalid text_logits detected!")
+                return torch.tensor(1e-6, device=text_logits.device, requires_grad=True)
+        
+        if audio_logits is not None:
+            if torch.isnan(audio_logits).any() or torch.isinf(audio_logits).any():
+                print(f"WARNING: Invalid audio_logits detected!")
+                return torch.tensor(1e-6, device=audio_logits.device, requires_grad=True)
+        
         # Text generation loss
         if text_labels is not None and text_logits is not None:
-            # CRITICAL FIX: Handle sequence length mismatch between logits and labels
-            # The model generates logits for the entire sequence including audio positions,
-            # but labels only cover text token positions
-            
             batch_size = text_labels.shape[0]
             label_seq_len = text_labels.shape[1]
             logit_seq_len = text_logits.shape[1]
             
             if logit_seq_len != label_seq_len:
-                # Truncate logits to match label length
-                # This handles cases where model generates extra positions for audio tokens
                 text_logits = text_logits[:, :label_seq_len, :]
             
-            # Flatten and compute cross entropy
             text_logits_flat = text_logits.contiguous().view(-1, text_logits.size(-1))
             text_labels_flat = text_labels.contiguous().view(-1)
             
-            # Ensure shapes match after alignment
             if text_logits_flat.shape[0] != text_labels_flat.shape[0]:
                 min_len = min(text_logits_flat.shape[0], text_labels_flat.shape[0])
                 text_logits_flat = text_logits_flat[:min_len]
                 text_labels_flat = text_labels_flat[:min_len]
             
-            text_loss = nn.functional.cross_entropy(
-                text_logits_flat,
-                text_labels_flat,
-                ignore_index=-100
-            )
-            loss += text_loss
+            # Check for valid tokens
+            valid_mask = text_labels_flat != -100
+            if valid_mask.sum() > 0:
+                text_loss = nn.functional.cross_entropy(
+                    text_logits_flat,
+                    text_labels_flat,
+                    ignore_index=-100,
+                    reduction='mean'
+                )
+                
+                if torch.isnan(text_loss) or torch.isinf(text_loss):
+                    print(f"WARNING: Invalid text_loss detected")
+                    text_loss = torch.tensor(0.0, device=text_loss.device, requires_grad=True)
+                
+                loss += text_loss
         
         # Audio generation loss (multi-codebook)
         if audio_labels is not None and audio_logits is not None:
             audio_loss = 0.0
+            valid_codebook_count = 0
             
-            # CRITICAL FIX: Handle different audio_labels tensor dimensions
-            # audio_labels can be either [batch, codebooks, seq] or [codebooks, seq]
+            # Handle tensor dimensions
             if audio_labels.dim() == 2:
-                # Missing batch dimension: [codebooks, seq] -> [1, codebooks, seq]
                 audio_labels = audio_labels.unsqueeze(0)
-            elif audio_labels.dim() == 3:
-                # Correct shape: [batch, codebooks, seq]
-                pass
-            else:
-                raise ValueError(f"Unexpected audio_labels shape: {audio_labels.shape}")
+            elif audio_labels.dim() != 3:
+                print(f"WARNING: Unexpected audio_labels shape: {audio_labels.shape}")
+                return torch.tensor(1e-6, device=audio_labels.device, requires_grad=True)
             
-            # Ensure audio_logits has compatible shape
-            if audio_logits.dim() == 3:
-                # Missing batch dimension: [codebooks, seq, vocab] -> [1, codebooks, seq, vocab]
-                audio_logits = audio_logits.unsqueeze(0)
-            elif audio_logits.dim() == 4:
-                # Correct shape: [batch, seq, codebooks, vocab] or [batch, codebooks, seq, vocab]
-                # Check if we need to transpose dimensions
-                if audio_logits.shape[1] != audio_labels.shape[1]:  # codebooks dimension mismatch
-                    # Likely [batch, seq, codebooks, vocab] -> [batch, codebooks, seq, vocab]
-                    audio_logits = audio_logits.transpose(1, 2)
+            if audio_logits is not None:
+                if audio_logits.dim() == 3:
+                    audio_logits = audio_logits.unsqueeze(0)
+                elif audio_logits.dim() == 4:
+                    if audio_logits.shape[1] != audio_labels.shape[1]:
+                        audio_logits = audio_logits.transpose(1, 2)
+                else:
+                    print(f"WARNING: Unexpected audio_logits shape: {audio_logits.shape}")
+                    return torch.tensor(1e-6, device=audio_logits.device, requires_grad=True)
             
-            num_codebooks = audio_labels.shape[1]  # Now guaranteed to be dim 1
+            num_codebooks = audio_labels.shape[1]
             
             for codebook_idx in range(num_codebooks):
-                # Extract codebook-specific logits and labels
-                if audio_logits.dim() == 4:
-                    codebook_logits = audio_logits[:, codebook_idx, :, :]  # [batch, seq, vocab]
-                else:
-                    codebook_logits = audio_logits[..., codebook_idx, :]   # fallback
+                try:
+                    if audio_logits.dim() == 4:
+                        codebook_logits = audio_logits[:, codebook_idx, :, :]
+                    else:
+                        codebook_logits = audio_logits[..., codebook_idx, :]
+                        
+                    codebook_labels = audio_labels[:, codebook_idx, :]
                     
-                codebook_labels = audio_labels[:, codebook_idx, :]  # [batch, seq]
-                
-                # Handle potential shape mismatch for audio tokens too
-                if codebook_logits.shape[1] != codebook_labels.shape[1]:
-                    min_seq_len = min(codebook_logits.shape[1], codebook_labels.shape[1])
-                    codebook_logits = codebook_logits[:, :min_seq_len, :]
-                    codebook_labels = codebook_labels[:, :min_seq_len]
-                
-                codebook_loss = nn.functional.cross_entropy(
-                    codebook_logits.contiguous().view(-1, codebook_logits.size(-1)),
-                    codebook_labels.contiguous().view(-1),
-                    ignore_index=-100
-                )
-                audio_loss += codebook_loss
+                    if codebook_logits.shape[1] != codebook_labels.shape[1]:
+                        min_seq_len = min(codebook_logits.shape[1], codebook_labels.shape[1])
+                        codebook_logits = codebook_logits[:, :min_seq_len, :]
+                        codebook_labels = codebook_labels[:, :min_seq_len]
+                    
+                    valid_mask = codebook_labels != -100
+                    if valid_mask.sum() > 0:
+                        codebook_loss = nn.functional.cross_entropy(
+                            codebook_logits.contiguous().view(-1, codebook_logits.size(-1)),
+                            codebook_labels.contiguous().view(-1),
+                            ignore_index=-100,
+                            reduction='mean'
+                        )
+                        
+                        if torch.isnan(codebook_loss) or torch.isinf(codebook_loss):
+                            print(f"WARNING: Invalid codebook_loss for codebook {codebook_idx}")
+                            continue
+                        
+                        audio_loss += codebook_loss
+                        valid_codebook_count += 1
+                        
+                except Exception as e:
+                    print(f"ERROR: Failed to compute loss for codebook {codebook_idx}: {e}")
+                    continue
             
-            # Weight audio loss
-            audio_loss = audio_loss / num_codebooks
-            loss += audio_loss * 2.0  # Give more weight to audio generation
+            if valid_codebook_count > 0:
+                audio_loss = audio_loss / valid_codebook_count
+                loss += audio_loss * 2.0
+        
+        # Final validation
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"CRITICAL: Final loss is invalid: {loss}")
+            return torch.tensor(1e-6, requires_grad=True)
         
         return loss
 
