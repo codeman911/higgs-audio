@@ -230,13 +230,24 @@ class HiggsAudioDistributedTrainer:
     def _setup_distributed(self):
         """Setup distributed training with Accelerate"""
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        deepspeed_plugin = None
+        if self.config.deepspeed_config:
+            try:
+                from accelerate import DeepSpeedPlugin
+                if os.path.exists(self.config.deepspeed_config):
+                    deepspeed_plugin = DeepSpeedPlugin(hf_ds_config=self.config.deepspeed_config)
+                else:
+                    self.logger.warning(f"DeepSpeed config not found: {self.config.deepspeed_config}. Continuing without DeepSpeed.")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize DeepSpeed plugin: {e}. Continuing without DeepSpeed.")
         
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.config.gradient_accumulation_steps,
             mixed_precision="bf16" if self.config.bf16 else ("fp16" if self.config.fp16 else "no"),
             log_with="wandb" if self.config.use_wandb else None,
             project_dir=self.config.output_dir,
-            kwargs_handlers=[ddp_kwargs]
+            kwargs_handlers=[ddp_kwargs],
+            deepspeed_plugin=deepspeed_plugin,
         )
         
         # Set seed for reproducibility
@@ -436,7 +447,8 @@ class HiggsAudioDistributedTrainer:
         model, optimizer, lora_trainer = self.setup_model_and_optimizer(tokenizer, audio_tokenizer)
         
         # Calculate training steps
-        num_training_steps = len(train_dataloader) * self.config.num_epochs
+        steps_per_epoch = max(1, (len(train_dataloader) + self.config.gradient_accumulation_steps - 1) // self.config.gradient_accumulation_steps)
+        num_training_steps = steps_per_epoch * self.config.num_epochs
         
         # Setup scheduler
         scheduler = self.setup_scheduler(optimizer, num_training_steps)
@@ -558,13 +570,39 @@ def main():
     """Main training function"""
     import argparse
     
+    def str2bool(v):
+        if isinstance(v, bool):
+            return v
+        return v.lower() in ("yes", "true", "t", "1")
+    
     parser = argparse.ArgumentParser(description="Distributed LoRA training for Higgs-Audio")
     parser.add_argument("--config", type=str, help="Path to training config YAML file")
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to processed dataset")
     parser.add_argument("--output_dir", type=str, required=True, help="Output directory")
-    parser.add_argument("--num_epochs", type=int, default=3, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=2, help="Batch size per device")
-    parser.add_argument("--learning_rate", type=float, default=2e-4, help="Learning rate")
+    # Training hyperparameters
+    parser.add_argument("--num_epochs", type=int, default=None, help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=None, help="Alias for batch_size_per_device")
+    parser.add_argument("--batch_size_per_device", type=int, default=None, help="Batch size per device")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=None, help="Gradient accumulation steps")
+    parser.add_argument("--learning_rate", type=float, default=None, help="Learning rate")
+    parser.add_argument("--weight_decay", type=float, default=None, help="Weight decay")
+    parser.add_argument("--warmup_ratio", type=float, default=None, help="Warmup ratio")
+    parser.add_argument("--max_grad_norm", type=float, default=None, help="Max gradient norm")
+    # Precision
+    parser.add_argument("--bf16", type=str2bool, nargs='?', const=True, default=None, help="Use bfloat16")
+    parser.add_argument("--fp16", type=str2bool, nargs='?', const=True, default=None, help="Use float16")
+    # Logging / eval / save
+    parser.add_argument("--logging_steps", type=int, default=None, help="Logging frequency in steps")
+    parser.add_argument("--eval_steps", type=int, default=None, help="Evaluation frequency in steps")
+    parser.add_argument("--save_steps", type=int, default=None, help="Checkpoint save frequency in steps")
+    # Dataloader
+    parser.add_argument("--num_workers", type=int, default=None, help="Number of DataLoader workers")
+    # Wandb
+    parser.add_argument("--use_wandb", type=str2bool, nargs='?', const=True, default=None, help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb_project", type=str, default=None, help="Wandb project name")
+    parser.add_argument("--wandb_run_name", type=str, default=None, help="Wandb run name")
+    # DeepSpeed
+    parser.add_argument("--deepspeed_config", type=str, default=None, help="Path to DeepSpeed JSON config")
     
     args = parser.parse_args()
     
@@ -581,12 +619,43 @@ def main():
         config.dataset_path = args.dataset_path
     if args.output_dir:
         config.output_dir = args.output_dir
-    if args.num_epochs:
+    if args.num_epochs is not None:
         config.num_epochs = args.num_epochs
-    if args.batch_size:
+    # Batch size alias support
+    if args.batch_size_per_device is not None:
+        config.batch_size_per_device = args.batch_size_per_device
+    elif args.batch_size is not None:
         config.batch_size_per_device = args.batch_size
-    if args.learning_rate:
+    if args.gradient_accumulation_steps is not None:
+        config.gradient_accumulation_steps = args.gradient_accumulation_steps
+    if args.learning_rate is not None:
         config.learning_rate = args.learning_rate
+    if args.weight_decay is not None:
+        config.weight_decay = args.weight_decay
+    if args.warmup_ratio is not None:
+        config.warmup_ratio = args.warmup_ratio
+    if args.max_grad_norm is not None:
+        config.max_grad_norm = args.max_grad_norm
+    if args.bf16 is not None:
+        config.bf16 = args.bf16
+    if args.fp16 is not None:
+        config.fp16 = args.fp16
+    if args.logging_steps is not None:
+        config.logging_steps = args.logging_steps
+    if args.eval_steps is not None:
+        config.eval_steps = args.eval_steps
+    if args.save_steps is not None:
+        config.save_steps = args.save_steps
+    if args.num_workers is not None:
+        config.num_workers = args.num_workers
+    if args.use_wandb is not None:
+        config.use_wandb = args.use_wandb
+    if args.wandb_project is not None:
+        config.wandb_project = args.wandb_project
+    if args.wandb_run_name is not None:
+        config.wandb_run_name = args.wandb_run_name
+    if args.deepspeed_config is not None:
+        config.deepspeed_config = args.deepspeed_config
     
     # Start training
     trainer = HiggsAudioDistributedTrainer(config)
