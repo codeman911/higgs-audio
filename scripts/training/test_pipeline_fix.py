@@ -58,7 +58,7 @@ def test_audio_separation():
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             
-        audio_tokenizer = HiggsAudioTokenizer.from_pretrained("bosonai/higgs-audio-v2-tokenizer")
+        audio_tokenizer = HiggsAudioTokenizer()  # Fixed: Use direct initialization
         
         # Create mock sample
         mock_sample = create_mock_chatml_sample()
