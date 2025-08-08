@@ -208,13 +208,13 @@ class ArabicEnglishDataset(torch.utils.data.Dataset):
                             current_audio_pos += audio_tokens.shape[1]
                         else:
                             # Add empty audio tokens to maintain alignment
-                            empty_tokens = torch.zeros((4, 1), dtype=torch.long)  # 4 codebooks, 1 token
+                            empty_tokens = torch.zeros((8, 1), dtype=torch.long)  # 8 codebooks, 1 token
                             audio_ids_list.append(empty_tokens)
                             current_audio_pos += 1
                     else:
                         # No audio file - add empty placeholders
                         audio_sample_rates.append(16000)  # Default sample rate
-                        empty_tokens = torch.zeros((4, 1), dtype=torch.long)
+                        empty_tokens = torch.zeros((8, 1), dtype=torch.long)
                         audio_ids_list.append(empty_tokens)
                         current_audio_pos += 1
                 
@@ -222,7 +222,7 @@ class ArabicEnglishDataset(torch.utils.data.Dataset):
                     logging.warning(f"Failed to process audio in sample {idx}: {e}")
                     # Add empty placeholders even on error to maintain alignment
                     audio_sample_rates.append(16000)
-                    empty_tokens = torch.zeros((4, 1), dtype=torch.long)
+                    empty_tokens = torch.zeros((8, 1), dtype=torch.long)
                     audio_ids_list.append(empty_tokens)
                     current_audio_pos += 1
             
@@ -230,7 +230,7 @@ class ArabicEnglishDataset(torch.utils.data.Dataset):
             if audio_ids_list:
                 audio_ids_concat = torch.cat(audio_ids_list, dim=1)  # (num_codebooks, total_seq_len)
             else:
-                audio_ids_concat = torch.empty((4, 0), dtype=torch.long)  # 4 codebooks default
+                audio_ids_concat = torch.empty((8, 0), dtype=torch.long)  # 8 codebooks default
             
             if audio_waveforms:
                 audio_waveforms_concat = torch.tensor(audio_waveforms, dtype=torch.float32)
@@ -262,7 +262,7 @@ class ArabicEnglishDataset(torch.utils.data.Dataset):
         return ChatMLDatasetSample(
             input_ids=torch.tensor([1, 2, 3], dtype=torch.long),  # Dummy tokens
             label_ids=torch.tensor([-100, -100, -100], dtype=torch.long),
-            audio_ids_concat=torch.empty((4, 0), dtype=torch.long),
+            audio_ids_concat=torch.empty((8, 0), dtype=torch.long),
             audio_ids_start=torch.tensor([]),
             audio_waveforms_concat=torch.empty(0, dtype=torch.float32),
             audio_waveforms_start=torch.tensor([]),
@@ -419,23 +419,37 @@ class HiggsAudioDistributedTrainer:
         self.logger.info(f"Audio tokenizer has num_codebooks: {audio_tokenizer.num_codebooks}")
         self.logger.info(f"Audio tokenizer n_q: {audio_tokenizer.n_q}")
         
-        if model_config.audio_num_codebooks != audio_tokenizer.num_codebooks:
-            self.logger.error(f"CODEBOOK MISMATCH DETECTED!")
-            self.logger.error(f"Model expects {model_config.audio_num_codebooks} codebooks")
-            self.logger.error(f"Audio tokenizer provides {audio_tokenizer.num_codebooks} codebooks")
-            self.logger.error(f"This will cause tensor size mismatch in _embed_audio_ids")
-            
-            # CRITICAL FIX: Update model config to match audio tokenizer
-            self.logger.info(f"FIXING: Updating model config to use audio tokenizer's codebook count...")
+        # CRITICAL FIX: Enforce 8-codebook configuration alignment
+        # The data processing pipeline has been fixed to generate 8-codebook audio tokens
+        expected_codebooks = 8
+        
+        # Validate audio tokenizer has 8 codebooks
+        if audio_tokenizer.num_codebooks != expected_codebooks:
+            self.logger.error(f"AUDIO TOKENIZER MISMATCH!")
+            self.logger.error(f"Audio tokenizer has {audio_tokenizer.num_codebooks} codebooks, expected {expected_codebooks}")
+            self.logger.error(f"Please use the correct audio tokenizer: bosonai/higgs-audio-v2-tokenizer")
+            raise ValueError(f"Audio tokenizer codebook mismatch: {audio_tokenizer.num_codebooks} != {expected_codebooks}")
+        
+        # Update model config to match the corrected 8-codebook specification
+        if model_config.audio_num_codebooks != expected_codebooks:
+            self.logger.info(f"UPDATING MODEL CONFIG: {model_config.audio_num_codebooks} -> {expected_codebooks} codebooks")
             original_codebooks = model_config.audio_num_codebooks
-            model_config.audio_num_codebooks = audio_tokenizer.num_codebooks
-            self.logger.info(f"Updated: {original_codebooks} -> {model_config.audio_num_codebooks} codebooks")
-            
-            # Also update the model's internal configuration to prevent runtime mismatch
-            # This ensures the model's _embed_audio_ids uses the correct codebook count
-            self.logger.info(f"Model config updated to match audio tokenizer capabilities")
+            model_config.audio_num_codebooks = expected_codebooks
+            self.logger.info(f"Model config updated to match audio tokenizer and processed data")
         else:
-            self.logger.info(f"✅ Codebook configurations match: {model_config.audio_num_codebooks}")
+            self.logger.info(f"✅ Model config already aligned: {expected_codebooks} codebooks")
+        
+        # Validate that all components are aligned
+        self.logger.info(f"=== FINAL CONFIGURATION VALIDATION ===")
+        self.logger.info(f"Model config codebooks: {model_config.audio_num_codebooks}")
+        self.logger.info(f"Audio tokenizer codebooks: {audio_tokenizer.num_codebooks}")
+        self.logger.info(f"Expected data codebooks: {expected_codebooks}")
+        
+        if (model_config.audio_num_codebooks == audio_tokenizer.num_codebooks == expected_codebooks):
+            self.logger.info(f"✅ ALL CONFIGURATIONS ALIGNED: {expected_codebooks} codebooks")
+        else:
+            self.logger.error(f"❌ CONFIGURATION MISMATCH DETECTED!")
+            raise ValueError("Codebook configuration mismatch between model, tokenizer, and expected data")
         
         self.logger.info(f"=== END CODEBOOK DEBUG ===")
         

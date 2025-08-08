@@ -157,23 +157,67 @@ class UnifiedLoRADataPipeline:
             processor = ManifestChatMLProcessor(
                 manifest_path=self.manifest_path,
                 output_dir=self.chatml_dir,
-                max_samples=self.max_samples,
                 train_split=self.train_split,
+                target_sample_rate=self.target_sample_rate,
+                max_duration=self.max_duration,
+                min_duration=self.min_duration,
                 random_seed=self.random_seed
             )
             
-            # Process manifest
-            output_dir = processor.process_manifest()
+            # CRITICAL: Validate that the processor generates 8-codebook audio tokens
+            logger.info("🔍 Validating audio tokenizer configuration...")
             
-            if not output_dir:
-                logger.error("❌ Failed to process ChatML samples")
+            # Load the same tokenizer to verify configuration
+            from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
+            audio_tokenizer = load_higgs_audio_tokenizer("bosonai/higgs-audio-v2-tokenizer")
+            
+            logger.info(f"Audio tokenizer configuration:")
+            logger.info(f"  - num_codebooks (n_q): {audio_tokenizer.n_q}")
+            logger.info(f"  - codebook_size: {getattr(audio_tokenizer, 'codebook_size', 'N/A')}")
+            logger.info(f"  - sample_rate: {getattr(audio_tokenizer, 'sample_rate', 'N/A')}")
+            
+            if audio_tokenizer.n_q != 8:
+                logger.error(f"❌ Audio tokenizer has {audio_tokenizer.n_q} codebooks, expected 8")
+                logger.error("This will cause tensor size mismatch during training!")
                 return False
             
-            logger.info(f"✅ ChatML samples processed: {output_dir}")
-            return True
+            logger.info(f"✅ Audio tokenizer validated: {audio_tokenizer.n_q} codebooks")
             
+            success = processor.process_manifest()
+            
+            if success:
+                # Validate that processed data has correct codebook dimensions
+                logger.info("🔍 Validating processed ChatML data...")
+                
+                # Check a sample from the processed data
+                train_file = os.path.join(self.chatml_dir, "train_samples.json")
+                if os.path.exists(train_file):
+                    with open(train_file, 'r', encoding='utf-8') as f:
+                        samples = json.load(f)
+                    
+                    if samples:
+                        sample = samples[0]
+                        if 'misc' in sample and 'codebook_count' in sample['misc']:
+                            codebook_count = sample['misc']['codebook_count']
+                            logger.info(f"Processed data codebook count: {codebook_count}")
+                            
+                            if codebook_count != 8:
+                                logger.error(f"❌ Processed data has {codebook_count} codebooks, expected 8")
+                                logger.error("Data processing failed to generate correct codebook dimensions!")
+                                return False
+                            
+                            logger.info(f"✅ Processed data validated: {codebook_count} codebooks")
+                        else:
+                            logger.warning("⚠️  Could not validate codebook count from processed data")
+                
+                logger.info("✅ ChatML processing completed successfully")
+                return True
+            else:
+                logger.error("❌ ChatML processing failed")
+                return False
+                
         except Exception as e:
-            logger.error(f"❌ Error processing ChatML: {str(e)}")
+            logger.error(f"❌ Error processing ChatML samples: {str(e)}")
             return False
 
     def validate_output_files(self) -> bool:
@@ -184,8 +228,8 @@ class UnifiedLoRADataPipeline:
         
         required_files = [
             self.manifest_path,
-            os.path.join(self.chatml_dir, "train_chatml_samples.json"),
-            os.path.join(self.chatml_dir, "val_chatml_samples.json"),
+            os.path.join(self.chatml_dir, "train_samples.json"),
+            os.path.join(self.chatml_dir, "val_samples.json"),
             os.path.join(self.chatml_dir, "processing_stats.json")
         ]
         

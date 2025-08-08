@@ -182,20 +182,22 @@ class ZeroShotVoiceCloningProcessor:
             if not (self.min_audio_duration <= ref_duration <= self.max_audio_duration):
                 return None
             
-            # Create system message for zero-shot voice cloning
-            system_message = self._create_system_message(sample.language)
+            # CRITICAL FIX: Generate audio tokens using the audio tokenizer
+            # This ensures we get proper 8-codebook audio tokens
+            print(f"Tokenizing reference audio: {sample.ref_audio_file}")
+            try:
+                ref_audio_tokens = self.audio_tokenizer.encode(sample.ref_audio_file)
+                print(f"Reference audio tokens shape: {ref_audio_tokens.shape}")
+                
+                # Validate codebook dimensions
+                if ref_audio_tokens.shape[0] != self.audio_tokenizer.n_q:
+                    raise ValueError(f"Reference audio tokens have {ref_audio_tokens.shape[0]} codebooks, expected {self.audio_tokenizer.n_q}")
+                
+            except Exception as e:
+                print(f"Error tokenizing reference audio {sample.ref_audio_file}: {e}")
+                return None
             
-            # Create user message with reference audio
-            user_content = [
-                TextContent(text=f"Please generate speech for the following text using the voice from the reference audio: {target_text}"),
-                AudioContent(
-                    audio_url=sample.ref_audio_file,
-                    raw_audio=self._encode_audio_to_base64(ref_audio, ref_sr)
-                )
-            ]
-            
-            # Create assistant message (this will be the target during training)
-            # The model should generate the target audio
+            # Process target audio and generate tokens
             target_audio, target_sr = self.process_audio(sample.audio_file)
             if target_audio is None:
                 return None
@@ -204,10 +206,39 @@ class ZeroShotVoiceCloningProcessor:
             if not (self.min_audio_duration <= target_duration <= self.max_audio_duration):
                 return None
             
+            # CRITICAL FIX: Generate target audio tokens using the audio tokenizer
+            print(f"Tokenizing target audio: {sample.audio_file}")
+            try:
+                target_audio_tokens = self.audio_tokenizer.encode(sample.audio_file)
+                print(f"Target audio tokens shape: {target_audio_tokens.shape}")
+                
+                # Validate codebook dimensions
+                if target_audio_tokens.shape[0] != self.audio_tokenizer.n_q:
+                    raise ValueError(f"Target audio tokens have {target_audio_tokens.shape[0]} codebooks, expected {self.audio_tokenizer.n_q}")
+                    
+            except Exception as e:
+                print(f"Error tokenizing target audio {sample.audio_file}: {e}")
+                return None
+            
+            # Create system message for zero-shot voice cloning
+            system_message = self._create_system_message(sample.language)
+            
+            # Create user message with reference audio
+            user_content = [
+                TextContent(text=f"Please generate speech for the following text using the voice from the reference audio: {target_text}"),
+                AudioContent(
+                    audio_url=sample.ref_audio_file,
+                    raw_audio=self._encode_audio_to_base64(ref_audio, ref_sr),
+                    audio_tokens=ref_audio_tokens.tolist()  # Add tokenized audio
+                )
+            ]
+            
+            # Create assistant message with tokenized target audio
             assistant_content = [
                 AudioContent(
                     audio_url=sample.audio_file,
-                    raw_audio=self._encode_audio_to_base64(target_audio, target_sr)
+                    raw_audio=self._encode_audio_to_base64(target_audio, target_sr),
+                    audio_tokens=target_audio_tokens.tolist()  # Add tokenized audio
                 )
             ]
             
@@ -228,10 +259,14 @@ class ZeroShotVoiceCloningProcessor:
                     "ref_transcript": ref_transcript,
                     "target_text": target_text,
                     "ref_duration": ref_duration,
-                    "target_duration": target_duration
+                    "target_duration": target_duration,
+                    "ref_audio_tokens_shape": list(ref_audio_tokens.shape),
+                    "target_audio_tokens_shape": list(target_audio_tokens.shape),
+                    "codebook_count": self.audio_tokenizer.n_q
                 }
             )
             
+            print(f"✅ Created ChatML sample with {self.audio_tokenizer.n_q}-codebook audio tokens")
             return chatml_sample
             
         except Exception as e:
@@ -396,7 +431,7 @@ def main():
     
     args = parser.parse_args()
     
-    processor = ArabicEnglishProcessor(
+    processor = ZeroShotVoiceCloningProcessor(
         dataset_dir=args.dataset_dir,
         output_dir=args.output_dir,
         audio_tokenizer_path=args.audio_tokenizer_path,
