@@ -269,18 +269,27 @@ class HiggsAudioLoRATrainer:
         text_labels = batch.get('labels')
         audio_labels = batch.get('audio_labels')
         
-        loss = 0.0
+        text_loss = 0.0
+        audio_loss = 0.0
         
         # CRITICAL: Add NaN/Inf detection for model outputs
         if text_logits is not None:
             if torch.isnan(text_logits).any() or torch.isinf(text_logits).any():
                 print(f"WARNING: Invalid text_logits detected!")
-                return torch.tensor(1e-6, device=text_logits.device, requires_grad=True)
+                return {
+                    'text_loss': torch.tensor(1e-6, device=text_logits.device, requires_grad=True),
+                    'audio_loss': torch.tensor(0.0, device=text_logits.device, requires_grad=True),
+                    'combined_loss': torch.tensor(1e-6, device=text_logits.device, requires_grad=True)
+                }
         
         if audio_logits is not None:
             if torch.isnan(audio_logits).any() or torch.isinf(audio_logits).any():
                 print(f"WARNING: Invalid audio_logits detected!")
-                return torch.tensor(1e-6, device=audio_logits.device, requires_grad=True)
+                return {
+                    'text_loss': torch.tensor(0.0, device=audio_logits.device, requires_grad=True),
+                    'audio_loss': torch.tensor(1e-6, device=audio_logits.device, requires_grad=True),
+                    'combined_loss': torch.tensor(1e-6, device=audio_logits.device, requires_grad=True)
+                }
         
         # Text generation loss
         if text_labels is not None and text_logits is not None:
@@ -312,12 +321,9 @@ class HiggsAudioLoRATrainer:
                 if torch.isnan(text_loss) or torch.isinf(text_loss):
                     print(f"WARNING: Invalid text_loss detected")
                     text_loss = torch.tensor(0.0, device=text_loss.device, requires_grad=True)
-                
-                loss += text_loss
         
         # Audio generation loss (multi-codebook)
         if audio_labels is not None and audio_logits is not None:
-            audio_loss = 0.0
             valid_codebook_count = 0
             
             # Handle tensor dimensions
@@ -325,7 +331,11 @@ class HiggsAudioLoRATrainer:
                 audio_labels = audio_labels.unsqueeze(0)
             elif audio_labels.dim() != 3:
                 print(f"WARNING: Unexpected audio_labels shape: {audio_labels.shape}")
-                return torch.tensor(1e-6, device=audio_labels.device, requires_grad=True)
+                return {
+                    'text_loss': text_loss,
+                    'audio_loss': torch.tensor(1e-6, device=audio_labels.device, requires_grad=True),
+                    'combined_loss': text_loss + torch.tensor(1e-6, device=audio_labels.device, requires_grad=True)
+                }
             
             if audio_logits is not None:
                 if audio_logits.dim() == 3:
@@ -335,7 +345,11 @@ class HiggsAudioLoRATrainer:
                         audio_logits = audio_logits.transpose(1, 2)
                 else:
                     print(f"WARNING: Unexpected audio_logits shape: {audio_logits.shape}")
-                    return torch.tensor(1e-6, device=audio_logits.device, requires_grad=True)
+                    return {
+                        'text_loss': text_loss,
+                        'audio_loss': torch.tensor(1e-6, device=audio_logits.device, requires_grad=True),
+                        'combined_loss': text_loss + torch.tensor(1e-6, device=audio_logits.device, requires_grad=True)
+                    }
             
             num_codebooks = audio_labels.shape[1]
             
@@ -375,14 +389,34 @@ class HiggsAudioLoRATrainer:
             
             if valid_codebook_count > 0:
                 audio_loss = audio_loss / valid_codebook_count
-                loss += audio_loss * 2.0
+        
+        # Combine losses with weighting
+        combined_loss = text_loss + (audio_loss * 2.0)
         
         # Final validation
-        if torch.isnan(loss) or torch.isinf(loss):
-            print(f"CRITICAL: Final loss is invalid: {loss}")
-            return torch.tensor(1e-6, requires_grad=True)
+        if torch.isnan(combined_loss) or torch.isinf(combined_loss):
+            print(f"CRITICAL: Final combined_loss is invalid: {combined_loss}")
+            combined_loss = torch.tensor(1e-6, requires_grad=True)
         
-        return loss
+        return {
+            'text_loss': text_loss,
+            'audio_loss': audio_loss,
+            'combined_loss': combined_loss
+        }
+    
+    def save_lora_adapters(self, save_path: str):
+        """Save only the LoRA adapters"""
+        
+        if self.peft_model is None:
+            raise ValueError("LoRA not applied yet. Call apply_lora() first.")
+        
+        self.peft_model.save_pretrained(save_path)
+    
+    def load_lora_adapters(self, adapter_path: str):
+        """Load LoRA adapters"""
+        
+        self.peft_model = PeftModel.from_pretrained(self.base_model, adapter_path)
+        return self.peft_model
 
 
 def create_lora_model(

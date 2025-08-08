@@ -622,91 +622,105 @@ class HiggsAudioDistributedTrainer:
             train_loss = 0.0
             
             for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch + 1}")):
+                # Log batch information for debugging
+                if step == 0:
+                    self.logger.info(f"Original batch keys: {list(batch.keys())}")
+                    
+                    # Extract labels before removing them from batch
+                    labels = batch.get('label_ids')
+                    audio_labels = batch.get('label_audio_ids')
+                    
+                    # Create clean model inputs (remove labels)
+                    model_inputs = {k: v for k, v in batch.items() 
+                                  if k not in ['label_ids', 'label_audio_ids']}
+                    
+                    self.logger.info(f"Model input keys (no labels): {list(model_inputs.keys())}")
+                    self.logger.info(f"Extracted labels shapes: labels={labels.shape if labels is not None else None}, audio_labels={audio_labels.shape if audio_labels is not None else None}")
+                    self.logger.info(f"Clean model inputs: {list(model_inputs.keys())}")
+                    self.logger.info(f"Calling model type: {type(model)}")
+                
+                # Extract labels and prepare model inputs
+                labels = batch.get('label_ids')
+                audio_labels = batch.get('label_audio_ids')
+                
+                # Create clean model inputs (remove labels)
+                model_inputs = {k: v for k, v in batch.items() 
+                              if k not in ['label_ids', 'label_audio_ids']}
+                
+                # Move all tensors to the same device as the model
+                device = next(model.parameters()).device
+                for key, value in model_inputs.items():
+                    if isinstance(value, torch.Tensor):
+                        model_inputs[key] = value.to(device)
+                
+                if labels is not None:
+                    labels = labels.to(device)
+                if audio_labels is not None:
+                    audio_labels = audio_labels.to(device)
+                
+                # Forward pass - call model.forward() directly with explicit arguments
                 with self.accelerator.accumulate(model):
-                    # Convert batch to dict
-                    from dataclasses import asdict
-                    batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
+                    try:
+                        outputs = model.forward(
+                            input_ids=model_inputs.get('input_ids'),
+                            attention_mask=model_inputs.get('attention_mask'),
+                            audio_in_ids=model_inputs.get('audio_in_ids'),
+                            audio_in_ids_start=model_inputs.get('audio_in_ids_start'),
+                            audio_out_ids=model_inputs.get('audio_out_ids'),
+                            audio_out_ids_start=model_inputs.get('audio_out_ids_start'),
+                            audio_out_ids_start_group_loc=model_inputs.get('audio_out_ids_start_group_loc'),
+                            reward=model_inputs.get('reward')
+                        )
+                        
+                        # Prepare batch for loss computation
+                        loss_batch = {
+                            'labels': labels,
+                            'audio_labels': audio_labels
+                        }
+                        
+                        # Compute loss using LoRA trainer
+                        loss_dict = lora_trainer.compute_loss(loss_batch, outputs)
+                        
+                        # Extract individual losses
+                        text_loss = loss_dict['text_loss']
+                        audio_loss = loss_dict['audio_loss'] 
+                        combined_loss = loss_dict['combined_loss']
+                        
+                        # Backward pass
+                        self.accelerator.backward(combined_loss)
+                        
+                        if self.accelerator.sync_gradients:
+                            self.accelerator.clip_grad_norm_(model.parameters(), self.config.max_grad_norm)
+                        
+                        optimizer.step()
+                        scheduler.step()
+                        optimizer.zero_grad()
+                        
+                        # Update progress
+                        global_step += 1
+                        
+                        # Log detailed losses
+                        if global_step % self.config.logging_steps == 0:
+                            text_loss_val = text_loss.item() if isinstance(text_loss, torch.Tensor) else text_loss
+                            audio_loss_val = audio_loss.item() if isinstance(audio_loss, torch.Tensor) else audio_loss
+                            combined_loss_val = combined_loss.item() if isinstance(combined_loss, torch.Tensor) else combined_loss
+                            
+                            self.logger.info(f"Step {global_step}: Text Loss = {text_loss_val:.4f}, Audio Loss = {audio_loss_val:.4f}, Combined Loss = {combined_loss_val:.4f}")
+                            
+                            if self.config.use_wandb and self.accelerator.is_main_process:
+                                wandb.log({
+                                    "train/text_loss": text_loss_val,
+                                    "train/audio_loss": audio_loss_val,
+                                    "train/combined_loss": combined_loss_val,
+                                    "train/learning_rate": scheduler.get_last_lr()[0],
+                                    "train/step": global_step
+                                })
                     
-                    # Debug: Print batch keys to understand what we're getting
-                    if step == 0:
-                        self.logger.info(f"Original batch keys: {list(batch_dict.keys())}")
-                    
-                    # CRITICAL: Extract labels BEFORE model forward to prevent PEFT/Accelerate transformation
-                    # The issue is that PEFT/Accelerate middleware transforms label_ids -> labels
-                    # but HiggsAudioModel expects label_ids, not labels
-                    labels = batch_dict.pop("label_ids", None)
-                    audio_labels = batch_dict.pop("label_audio_ids", None)
-                    
-                    # Debug: Print model input keys after label extraction
-                    if step == 0:
-                        self.logger.info(f"Model input keys (no labels): {list(batch_dict.keys())}")
-                        self.logger.info(f"Extracted labels shapes: labels={labels.shape if labels is not None else None}, audio_labels={audio_labels.shape if audio_labels is not None else None}")
-                    
-                    # CRITICAL FIX: Create clean model inputs without any labels
-                    model_inputs = {
-                        'input_ids': batch_dict.get('input_ids'),
-                        'attention_mask': batch_dict.get('attention_mask'),
-                        'audio_features': batch_dict.get('audio_features'),
-                        'audio_feature_attention_mask': batch_dict.get('audio_feature_attention_mask'),
-                        'audio_in_ids': batch_dict.get('audio_in_ids'),
-                        'audio_in_ids_start': batch_dict.get('audio_in_ids_start'),
-                        'audio_out_ids': batch_dict.get('audio_out_ids'),
-                        'audio_out_ids_start': batch_dict.get('audio_out_ids_start'),
-                        'audio_out_ids_start_group_loc': batch_dict.get('audio_out_ids_start_group_loc'),
-                        'reward': batch_dict.get('reward'),
-                    }
-                    # Remove None values
-                    model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
-                    
-                    if step == 0:
-                        self.logger.info(f"Clean model inputs: {list(model_inputs.keys())}")
-                    
-                    # Get the underlying HiggsAudioModel and call it directly
-                    if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
-                        # PEFT wrapped: model.base_model.model is the actual HiggsAudioModel
-                        actual_model = model.base_model.model
-                    elif hasattr(model, 'module'):
-                        # Accelerate wrapped: model.module is the actual model
-                        actual_model = model.module
-                    else:
-                        actual_model = model
-                    
-                    if step == 0:
-                        self.logger.info(f"Calling model type: {type(actual_model)}")
-                    
-                    # CRITICAL FIX: Ensure all model inputs are on the same device as the model
-                    model_device = next(actual_model.parameters()).device
-                    model_inputs = {
-                        k: v.to(model_device) if torch.is_tensor(v) else v 
-                        for k, v in model_inputs.items()
-                    }
-                    
-                    # Also ensure labels are on the correct device
-                    if torch.is_tensor(labels):
-                        labels = labels.to(model_device)
-                    if torch.is_tensor(audio_labels):
-                        audio_labels = audio_labels.to(model_device)
-                    
-                    # Call the actual model forward with clean inputs (no labels)
-                    outputs = actual_model(**model_inputs)
-                
-                loss = lora_trainer.compute_loss({"labels": labels, "audio_labels": audio_labels}, outputs)
-                train_loss += loss.item()
-                global_step += 1
-                
-                # Logging
-                if global_step % self.config.logging_steps == 0:
-                    avg_loss = train_loss / self.config.logging_steps
-                    self.logger.info(f"Step {global_step}: Loss = {avg_loss:.4f}")
-                    
-                    if self.config.use_wandb and self.accelerator.is_main_process:
-                        wandb.log({
-                            "train_loss": avg_loss,
-                            "learning_rate": scheduler.get_last_lr()[0],
-                            "global_step": global_step
-                        })
-                    
-                    train_loss = 0.0
+                    except Exception as e:
+                        self.logger.error(f"Error in training step {step}: {e}")
+                        self.logger.error(f"Batch keys: {list(batch.keys())}")
+                        self.logger.error(f"Model input shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in model_inputs.items()]}")
+                        raise e
                 
                 # Validation
                 if global_step % self.config.eval_steps == 0:
@@ -735,61 +749,52 @@ class HiggsAudioDistributedTrainer:
         
         with torch.no_grad():
             for batch in val_dataloader:
-                from dataclasses import asdict
-                batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
+                # Extract labels before removing them from batch
+                labels = batch.get('label_ids')
+                audio_labels = batch.get('label_audio_ids')
                 
-                # CRITICAL: Extract labels BEFORE model forward to prevent PEFT/Accelerate transformation
-                # The issue is that PEFT/Accelerate middleware transforms label_ids -> labels
-                # but HiggsAudioModel expects label_ids, not labels
-                labels = batch_dict.pop("label_ids", None)
-                audio_labels = batch_dict.pop("label_audio_ids", None)
+                # Create clean model inputs (remove labels)
+                model_inputs = {k: v for k, v in batch.items() 
+                              if k not in ['label_ids', 'label_audio_ids']}
                 
-                # CRITICAL FIX: Create clean model inputs without any labels
-                model_inputs = {
-                    'input_ids': batch_dict.get('input_ids'),
-                    'attention_mask': batch_dict.get('attention_mask'),
-                    'audio_features': batch_dict.get('audio_features'),
-                    'audio_feature_attention_mask': batch_dict.get('audio_feature_attention_mask'),
-                    'audio_in_ids': batch_dict.get('audio_in_ids'),
-                    'audio_in_ids_start': batch_dict.get('audio_in_ids_start'),
-                    'audio_out_ids': batch_dict.get('audio_out_ids'),
-                    'audio_out_ids_start': batch_dict.get('audio_out_ids_start'),
-                    'audio_out_ids_start_group_loc': batch_dict.get('audio_out_ids_start_group_loc'),
-                    'reward': batch_dict.get('reward'),
-                }
-                # Remove None values
-                model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
+                # Move all tensors to the same device as the model
+                device = next(model.parameters()).device
+                for key, value in model_inputs.items():
+                    if isinstance(value, torch.Tensor):
+                        model_inputs[key] = value.to(device)
                 
-                # Get the underlying HiggsAudioModel and call it directly
-                if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
-                    # PEFT wrapped: model.base_model.model is the actual HiggsAudioModel
-                    actual_model = model.base_model.model
-                elif hasattr(model, 'module'):
-                    # Accelerate wrapped: model.module is the actual model
-                    actual_model = model.module
-                else:
-                    actual_model = model
+                if labels is not None:
+                    labels = labels.to(device)
+                if audio_labels is not None:
+                    audio_labels = audio_labels.to(device)
                 
-                # CRITICAL FIX: Ensure all model inputs are on the same device as the model
-                model_device = next(actual_model.parameters()).device
-                model_inputs = {
-                    k: v.to(model_device) if torch.is_tensor(v) else v 
-                    for k, v in model_inputs.items()
+                # Forward pass - call model.forward() directly with explicit arguments
+                outputs = model.forward(
+                    input_ids=model_inputs.get('input_ids'),
+                    attention_mask=model_inputs.get('attention_mask'),
+                    audio_in_ids=model_inputs.get('audio_in_ids'),
+                    audio_in_ids_start=model_inputs.get('audio_in_ids_start'),
+                    audio_out_ids=model_inputs.get('audio_out_ids'),
+                    audio_out_ids_start=model_inputs.get('audio_out_ids_start'),
+                    audio_out_ids_start_group_loc=model_inputs.get('audio_out_ids_start_group_loc'),
+                    reward=model_inputs.get('reward')
+                )
+                
+                # Prepare batch for loss computation
+                loss_batch = {
+                    'labels': labels,
+                    'audio_labels': audio_labels
                 }
                 
-                # Also ensure labels are on the correct device
-                if torch.is_tensor(labels):
-                    labels = labels.to(model_device)
-                if torch.is_tensor(audio_labels):
-                    audio_labels = audio_labels.to(model_device)
+                # Compute loss using LoRA trainer
+                loss_dict = lora_trainer.compute_loss(loss_batch, outputs)
                 
-                # Call the actual model forward with clean inputs (no labels)
-                outputs = actual_model(**model_inputs)
+                # Extract individual losses
+                text_loss = loss_dict['text_loss']
+                audio_loss = loss_dict['audio_loss'] 
+                combined_loss = loss_dict['combined_loss']
                 
-                # Compute loss using LoRA trainer with extracted labels
-                loss_batch = {"labels": labels, "audio_labels": audio_labels}
-                loss = lora_trainer.compute_loss(loss_batch, outputs)
-                val_loss += loss.item()
+                val_loss += combined_loss.item()
                 num_batches += 1
         
         avg_val_loss = val_loss / num_batches
