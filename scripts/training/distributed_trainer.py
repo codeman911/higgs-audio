@@ -117,11 +117,15 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
     Uses the same logic as test_inference_final.py and ZeroShotDataProcessor.
     """
     
-    def __init__(self, data_file, audio_tokenizer, text_tokenizer, max_length=2048, require_reference_audio: bool = True):
+    def __init__(self, data_file, audio_tokenizer, text_tokenizer, max_length=2048, require_reference_audio: bool = True, data_file_path: str | None = None, audio_base_dir: str | None = None):
         self.audio_tokenizer = audio_tokenizer
         self.text_tokenizer = text_tokenizer
         self.max_length = max_length
         self.require_reference_audio = require_reference_audio
+        # Base directory to resolve relative audio paths
+        self.data_file_path = data_file_path
+        self.dataset_dir = os.path.dirname(data_file_path) if data_file_path else os.getcwd()
+        self.audio_base_dir = audio_base_dir or self.dataset_dir
         
         # Load ChatML samples
         with open(data_file, 'r', encoding='utf-8') as f:
@@ -184,9 +188,15 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
                     if item.get("type") == "text":
                         proc_content.append({"type": "text", "text": item["text"]})
                     elif item.get("type") == "audio":
-                        audio_url = item["audio_url"]
+                        raw_audio_url = item["audio_url"]
+                        # Resolve path similar to test_inference_final.py but with dataset-relative base
+                        audio_url = raw_audio_url
+                        if audio_url and not os.path.isabs(audio_url):
+                            # Prefer explicit audio_base_dir, else dataset json dir
+                            audio_url = os.path.join(self.audio_base_dir, audio_url)
                         try:
-                            if os.path.exists(audio_url):
+                            if audio_url and os.path.exists(audio_url):
+                                # Tokenize reference/target audio into codebooks
                                 audio_tokens = self.audio_tokenizer.encode(audio_url)  # (num_codebooks, seq_len)
                                 if role == "user":
                                     reference_audio_ids.append(audio_tokens)
@@ -194,11 +204,12 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
                                     target_audio_ids.append(audio_tokens)
                                 proc_content.append({"type": "audio", "audio_url": audio_url})
                             else:
-                                print(f"Warning: Audio file not found: {audio_url}")
-                                proc_content.append({"type": "audio", "audio_url": audio_url})
+                                # Keep placeholder for ChatML parity even if file missing, but log clearly
+                                print(f"[WARN] Audio file not found: raw='{raw_audio_url}' resolved='{audio_url}'. Placeholders will exist but no tokens.")
+                                proc_content.append({"type": "audio", "audio_url": raw_audio_url})
                         except Exception as e:
-                            print(f"Error processing audio {audio_url}: {e}")
-                            proc_content.append({"type": "audio", "audio_url": audio_url})
+                            print(f"[ERROR] Tokenizing audio failed: raw='{raw_audio_url}' resolved='{audio_url}'. Error: {e}")
+                            proc_content.append({"type": "audio", "audio_url": raw_audio_url})
                 processed_messages.append({"role": role, "content": proc_content})
 
         # 2) Use prepare_chatml_sample to create proper text input/labels with <AUDIO>/<AUDIO_OUT> placeholders
@@ -442,14 +453,16 @@ class HiggsAudioDistributedTrainer:
             train_path,
             audio_tokenizer,
             tokenizer,
-            require_reference_audio=True
+            require_reference_audio=True,
+            data_file_path=train_path
         )
         
         val_dataset = UnifiedChatMLDataset(
             val_path,
             audio_tokenizer,
             tokenizer,
-            require_reference_audio=True
+            require_reference_audio=True,
+            data_file_path=val_path
         )
         
         # Create data collator with correct signature
