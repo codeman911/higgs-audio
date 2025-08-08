@@ -374,14 +374,25 @@ class HiggsAudioLoRATrainer:
                 # Handle audio_logits dimensions
                 if audio_logits is not None:
                     if audio_logits.dim() == 3:
-                        # (num_codebooks, seq_len, vocab_size) - correct
-                        pass
+                        # CRITICAL FIX: Model outputs (seq_len, num_codebooks, vocab_size)
+                        # But we need (num_codebooks, seq_len, vocab_size)
+                        if audio_logits.shape[1] == 8 and audio_logits.shape[2] > 1000:
+                            # Transpose from (seq_len, num_codebooks, vocab_size) to (num_codebooks, seq_len, vocab_size)
+                            audio_logits = audio_logits.transpose(0, 1)
+                            if self.step_count % 20 == 0:
+                                print(f"  FIXED: Transposed audio_logits from {audio_logits.transpose(0, 1).shape} to {audio_logits.shape}")
                     elif audio_logits.dim() == 4:
-                        # (batch_size, num_codebooks, seq_len, vocab_size)
+                        # (batch_size, seq_len, num_codebooks, vocab_size) or similar
                         if audio_logits.shape[0] == 1:
                             audio_logits = audio_logits.squeeze(0)
+                            # Apply same transpose fix
+                            if audio_logits.shape[1] == 8 and audio_logits.shape[2] > 1000:
+                                audio_logits = audio_logits.transpose(0, 1)
                         else:
                             audio_logits = audio_logits[0]  # Take first batch
+                            # Apply same transpose fix
+                            if audio_logits.shape[1] == 8 and audio_logits.shape[2] > 1000:
+                                audio_logits = audio_logits.transpose(0, 1)
                     else:
                         print(f"WARNING: Unexpected audio_logits shape: {audio_logits.shape}")
                         return {
