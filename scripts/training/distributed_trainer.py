@@ -574,17 +574,47 @@ class HiggsAudioDistributedTrainer:
             # Use the standard collator first
             collated_batch = collator(batch)
             
+            # CRITICAL FIX: Ensure reference audio flows through
+            reference_audio_tokens = []
+            reference_audio_starts = []
+            current_ref_pos = 0
+            
             # Extract target audio tokens from the original batch samples
             target_audio_tokens = []
             target_audio_starts = []
-            current_pos = 0
+            current_target_pos = 0
             
             for sample in batch:
+                # CRITICAL: Process reference audio (audio_ids_concat)
+                if hasattr(sample, 'audio_ids_concat') and sample.audio_ids_concat is not None:
+                    if sample.audio_ids_concat.numel() > 0:
+                        reference_audio_tokens.append(sample.audio_ids_concat)
+                        reference_audio_starts.append(current_ref_pos)
+                        current_ref_pos += sample.audio_ids_concat.shape[1]
+                
+                # Process target audio (audio_label_ids_concat)
                 if hasattr(sample, 'audio_label_ids_concat') and sample.audio_label_ids_concat is not None:
                     if sample.audio_label_ids_concat.numel() > 0:
                         target_audio_tokens.append(sample.audio_label_ids_concat)
-                        target_audio_starts.append(current_pos)
-                        current_pos += sample.audio_label_ids_concat.shape[1]
+                        target_audio_starts.append(current_target_pos)
+                        current_target_pos += sample.audio_label_ids_concat.shape[1]
+            
+            # CRITICAL FIX: Add reference audio to the collated batch (like inference)
+            if reference_audio_tokens:
+                reference_audio_concat = torch.cat(reference_audio_tokens, dim=1)
+                
+                # Convert to dict if needed
+                if hasattr(collated_batch, '__dict__'):
+                    # For model conditioning - reference audio
+                    collated_batch.audio_in_ids = reference_audio_concat
+                    collated_batch.audio_in_ids_start = torch.tensor(reference_audio_starts, dtype=torch.long)
+                    # Also keep audio_ids_concat for compatibility
+                    collated_batch.audio_ids_concat = reference_audio_concat
+                else:
+                    # If it's already a dict, add the keys
+                    collated_batch['audio_in_ids'] = reference_audio_concat
+                    collated_batch['audio_in_ids_start'] = torch.tensor(reference_audio_starts, dtype=torch.long)
+                    collated_batch['audio_ids_concat'] = reference_audio_concat
             
             # CRITICAL FIX: Add target audio tokens to the collated batch for BOTH forward pass and loss
             if target_audio_tokens:
