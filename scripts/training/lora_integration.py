@@ -522,61 +522,6 @@ class HiggsAudioLoRATrainer:
         return self.peft_model
 
 
-class HiggsAudioLoRATrainer:
-    """Trainer class for LoRA fine-tuning"""
-    
-    def __init__(
-        self,
-        model: HiggsAudioModel,
-        lora_config: HiggsAudioLoRAConfig,
-        tokenizer,
-        audio_tokenizer,
-    ):
-        self.model = model
-        self.lora_config = lora_config
-        self.tokenizer = tokenizer
-        self.audio_tokenizer = audio_tokenizer
-        
-        # Apply LoRA
-        self.lora_wrapper = HiggsAudioLoRAWrapper(model, lora_config)
-        self.peft_model = self.lora_wrapper.apply_lora()
-        
-    def prepare_for_training(self):
-        """Prepare model for training"""
-        
-        # Try to enable gradient checkpointing for memory efficiency (optional)
-        gc_enable = getattr(self.peft_model, "gradient_checkpointing_enable", None)
-        if callable(gc_enable):
-            try:
-                gc_enable()
-            except Exception as e:
-                print(f"[WARN] Gradient checkpointing not enabled: {e}. Continuing without it.")
-        else:
-            print("[WARN] Gradient checkpointing API not found on model. Continuing without it.")
-         
-        # Print trainable parameters
-        param_stats = self.lora_wrapper.get_trainable_parameters()
-        print(f"Trainable parameters: {param_stats['trainable_parameters']:,}")
-        print(f"Total parameters: {param_stats['total_parameters']:,}")
-        print(f"Trainable percentage: {param_stats['trainable_percentage']:.2f}%")
-        
-        return self.peft_model
-    
-    def save_lora_adapters(self, save_path: str):
-        """Save only the LoRA adapters"""
-        
-        if self.peft_model is None:
-            raise ValueError("LoRA not applied yet. Call apply_lora() first.")
-        
-        self.peft_model.save_pretrained(save_path)
-    
-    def load_lora_adapters(self, adapter_path: str):
-        """Load LoRA adapters"""
-        
-        self.peft_model = PeftModel.from_pretrained(self.base_model, adapter_path)
-        return self.peft_model
-
-
 def create_lora_model(
     model_path: str,
     lora_config: HiggsAudioLoRAConfig,
