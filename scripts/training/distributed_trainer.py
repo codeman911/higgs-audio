@@ -407,6 +407,10 @@ class HiggsAudioDistributedTrainer:
         # Store the corrected model config for use in model loading
         self.corrected_model_config = model_config
         
+        # Construct file paths for the UnifiedChatMLDataset
+        train_path = os.path.join(self.config.dataset_path, "train_chatml_samples.json")
+        val_path = os.path.join(self.config.dataset_path, "val_chatml_samples.json")
+        
         # Create datasets
         train_dataset = UnifiedChatMLDataset(
             train_path,
