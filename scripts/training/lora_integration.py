@@ -12,7 +12,6 @@ from peft.tuners.lora import LoraLayer
 import re
 from pathlib import Path
 import sys
-import numpy as np
 
 # Robust import handling for both CLI and module usage
 project_root = Path(__file__).parent.parent.parent
@@ -36,10 +35,10 @@ class HiggsAudioLoRAConfig:
     
     def __init__(
         self,
-        # LoRA hyperparameters - REDUCED to prevent overfitting
-        lora_r: int = 8,  # Reduced from 16 to 8
-        lora_alpha: int = 16,  # Reduced from 32 to 16
-        lora_dropout: float = 0.2,  # Increased from 0.1 to 0.2 for better regularization
+        # LoRA hyperparameters
+        lora_r: int = 16,
+        lora_alpha: int = 32,
+        lora_dropout: float = 0.1,
         
         # Target modules for LoRA
         target_modules: Optional[List[str]] = None,
@@ -49,10 +48,10 @@ class HiggsAudioLoRAConfig:
         freeze_audio_tower: bool = True,
         freeze_audio_encoder_proj: bool = False,
         
-        # Audio-specific LoRA - REDUCED to prevent overfitting
+        # Audio-specific LoRA
         enable_audio_lora: bool = True,
-        audio_lora_r: int = 4,  # Reduced from 8 to 4
-        audio_lora_alpha: int = 8,  # Reduced from 16 to 8
+        audio_lora_r: int = 8,
+        audio_lora_alpha: int = 16,
         
         # Language-specific settings
         enable_multilingual_lora: bool = True,
@@ -261,251 +260,161 @@ class HiggsAudioLoRATrainer:
         return self.peft_model
     
     def compute_loss(self, batch, outputs):
-        """Compute training loss for zero-shot voice cloning with advanced stability fixes"""
-        
-        # Extract logits and labels
-        text_logits = outputs.logits
-        audio_logits = outputs.audio_logits
-        
-        text_labels = batch.get('labels')
-        audio_labels = batch.get('audio_labels')
-        
-        text_loss = 0.0
-        audio_loss = 0.0
-        
-        # CRITICAL: Add NaN/Inf detection for model outputs
-        if text_logits is not None:
-            if torch.isnan(text_logits).any() or torch.isinf(text_logits).any():
-                print(f"WARNING: Invalid text_logits detected!")
-                return {
-                    'text_loss': torch.tensor(0.1, device=text_logits.device, requires_grad=True),
-                    'audio_loss': torch.tensor(0.0, device=text_logits.device, requires_grad=True),
-                    'combined_loss': torch.tensor(0.1, device=text_logits.device, requires_grad=True)
-                }
-        
-        if audio_logits is not None:
-            if torch.isnan(audio_logits).any() or torch.isinf(audio_logits).any():
-                print(f"WARNING: Invalid audio_logits detected!")
-                return {
-                    'text_loss': torch.tensor(0.0, device=audio_logits.device, requires_grad=True),
-                    'audio_loss': torch.tensor(0.1, device=audio_logits.device, requires_grad=True),
-                    'combined_loss': torch.tensor(0.1, device=audio_logits.device, requires_grad=True)
-                }
-        
-        # Text generation loss with STABILITY FIXES
-        if text_labels is not None and text_logits is not None:
-            batch_size = text_labels.shape[0]
-            label_seq_len = text_labels.shape[1]
-            logit_seq_len = text_logits.shape[1]
+        """
+        FIXED: Compute loss only on target audio tokens, not reference audio tokens.
+        Reference audio tokens are used for conditioning (like inference).
+        Target audio tokens are used for prediction labels.
+        """
+        try:
+            # Extract logits and labels
+            text_logits = outputs.logits
+            audio_logits = outputs.audio_logits
             
-            if logit_seq_len != label_seq_len:
-                text_logits = text_logits[:, :label_seq_len, :]
+            text_labels = batch.get('labels')
+            audio_labels = batch.get('label_audio_ids')  # Target audio tokens
             
-            text_logits_flat = text_logits.contiguous().view(-1, text_logits.size(-1))
-            text_labels_flat = text_labels.contiguous().view(-1)
+            text_loss = 0.0
+            audio_loss = 0.0
             
-            if text_logits_flat.shape[0] != text_labels_flat.shape[0]:
-                min_len = min(text_logits_flat.shape[0], text_labels_flat.shape[0])
-                text_logits_flat = text_logits_flat[:min_len]
-                text_labels_flat = text_labels_flat[:min_len]
-            
-            # Check for valid tokens
-            valid_mask = text_labels_flat != -100
-            if valid_mask.sum() > 0:
-                # STABILITY FIX 1: Cast to float32 for numerical stability
-                text_logits_float = text_logits_flat.float()
-                
-                # STABILITY FIX 2: Add label smoothing to prevent overconfidence
-                text_loss = nn.functional.cross_entropy(
-                    text_logits_float,
-                    text_labels_flat,
-                    ignore_index=-100,
-                    reduction='mean',
-                    label_smoothing=0.1  # Prevents overconfident predictions
-                )
-                
-                if torch.isnan(text_loss) or torch.isinf(text_loss):
-                    print(f"WARNING: Invalid text_loss detected")
-                    text_loss = torch.tensor(0.1, device=text_loss.device, requires_grad=True)
-                    
-                # Log valid token count for debugging
-                valid_text_tokens = valid_mask.sum().item()
-                if valid_text_tokens < 10:  # Very few valid tokens
-                    print(f"WARNING: Only {valid_text_tokens} valid text tokens in batch")
-        
-        # Audio generation loss with ADVANCED STABILITY FIXES
-        if audio_labels is not None and audio_logits is not None:
-            valid_codebook_count = 0
-            codebook_losses = []
-            codebook_entropies = []
-            
-            # Handle tensor dimensions
-            if audio_labels.dim() == 2:
-                audio_labels = audio_labels.unsqueeze(0)
-            elif audio_labels.dim() != 3:
-                print(f"WARNING: Unexpected audio_labels shape: {audio_labels.shape}")
-                return {
-                    'text_loss': text_loss,
-                    'audio_loss': torch.tensor(0.1, device=audio_labels.device, requires_grad=True),
-                    'combined_loss': text_loss + torch.tensor(0.1, device=audio_labels.device, requires_grad=True)
-                }
-            
-            if audio_logits is not None:
-                if audio_logits.dim() == 3:
-                    audio_logits = audio_logits.unsqueeze(0)
-                elif audio_logits.dim() == 4:
-                    if audio_logits.shape[1] != audio_labels.shape[1]:
-                        audio_logits = audio_logits.transpose(1, 2)
-                else:
-                    print(f"WARNING: Unexpected audio_logits shape: {audio_logits.shape}")
+            # CRITICAL: Add NaN/Inf detection for model outputs
+            if text_logits is not None:
+                if torch.isnan(text_logits).any() or torch.isinf(text_logits).any():
+                    print(f"WARNING: Invalid text_logits detected!")
                     return {
-                        'text_loss': text_loss,
-                        'audio_loss': torch.tensor(0.1, device=audio_logits.device, requires_grad=True),
-                        'combined_loss': text_loss + torch.tensor(0.1, device=audio_logits.device, requires_grad=True)
+                        'text_loss': torch.tensor(1e-6, device=text_logits.device, requires_grad=True),
+                        'audio_loss': torch.tensor(0.0, device=text_logits.device, requires_grad=True),
+                        'combined_loss': torch.tensor(1e-6, device=text_logits.device, requires_grad=True)
                     }
             
-            num_codebooks = audio_labels.shape[1]
+            if audio_logits is not None:
+                if torch.isnan(audio_logits).any() or torch.isinf(audio_logits).any():
+                    print(f"WARNING: Invalid audio_logits detected!")
+                    return {
+                        'text_loss': torch.tensor(0.0, device=audio_logits.device, requires_grad=True),
+                        'audio_loss': torch.tensor(1e-6, device=audio_logits.device, requires_grad=True),
+                        'combined_loss': torch.tensor(1e-6, device=audio_logits.device, requires_grad=True)
+                    }
             
-            for codebook_idx in range(num_codebooks):
-                try:
-                    if audio_logits.dim() == 4:
-                        codebook_logits = audio_logits[:, codebook_idx, :, :]
+            # Text generation loss
+            if text_labels is not None and text_logits is not None:
+                batch_size = text_labels.shape[0]
+                label_seq_len = text_labels.shape[1]
+                logit_seq_len = text_logits.shape[1]
+                
+                if logit_seq_len != label_seq_len:
+                    text_logits = text_logits[:, :label_seq_len, :]
+                
+                text_logits_flat = text_logits.contiguous().view(-1, text_logits.size(-1))
+                text_labels_flat = text_labels.contiguous().view(-1)
+                
+                if text_logits_flat.shape[0] != text_labels_flat.shape[0]:
+                    min_len = min(text_logits_flat.shape[0], text_labels_flat.shape[0])
+                    text_logits_flat = text_logits_flat[:min_len]
+                    text_labels_flat = text_labels_flat[:min_len]
+                
+                # Check for valid tokens
+                valid_mask = text_labels_flat != -100
+                if valid_mask.sum() > 0:
+                    text_loss = nn.functional.cross_entropy(
+                        text_logits_flat,
+                        text_labels_flat,
+                        ignore_index=-100,
+                        reduction='mean'
+                    )
+                    
+                    if torch.isnan(text_loss) or torch.isinf(text_loss):
+                        print(f"WARNING: Invalid text_loss detected")
+                        text_loss = torch.tensor(0.0, device=text_loss.device, requires_grad=True)
+            
+            # Audio generation loss (multi-codebook)
+            if audio_labels is not None and audio_logits is not None:
+                valid_codebook_count = 0
+                
+                # Handle tensor dimensions
+                if audio_labels.dim() == 2:
+                    audio_labels = audio_labels.unsqueeze(0)
+                elif audio_labels.dim() != 3:
+                    print(f"WARNING: Unexpected audio_labels shape: {audio_labels.shape}")
+                    return {
+                        'text_loss': text_loss,
+                        'audio_loss': torch.tensor(1e-6, device=audio_labels.device, requires_grad=True),
+                        'combined_loss': text_loss + torch.tensor(1e-6, device=audio_labels.device, requires_grad=True)
+                    }
+                
+                if audio_logits is not None:
+                    if audio_logits.dim() == 3:
+                        audio_logits = audio_logits.unsqueeze(0)
+                    elif audio_logits.dim() == 4:
+                        if audio_logits.shape[1] != audio_labels.shape[1]:
+                            audio_logits = audio_logits.transpose(1, 2)
                     else:
-                        codebook_logits = audio_logits[..., codebook_idx, :]
-                        
-                    codebook_labels = audio_labels[:, codebook_idx, :]
-                    
-                    if codebook_logits.shape[1] != codebook_labels.shape[1]:
-                        min_seq_len = min(codebook_logits.shape[1], codebook_labels.shape[1])
-                        codebook_logits = codebook_logits[:, :min_seq_len, :]
-                        codebook_labels = codebook_labels[:, :min_seq_len]
-                    
-                    valid_mask = codebook_labels != -100
-                    if valid_mask.sum() > 0:
-                        # STABILITY FIX 3: Cast to float32 for numerical stability
-                        codebook_logits_float = codebook_logits.float()
-                        
-                        # STABILITY FIX 4: Analyze token distribution for collapse detection
-                        valid_labels = codebook_labels[valid_mask]
-                        if len(valid_labels) > 0:
-                            # Calculate token distribution entropy
-                            token_counts = torch.bincount(valid_labels)
-                            token_probs = token_counts.float() / token_counts.sum()
-                            entropy = -torch.sum(token_probs * torch.log2(token_probs + 1e-10))
-                            codebook_entropies.append(entropy.item())
-                            
-                            # Check for token dominance (collapse indicator)
-                            max_token_ratio = token_counts.max().float() / token_counts.sum()
-                            if max_token_ratio > 0.5:  # More than 50% dominance
-                                print(f"WARNING: Codebook {codebook_idx} shows token dominance: {max_token_ratio:.1%}")
-                        
-                        # STABILITY FIX 5: Class-balanced cross-entropy with label smoothing
-                        # Calculate class weights to handle imbalanced tokens
-                        unique_labels = torch.unique(valid_labels)
-                        if len(unique_labels) > 1:
-                            # Use inverse frequency weighting
-                            class_counts = torch.bincount(valid_labels, minlength=codebook_logits.shape[-1])
-                            class_weights = 1.0 / (class_counts.float() + 1e-6)
-                            class_weights = class_weights / class_weights.sum() * len(unique_labels)
-                            
-                            # Apply class-balanced loss
-                            codebook_loss = nn.functional.cross_entropy(
-                                codebook_logits_float.contiguous().view(-1, codebook_logits_float.size(-1)),
-                                codebook_labels.contiguous().view(-1),
-                                weight=class_weights,
-                                ignore_index=-100,
-                                reduction='mean',
-                                label_smoothing=0.1  # Prevent overconfidence
-                            )
+                        print(f"WARNING: Unexpected audio_logits shape: {audio_logits.shape}")
+                        return {
+                            'text_loss': text_loss,
+                            'audio_loss': torch.tensor(1e-6, device=audio_logits.device, requires_grad=True),
+                            'combined_loss': text_loss + torch.tensor(1e-6, device=audio_logits.device, requires_grad=True)
+                        }
+                
+                num_codebooks = audio_labels.shape[0]
+                
+                for codebook_idx in range(num_codebooks):
+                    try:
+                        if audio_logits.dim() == 4:
+                            codebook_logits = audio_logits[:, codebook_idx, :, :]
                         else:
-                            # Fallback to standard cross-entropy
+                            codebook_logits = audio_logits[..., codebook_idx, :]
+                            
+                        codebook_labels = audio_labels[:, codebook_idx, :]
+                        
+                        if codebook_logits.shape[1] != codebook_labels.shape[1]:
+                            min_seq_len = min(codebook_logits.shape[1], codebook_labels.shape[1])
+                            codebook_logits = codebook_logits[:, :min_seq_len, :]
+                            codebook_labels = codebook_labels[:, :min_seq_len]
+                        
+                        valid_mask = codebook_labels != -100
+                        if valid_mask.sum() > 0:
                             codebook_loss = nn.functional.cross_entropy(
-                                codebook_logits_float.contiguous().view(-1, codebook_logits_float.size(-1)),
+                                codebook_logits.contiguous().view(-1, codebook_logits.size(-1)),
                                 codebook_labels.contiguous().view(-1),
                                 ignore_index=-100,
-                                reduction='mean',
-                                label_smoothing=0.1
+                                reduction='mean'
                             )
-                        
-                        if torch.isnan(codebook_loss) or torch.isinf(codebook_loss):
-                            print(f"WARNING: Invalid codebook_loss for codebook {codebook_idx}")
-                            continue
-                        
-                        codebook_losses.append(codebook_loss)
-                        valid_codebook_count += 1
-                        
-                        # Log diagnostics
-                        valid_tokens = valid_mask.sum().item()
-                        if valid_tokens < 5:
-                            print(f"WARNING: Only {valid_tokens} valid tokens in codebook {codebook_idx}")
-                        
-                except Exception as e:
-                    print(f"ERROR: Failed to compute loss for codebook {codebook_idx}: {e}")
-                    continue
-            
-            # Aggregate audio losses with entropy regularization
-            if valid_codebook_count > 0:
-                # STABILITY FIX 6: Entropy regularization to prevent collapse
-                mean_entropy = np.mean(codebook_entropies) if codebook_entropies else 0
-                entropy_penalty = 0.0
+                            
+                            if torch.isnan(codebook_loss) or torch.isinf(codebook_loss):
+                                print(f"WARNING: Invalid codebook_loss for codebook {codebook_idx}")
+                                continue
+                            
+                            audio_loss += codebook_loss
+                            valid_codebook_count += 1
+                            
+                    except Exception as e:
+                        print(f"ERROR: Failed to compute loss for codebook {codebook_idx}: {e}")
+                        continue
                 
-                if mean_entropy < 2.0:  # Low entropy indicates potential collapse
-                    entropy_penalty = (2.0 - mean_entropy) * 0.1  # Small penalty
-                    print(f"INFO: Adding entropy penalty: {entropy_penalty:.4f} (entropy: {mean_entropy:.2f})")
-                
-                # Average codebook losses
-                audio_loss = torch.stack(codebook_losses).mean() + entropy_penalty
+                if valid_codebook_count > 0:
+                    audio_loss = audio_loss / valid_codebook_count
+        
+            # Combine losses with adaptive weighting to prevent one modality from dominating
+            # Use adaptive weighting based on loss magnitudes to ensure balanced training
+            if text_loss > 0 and audio_loss > 0:
+                # Normalize losses to similar scales before combining
+                text_weight = 1.0
+                audio_weight = min(text_loss.item() / max(audio_loss.item(), 1e-6), 2.0)  # Cap at 2.0
+                combined_loss = text_loss * text_weight + audio_loss * audio_weight
             else:
-                audio_loss = torch.tensor(0.1, device=audio_logits.device, requires_grad=True)
+                # Fallback for edge cases
+                combined_loss = text_loss + audio_loss
         
-        # STABILITY FIX 7: Fixed weighting to prevent instability
-        if isinstance(text_loss, torch.Tensor) and isinstance(audio_loss, torch.Tensor):
-            # Use fixed, research-backed weights
-            text_weight = 0.3  # Fixed weight for text loss
-            audio_weight = 0.7  # Fixed weight for audio loss (primary task)
-            combined_loss = text_loss * text_weight + audio_loss * audio_weight
-        elif isinstance(text_loss, torch.Tensor):
-            combined_loss = text_loss
-        elif isinstance(audio_loss, torch.Tensor):
-            combined_loss = audio_loss
-        else:
-            # Emergency fallback
-            device = next(self.model.parameters()).device
-            combined_loss = torch.tensor(0.1, device=device, requires_grad=True)
-            text_loss = torch.tensor(0.05, device=device, requires_grad=True)
-            audio_loss = torch.tensor(0.05, device=device, requires_grad=True)
-            print("WARNING: Both losses invalid, using fallback values")
+            # Final validation
+            if torch.isnan(combined_loss) or torch.isinf(combined_loss):
+                print(f"CRITICAL: Final combined_loss is invalid: {combined_loss}")
+                combined_loss = torch.tensor(1e-6, requires_grad=True)
         
-        # STABILITY FIX 8: Final validation with proper bounds
-        if torch.isnan(combined_loss) or torch.isinf(combined_loss) or combined_loss < 0:
-            print(f"CRITICAL: Invalid combined_loss detected: {combined_loss}")
-            device = next(self.model.parameters()).device
-            combined_loss = torch.tensor(0.1, device=device, requires_grad=True)
-            if not isinstance(text_loss, torch.Tensor):
-                text_loss = torch.tensor(0.05, device=device, requires_grad=True)
-            if not isinstance(audio_loss, torch.Tensor):
-                audio_loss = torch.tensor(0.05, device=device, requires_grad=True)
-        
-        # Log comprehensive diagnostics every 20 steps
-        if hasattr(self, '_step_counter'):
-            self._step_counter += 1
-        else:
-            self._step_counter = 1
-            
-        if self._step_counter % 20 == 0:
-            print(f"DIAGNOSTICS [Step {self._step_counter}]:")
-            print(f"  Text Loss: {text_loss.item() if isinstance(text_loss, torch.Tensor) else text_loss:.4f}")
-            print(f"  Audio Loss: {audio_loss.item() if isinstance(audio_loss, torch.Tensor) else audio_loss:.4f}")
-            print(f"  Combined Loss: {combined_loss.item():.4f}")
-            print(f"  Valid Codebooks: {valid_codebook_count}")
-            if codebook_entropies:
-                print(f"  Mean Codebook Entropy: {np.mean(codebook_entropies):.2f}")
-        
-        return {
-            'text_loss': text_loss,
-            'audio_loss': audio_loss,
-            'combined_loss': combined_loss
-        }
+            return {
+                'text_loss': text_loss,
+                'audio_loss': audio_loss,
+                'combined_loss': combined_loss
+            }
     
     def save_lora_adapters(self, save_path: str):
         """Save only the LoRA adapters"""
@@ -579,15 +488,15 @@ def main():
     
     # Create LoRA configuration optimized for Arabic+English voice cloning
     lora_config = HiggsAudioLoRAConfig(
-        lora_r=8,
-        lora_alpha=16,
-        lora_dropout=0.2,
+        lora_r=16,
+        lora_alpha=32,
+        lora_dropout=0.1,
         freeze_base_model=True,
         freeze_audio_tower=True,
         freeze_audio_encoder_proj=False,
         enable_audio_lora=True,
-        audio_lora_r=4,
-        audio_lora_alpha=8,
+        audio_lora_r=8,
+        audio_lora_alpha=16,
         enable_multilingual_lora=True
     )
     
