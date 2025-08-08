@@ -35,10 +35,10 @@ class HiggsAudioLoRAConfig:
     
     def __init__(
         self,
-        # LoRA hyperparameters - REDUCED to prevent overfitting
-        lora_r: int = 8,  # Reduced from 16 to 8
-        lora_alpha: int = 16,  # Reduced from 32 to 16
-        lora_dropout: float = 0.2,  # Increased from 0.1 to 0.2 for better regularization
+        # LoRA hyperparameters
+        lora_r: int = 16,
+        lora_alpha: int = 32,
+        lora_dropout: float = 0.1,
         
         # Target modules for LoRA
         target_modules: Optional[List[str]] = None,
@@ -48,10 +48,10 @@ class HiggsAudioLoRAConfig:
         freeze_audio_tower: bool = True,
         freeze_audio_encoder_proj: bool = False,
         
-        # Audio-specific LoRA - REDUCED to prevent overfitting
+        # Audio-specific LoRA
         enable_audio_lora: bool = True,
-        audio_lora_r: int = 4,  # Reduced from 8 to 4
-        audio_lora_alpha: int = 8,  # Reduced from 16 to 8
+        audio_lora_r: int = 8,
+        audio_lora_alpha: int = 16,
         
         # Language-specific settings
         enable_multilingual_lora: bool = True,
@@ -484,15 +484,15 @@ def main():
     
     # Create LoRA configuration optimized for Arabic+English voice cloning
     lora_config = HiggsAudioLoRAConfig(
-        lora_r=8,
-        lora_alpha=16,
-        lora_dropout=0.2,
+        lora_r=16,
+        lora_alpha=32,
+        lora_dropout=0.1,
         freeze_base_model=True,
         freeze_audio_tower=True,
         freeze_audio_encoder_proj=False,
         enable_audio_lora=True,
-        audio_lora_r=4,
-        audio_lora_alpha=8,
+        audio_lora_r=8,
+        audio_lora_alpha=16,
         enable_multilingual_lora=True
     )
     
