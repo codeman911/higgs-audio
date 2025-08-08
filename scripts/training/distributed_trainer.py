@@ -410,6 +410,27 @@ class HiggsAudioDistributedTrainer:
             device=self.accelerator.device
         )
         
+        # CRITICAL DEBUG: Check codebook configuration mismatch
+        from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
+        model_config = HiggsAudioConfig.from_pretrained(self.config.model_path)
+        
+        self.logger.info(f"=== CODEBOOK CONFIGURATION DEBUG ===")
+        self.logger.info(f"Model expects audio_num_codebooks: {model_config.audio_num_codebooks}")
+        self.logger.info(f"Audio tokenizer has num_codebooks: {audio_tokenizer.num_codebooks}")
+        self.logger.info(f"Audio tokenizer n_q: {audio_tokenizer.n_q}")
+        
+        if model_config.audio_num_codebooks != audio_tokenizer.num_codebooks:
+            self.logger.error(f"CODEBOOK MISMATCH DETECTED!")
+            self.logger.error(f"Model expects {model_config.audio_num_codebooks} codebooks")
+            self.logger.error(f"Audio tokenizer provides {audio_tokenizer.num_codebooks} codebooks")
+            self.logger.error(f"This will cause tensor size mismatch in _embed_audio_ids")
+            
+            # Try to fix by overriding the collator configuration
+            self.logger.info(f"Attempting to fix by using audio tokenizer's codebook count...")
+            model_config.audio_num_codebooks = audio_tokenizer.num_codebooks
+        
+        self.logger.info(f"=== END CODEBOOK DEBUG ===")
+        
         # Create datasets
         train_dataset = ArabicEnglishDataset(
             train_samples,
