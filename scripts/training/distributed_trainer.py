@@ -136,8 +136,10 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
         sample = self.samples[idx]
         messages = sample['messages']
         
-        # 1) Build Message/TextContent/AudioContent objects and collect audio tokens
-        processed_messages: list[Message] = []
+        # 1) Build raw ChatML-like message dicts and collect audio tokens
+        # IMPORTANT: prepare_chatml_sample expects a dict-structured ChatML sample,
+        # not instantiated Message/TextContent/AudioContent objects.
+        processed_messages: list[dict] = []
         reference_audio_ids: list[torch.Tensor] = []
         target_audio_ids: list[torch.Tensor] = []
 
@@ -146,14 +148,14 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
             content = message["content"]
 
             if isinstance(content, str):
-                processed_messages.append(Message(role=role, content=content))
+                processed_messages.append({"role": role, "content": content})
                 continue
 
             if isinstance(content, list):
-                proc_content = []
+                proc_content: list[dict] = []
                 for item in content:
                     if item.get("type") == "text":
-                        proc_content.append(TextContent(text=item["text"]))
+                        proc_content.append({"type": "text", "text": item["text"]})
                     elif item.get("type") == "audio":
                         audio_url = item["audio_url"]
                         try:
@@ -163,20 +165,14 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
                                     reference_audio_ids.append(audio_tokens)
                                 elif role == "assistant":
                                     target_audio_ids.append(audio_tokens)
-                                proc_content.append(
-                                    AudioContent(audio_url=audio_url, raw_audio=audio_url, duration=None)
-                                )
+                                proc_content.append({"type": "audio", "audio_url": audio_url})
                             else:
                                 print(f"Warning: Audio file not found: {audio_url}")
-                                proc_content.append(
-                                    AudioContent(audio_url=audio_url, raw_audio="", duration=0.0)
-                                )
+                                proc_content.append({"type": "audio", "audio_url": audio_url})
                         except Exception as e:
                             print(f"Error processing audio {audio_url}: {e}")
-                            proc_content.append(
-                                AudioContent(audio_url=audio_url, raw_audio="", duration=0.0)
-                            )
-                processed_messages.append(Message(role=role, content=proc_content))
+                            proc_content.append({"type": "audio", "audio_url": audio_url})
+                processed_messages.append({"role": role, "content": proc_content})
 
         # 2) Use prepare_chatml_sample to create proper text input/labels with <AUDIO>/<AUDIO_OUT> placeholders
         chatml_like = {
