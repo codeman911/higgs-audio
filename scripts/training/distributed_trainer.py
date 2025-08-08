@@ -128,38 +128,40 @@ class UnifiedChatMLDataset(torch.utils.data.Dataset):
             self.samples = json.load(f)
         
         print(f"Loaded {len(self.samples)} samples from {data_file}")
+        
+        # Build a filtered index list that guarantees both user ref audio and assistant target audio
+        if self.require_reference_audio:
+            self.eligible_indices = []
+            for i, s in enumerate(self.samples):
+                has_user_audio = False
+                has_assistant_audio = False
+                for m in s.get('messages', []):
+                    role = m.get('role')
+                    content = m.get('content')
+                    if isinstance(content, list):
+                        for it in content:
+                            if isinstance(it, dict) and it.get('type') == 'audio':
+                                if role == 'user':
+                                    has_user_audio = True
+                                elif role == 'assistant':
+                                    has_assistant_audio = True
+                if has_user_audio and has_assistant_audio:
+                    self.eligible_indices.append(i)
+            
+            if len(self.eligible_indices) == 0:
+                print("[WARN] UnifiedChatMLDataset: No samples with both user reference audio and assistant target audio were found. All samples will be used; batches may lack reference audio.")
+                self.eligible_indices = list(range(len(self.samples)))
+        else:
+            self.eligible_indices = list(range(len(self.samples)))
     
     def __len__(self):
-        return len(self.samples)
+        return len(self.eligible_indices)
     
     def __getitem__(self, idx):
-        """Process sample exactly like inference pipeline"""
-        # Optionally resample until a sample has both user ref audio and assistant target audio
-        attempts = 0
-        while True:
-            sample = self.samples[idx]
-            messages = sample['messages']
-            # Fast check for presence of audio entries
-            has_user_audio = False
-            has_assistant_audio = False
-            for m in messages:
-                role = m.get('role')
-                content = m.get('content')
-                if isinstance(content, list):
-                    for it in content:
-                        if isinstance(it, dict) and it.get('type') == 'audio':
-                            if role == 'user':
-                                has_user_audio = True
-                            elif role == 'assistant':
-                                has_assistant_audio = True
-            if not self.require_reference_audio or (has_user_audio and has_assistant_audio):
-                break
-            # Resample
-            attempts += 1
-            if attempts > 5:
-                # Give up and use current sample to avoid infinite loop
-                break
-            idx = (idx + 1) % len(self.samples)
+        # Map through eligible indices to guarantee audio presence when required
+        true_idx = self.eligible_indices[idx]
+        sample = self.samples[true_idx]
+        messages = sample['messages']
         
         # 1) Build raw ChatML-like message dicts and collect audio tokens
         # IMPORTANT: prepare_chatml_sample expects a dict-structured ChatML sample,
