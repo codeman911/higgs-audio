@@ -578,10 +578,22 @@ class HiggsAudioDistributedTrainer:
                     from dataclasses import asdict
                     batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
                     
-                    # Extract labels for loss computation
+                    # Debug: Print batch keys to understand what we're getting
+                    if step == 0:
+                        self.logger.info(f"Batch keys: {list(batch_dict.keys())}")
+                    
+                    # Extract ALL label-related keys for loss computation
                     labels = batch_dict.pop("label_ids", None)
                     audio_labels = batch_dict.pop("label_audio_ids", None)
                     
+                    # Remove any other label-related keys that might cause issues
+                    batch_dict.pop("labels", None)  # Remove if present
+                    batch_dict.pop("audio_labels", None)  # Remove if present
+                    
+                    # Debug: Print remaining keys after label extraction
+                    if step == 0:
+                        self.logger.info(f"Model input keys: {list(batch_dict.keys())}")
+                     
                     # Forward pass (model doesn't accept labels)
                     outputs = model(**batch_dict)
                     
