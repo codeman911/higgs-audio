@@ -34,6 +34,7 @@ sys.path.insert(0, str(project_root))
 try:
     from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
     from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
+    from boson_multimodal.data_types import Message, TextContent, AudioContent
     from scripts.training.lora_integration import HiggsAudioLoRAConfig, create_lora_model
 except ImportError:
     # Fallback for different project structures
@@ -43,6 +44,7 @@ except ImportError:
     sys.path.insert(0, project_root)
     from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
     from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
+    from boson_multimodal.data_types import Message, TextContent, AudioContent
     from scripts.training.lora_integration import HiggsAudioLoRAConfig, create_lora_model
 
 
