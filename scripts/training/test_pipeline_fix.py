@@ -53,8 +53,8 @@ def test_audio_separation():
     logger.info("=" * 50)
     
     try:
-        # Initialize tokenizers
-        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-3B-Instruct")
+        # Initialize tokenizers - USE EXACT HIGGS-AUDIO MODEL ID
+        tokenizer = AutoTokenizer.from_pretrained("bosonai/higgs-audio-v2-generation-3B-base")
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             
