@@ -542,9 +542,7 @@ class HiggsAudioDistributedTrainer:
         
         # Create LoRA model
         trainer = create_lora_model(
-            base_model_path=self.config.model_path,
-            tokenizer=tokenizer,
-            audio_tokenizer=audio_tokenizer,
+            model_path=self.config.model_path,
             lora_config=lora_config,
             device="cpu",  # Build on CPU; Accelerate will place on the correct GPU
             model_config=self.corrected_model_config
@@ -610,6 +608,7 @@ class HiggsAudioDistributedTrainer:
         
         # Setup scheduler
         scheduler = self.setup_scheduler(optimizer, num_training_steps)
+        scheduler = self.accelerator.prepare(scheduler)
         
         # Training loop
         global_step = 0
