@@ -623,20 +623,9 @@ class HiggsAudioDistributedTrainer:
                 from dataclasses import asdict
                 batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
                 
-                # Debug: Print batch keys to understand what we're getting
-                if step == 0:
-                    self.logger.info(f"Original batch keys: {list(batch_dict.keys())}")
-                
-                # CRITICAL: Extract labels BEFORE model forward to prevent PEFT/Accelerate transformation
-                # The issue is that PEFT/Accelerate middleware transforms label_ids -> labels
-                # but HiggsAudioModel expects label_ids, not labels
-                labels = batch_dict.pop("label_ids", None)
-                audio_labels = batch_dict.pop("label_audio_ids", None)
-                
-                # Debug: Print model input keys after label extraction
-                if step == 0:
-                    self.logger.info(f"Model input keys (no labels): {list(batch_dict.keys())}")
-                    self.logger.info(f"Extracted labels shapes: labels={labels.shape if labels is not None else None}, audio_labels={audio_labels.shape if audio_labels is not None else None}")
+                # Extract labels before removing them from batch
+                labels = batch_dict.get('label_ids')
+                audio_labels = batch_dict.get('label_audio_ids')
                 
                 # CRITICAL FIX: Create clean model inputs without any labels
                 model_inputs = {
@@ -654,9 +643,6 @@ class HiggsAudioDistributedTrainer:
                 # Remove None values
                 model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                 
-                if step == 0:
-                    self.logger.info(f"Clean model inputs: {list(model_inputs.keys())}")
-                
                 # Get the underlying HiggsAudioModel and call it directly
                 if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
                     # PEFT wrapped: model.base_model.model is the actual HiggsAudioModel
@@ -666,9 +652,6 @@ class HiggsAudioDistributedTrainer:
                     actual_model = model.module
                 else:
                     actual_model = model
-                
-                if step == 0:
-                    self.logger.info(f"Calling model type: {type(actual_model)}")
                 
                 # CRITICAL FIX: Ensure all model inputs are on the same device as the model
                 model_device = next(actual_model.parameters()).device
@@ -682,13 +665,17 @@ class HiggsAudioDistributedTrainer:
                     labels = labels.to(model_device)
                 if torch.is_tensor(audio_labels):
                     audio_labels = audio_labels.to(model_device)
+
+                # Forward pass - call model.forward() directly with explicit arguments
+                outputs = actual_model(**model_inputs)
                 
-                # Call the actual model forward with clean inputs (no labels)
-                with self.accelerator.accumulate(model):
-                    outputs = actual_model(**model_inputs)
+                # Prepare batch for loss computation
+                loss_batch = {
+                    'labels': labels,
+                    'audio_labels': audio_labels
+                }
                 
-                # Compute loss using LoRA trainer with extracted labels
-                loss_batch = {"labels": labels, "audio_labels": audio_labels}
+                # Compute loss using LoRA trainer
                 loss_dict = lora_trainer.compute_loss(loss_batch, outputs)
                 
                 # Extract individual losses
@@ -728,10 +715,6 @@ class HiggsAudioDistributedTrainer:
                         })
                     
                     train_loss = 0.0
-                    
-                    # Update tqdm progress bar description with loss information
-                    tqdm_description = f"Epoch {epoch + 1}, Text Loss = {text_loss_val:.4f}, Audio Loss = {audio_loss_val:.4f}, Combined Loss = {combined_loss_val:.4f}"
-                    tqdm.get_tqdm().set_description(tqdm_description)
             
             # Validation
             if global_step % self.config.eval_steps == 0:
