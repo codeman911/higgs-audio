@@ -60,7 +60,7 @@ class TrainingConfig:
     num_epochs: int = 3
     batch_size_per_device: int = 2
     gradient_accumulation_steps: int = 8
-    learning_rate: float = 2e-4
+    learning_rate: float = 1e-5  # CRITICAL FIX: Reduced from 2e-4 to prevent gradient explosion
     weight_decay: float = 0.01
     warmup_ratio: float = 0.1
     max_grad_norm: float = 1.0
