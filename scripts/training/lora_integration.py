@@ -306,11 +306,39 @@ class HiggsAudioLoRATrainer:
         # Audio generation loss (multi-codebook)
         if audio_labels is not None and audio_logits is not None:
             audio_loss = 0.0
-            num_codebooks = audio_labels.shape[1]
+            
+            # CRITICAL FIX: Handle different audio_labels tensor dimensions
+            # audio_labels can be either [batch, codebooks, seq] or [codebooks, seq]
+            if audio_labels.dim() == 2:
+                # Missing batch dimension: [codebooks, seq] -> [1, codebooks, seq]
+                audio_labels = audio_labels.unsqueeze(0)
+            elif audio_labels.dim() == 3:
+                # Correct shape: [batch, codebooks, seq]
+                pass
+            else:
+                raise ValueError(f"Unexpected audio_labels shape: {audio_labels.shape}")
+            
+            # Ensure audio_logits has compatible shape
+            if audio_logits.dim() == 3:
+                # Missing batch dimension: [codebooks, seq, vocab] -> [1, codebooks, seq, vocab]
+                audio_logits = audio_logits.unsqueeze(0)
+            elif audio_logits.dim() == 4:
+                # Correct shape: [batch, seq, codebooks, vocab] or [batch, codebooks, seq, vocab]
+                # Check if we need to transpose dimensions
+                if audio_logits.shape[1] != audio_labels.shape[1]:  # codebooks dimension mismatch
+                    # Likely [batch, seq, codebooks, vocab] -> [batch, codebooks, seq, vocab]
+                    audio_logits = audio_logits.transpose(1, 2)
+            
+            num_codebooks = audio_labels.shape[1]  # Now guaranteed to be dim 1
             
             for codebook_idx in range(num_codebooks):
-                codebook_logits = audio_logits[..., codebook_idx, :]
-                codebook_labels = audio_labels[:, codebook_idx, :]
+                # Extract codebook-specific logits and labels
+                if audio_logits.dim() == 4:
+                    codebook_logits = audio_logits[:, codebook_idx, :, :]  # [batch, seq, vocab]
+                else:
+                    codebook_logits = audio_logits[..., codebook_idx, :]   # fallback
+                    
+                codebook_labels = audio_labels[:, codebook_idx, :]  # [batch, seq]
                 
                 # Handle potential shape mismatch for audio tokens too
                 if codebook_logits.shape[1] != codebook_labels.shape[1]:
