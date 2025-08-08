@@ -157,10 +157,8 @@ class UnifiedLoRADataPipeline:
             processor = ManifestChatMLProcessor(
                 manifest_path=self.manifest_path,
                 output_dir=self.chatml_dir,
+                max_samples=self.max_samples,
                 train_split=self.train_split,
-                target_sample_rate=self.target_sample_rate,
-                max_duration=self.max_duration,
-                min_duration=self.min_duration,
                 random_seed=self.random_seed
             )
             
