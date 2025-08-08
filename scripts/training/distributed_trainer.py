@@ -109,232 +109,116 @@ class TrainingConfig:
     mixed_weight: float = 1.5  # Higher weight for code-switching samples
 
 
-class ArabicEnglishDataset(torch.utils.data.Dataset):
-    """Dataset for Arabic-English ChatML samples with CORRECTED audio processing"""
+class UnifiedChatMLDataset(torch.utils.data.Dataset):
+    """
+    Unified dataset that processes ChatML data exactly like inference pipeline.
+    Uses the same logic as test_inference_final.py and ZeroShotDataProcessor.
+    """
     
-    def __init__(
-        self,
-        chatml_samples: List[Dict],
-        tokenizer,
-        audio_tokenizer,
-    ):
-        self.samples = chatml_samples
-        self.tokenizer = tokenizer
+    def __init__(self, data_file, audio_tokenizer, text_tokenizer, max_length=2048):
         self.audio_tokenizer = audio_tokenizer
-         
+        self.text_tokenizer = text_tokenizer
+        self.max_length = max_length
+        
+        # Load ChatML samples
+        with open(data_file, 'r', encoding='utf-8') as f:
+            self.samples = json.load(f)
+        
+        print(f"Loaded {len(self.samples)} samples from {data_file}")
+    
     def __len__(self):
         return len(self.samples)
-     
+    
     def __getitem__(self, idx):
+        """Process sample exactly like inference pipeline"""
         sample = self.samples[idx]
-         
-        try:
-            # Convert back to ChatML format
-            from boson_multimodal.data_types import ChatMLSample, Message, AudioContent, TextContent
-            import librosa
-            import numpy as np
+        messages = sample['messages']
+        
+        # Convert to ChatML format exactly like inference
+        chatml_sample = self._create_chatml_sample(messages)
+        return chatml_sample
+    
+    def _create_chatml_sample(self, messages):
+        """Create ChatML sample using same logic as inference"""
+        # Process messages exactly like test_inference_final.py
+        processed_messages = []
+        reference_audio_ids = []
+        target_audio_ids = []
+        
+        for message in messages:
+            role = message['role']
+            content = message['content']
             
-            messages = []
-            for msg_data in sample['messages']:
-                content = msg_data['content']
-                if isinstance(content, str):
-                    message_content = content
-                else:
-                    # Handle multimodal content
-                    message_content = []
-                    for c in content:
-                        if c['type'] == 'text':
-                            message_content.append(TextContent(text=c['text']))
-                        elif c['type'] == 'audio':
-                            message_content.append(AudioContent(
-                                audio_url=c.get('audio_url', ''),
-                                raw_audio=c.get('raw_audio', ''),
-                                duration=c.get('duration'),
-                                offset=c.get('offset')
+            if isinstance(content, str):
+                # Simple text content
+                processed_messages.append(Message(role=role, content=content))
+            elif isinstance(content, list):
+                # Mixed content (text + audio)
+                processed_content = []
+                
+                for item in content:
+                    if item['type'] == 'text':
+                        processed_content.append(TextContent(text=item['text']))
+                    elif item['type'] == 'audio':
+                        audio_url = item['audio_url']
+                        
+                        # Load and tokenize audio exactly like inference
+                        try:
+                            if os.path.exists(audio_url):
+                                # Tokenize audio using the same method as inference
+                                audio_tokens = self.audio_tokenizer.encode(audio_url)
+                                
+                                # Separate reference vs target audio
+                                if role == 'user':
+                                    # Reference audio for conditioning
+                                    reference_audio_ids.append(audio_tokens)
+                                elif role == 'assistant':
+                                    # Target audio for prediction
+                                    target_audio_ids.append(audio_tokens)
+                                
+                                processed_content.append(AudioContent(
+                                    audio_url=audio_url,
+                                    raw_audio=audio_url,
+                                    duration=None
+                                ))
+                            else:
+                                print(f"Warning: Audio file not found: {audio_url}")
+                                # Add empty audio content
+                                processed_content.append(AudioContent(
+                                    audio_url=audio_url,
+                                    raw_audio="",
+                                    duration=0.0
+                                ))
+                        except Exception as e:
+                            print(f"Error processing audio {audio_url}: {e}")
+                            # Add empty audio content
+                            processed_content.append(AudioContent(
+                                audio_url=audio_url,
+                                raw_audio="",
+                                duration=0.0
                             ))
                 
-                messages.append(Message(
-                    role=msg_data['role'],
-                    content=message_content
-                ))
-            
-            chatml_sample = ChatMLSample(
-                messages=messages,
-                start_index=sample.get('start_index', 0),
-                speaker=sample.get('speaker'),
-                misc=sample.get('misc', {})
-            )
-            
-            # Get tokens from prepare_chatml_sample
-            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(chatml_sample, self.tokenizer)
-            
-            if input_tokens is None:
-                return self._create_dummy_sample()
-            
-            # Convert to tensors
-            input_ids = torch.tensor(input_tokens, dtype=torch.long)
-            label_ids = torch.tensor(label_tokens, dtype=torch.long)
-            
-            # CRITICAL FIX: Separate reference and target audio processing
-            reference_audio_waveforms = []
-            reference_audio_ids_list = []
-            reference_audio_sample_rates = []
-            reference_waveforms_start = []
-            reference_ids_start = []
-            
-            target_audio_waveforms = []
-            target_audio_ids_list = []
-            target_audio_sample_rates = []
-            target_waveforms_start = []
-            target_ids_start = []
-            
-            current_ref_waveform_pos = 0
-            current_ref_audio_pos = 0
-            current_target_waveform_pos = 0
-            current_target_audio_pos = 0
-            
-            # Determine which audio is reference vs target based on message role
-            for i, audio_content in enumerate(audio_contents):
-                # Find which message this audio belongs to
-                audio_role = None
-                for msg in messages:
-                    if isinstance(msg.content, list):
-                        for content_item in msg.content:
-                            if (isinstance(content_item, AudioContent) and 
-                                content_item.raw_audio == audio_content.raw_audio):
-                                audio_role = msg.role
-                                break
-                    if audio_role:
-                        break
-                
-                try:
-                    if audio_content.raw_audio and os.path.exists(audio_content.raw_audio):
-                        # Load audio
-                        waveform, sr = librosa.load(audio_content.raw_audio, sr=16000)
-                        
-                        # Tokenize audio
-                        audio_tokens = self.audio_tokenizer.encode(waveform, sr)
-                        if audio_tokens is not None and len(audio_tokens) > 0:
-                            if len(audio_tokens.shape) == 1:
-                                audio_tokens = audio_tokens.unsqueeze(0)
-                        else:
-                            # Create empty tokens for failed tokenization
-                            audio_tokens = torch.zeros((8, 1), dtype=torch.long)
-                        
-                        # CRITICAL: Separate reference (user) vs target (assistant) audio
-                        if audio_role == 'user':
-                            # Reference audio - used for CONDITIONING (like inference)
-                            reference_waveforms_start.append(current_ref_waveform_pos)
-                            reference_ids_start.append(current_ref_audio_pos)
-                            
-                            reference_audio_waveforms.extend(waveform.tolist())
-                            current_ref_waveform_pos += len(waveform)
-                            reference_audio_sample_rates.append(sr)
-                            
-                            reference_audio_ids_list.append(audio_tokens)
-                            current_ref_audio_pos += audio_tokens.shape[1]
-                            
-                        elif audio_role == 'assistant':
-                            # Target audio - used for PREDICTION (training labels)
-                            target_waveforms_start.append(current_target_waveform_pos)
-                            target_ids_start.append(current_target_audio_pos)
-                            
-                            target_audio_waveforms.extend(waveform.tolist())
-                            current_target_waveform_pos += len(waveform)
-                            target_audio_sample_rates.append(sr)
-                            
-                            target_audio_ids_list.append(audio_tokens)
-                            current_target_audio_pos += audio_tokens.shape[1]
-                    else:
-                        # Missing audio file - add empty placeholders
-                        empty_tokens = torch.zeros((8, 1), dtype=torch.long)
-                        
-                        if audio_role == 'user':
-                            reference_waveforms_start.append(current_ref_waveform_pos)
-                            reference_ids_start.append(current_ref_audio_pos)
-                            reference_audio_sample_rates.append(16000)
-                            reference_audio_ids_list.append(empty_tokens)
-                            current_ref_audio_pos += 1
-                        elif audio_role == 'assistant':
-                            target_waveforms_start.append(current_target_waveform_pos)
-                            target_ids_start.append(current_target_audio_pos)
-                            target_audio_sample_rates.append(16000)
-                            target_audio_ids_list.append(empty_tokens)
-                            current_target_audio_pos += 1
-                            
-                except Exception as e:
-                    logging.warning(f"Failed to process audio in sample {idx}: {e}")
-                    # Add empty placeholders for errors
-                    empty_tokens = torch.zeros((8, 1), dtype=torch.long)
-                    
-                    if audio_role == 'user':
-                        reference_waveforms_start.append(current_ref_waveform_pos)
-                        reference_ids_start.append(current_ref_audio_pos)
-                        reference_audio_sample_rates.append(16000)
-                        reference_audio_ids_list.append(empty_tokens)
-                        current_ref_audio_pos += 1
-                    elif audio_role == 'assistant':
-                        target_waveforms_start.append(current_target_waveform_pos)
-                        target_ids_start.append(current_target_audio_pos)
-                        target_audio_sample_rates.append(16000)
-                        target_audio_ids_list.append(empty_tokens)
-                        current_target_audio_pos += 1
-            
-            # Concatenate reference audio (for conditioning context)
-            if reference_audio_ids_list:
-                reference_audio_ids_concat = torch.cat(reference_audio_ids_list, dim=1)
-            else:
-                reference_audio_ids_concat = torch.empty((8, 0), dtype=torch.long)
-            
-            if reference_audio_waveforms:
-                reference_waveforms_concat = torch.tensor(reference_audio_waveforms, dtype=torch.float32)
-            else:
-                reference_waveforms_concat = torch.empty(0, dtype=torch.float32)
-            
-            # Concatenate target audio (for prediction labels)
-            if target_audio_ids_list:
-                target_audio_ids_concat = torch.cat(target_audio_ids_list, dim=1)
-            else:
-                target_audio_ids_concat = torch.empty((8, 0), dtype=torch.long)
-            
-            if target_audio_waveforms:
-                target_waveforms_concat = torch.tensor(target_audio_waveforms, dtype=torch.float32)
-            else:
-                target_waveforms_concat = torch.empty(0, dtype=torch.float32)
-            
-            # Create ChatMLDatasetSample with SEPARATED audio processing
-            dataset_sample = ChatMLDatasetSample(
-                input_ids=input_ids,
-                label_ids=label_ids,
-                # Reference audio for CONDITIONING (like inference)
-                audio_ids_concat=reference_audio_ids_concat,
-                audio_ids_start=torch.tensor(reference_ids_start, dtype=torch.long),
-                audio_waveforms_concat=reference_waveforms_concat,
-                audio_waveforms_start=torch.tensor(reference_waveforms_start, dtype=torch.long),
-                audio_sample_rate=torch.tensor(reference_audio_sample_rates, dtype=torch.float32),
-                audio_speaker_indices=torch.tensor([speaker_id] * len(reference_ids_start), dtype=torch.long) if speaker_id is not None else torch.empty(0, dtype=torch.long),
-                # Target audio for PREDICTION LABELS
-                audio_label_ids_concat=target_audio_ids_concat,
-            )
-            
-            return dataset_sample
-            
-        except Exception as e:
-            logging.error(f"Error processing sample {idx}: {e}")
-            return self._create_dummy_sample()
-
-    def _create_dummy_sample(self):
-        """Create a dummy sample for error cases"""
+                processed_messages.append(Message(role=role, content=processed_content))
+        
+        # Concatenate audio tokens exactly like inference
+        reference_audio_concat = None
+        target_audio_concat = None
+        
+        if reference_audio_ids:
+            reference_audio_concat = torch.cat([audio.cpu() for audio in reference_audio_ids], dim=1)
+        
+        if target_audio_ids:
+            target_audio_concat = torch.cat([audio.cpu() for audio in target_audio_ids], dim=1)
+        
+        # Create ChatMLDatasetSample exactly like inference
         return ChatMLDatasetSample(
-            input_ids=torch.tensor([1, 2, 3], dtype=torch.long),
-            label_ids=torch.tensor([-100, -100, -100], dtype=torch.long),
-            audio_ids_concat=torch.empty((8, 0), dtype=torch.long),
-            audio_ids_start=torch.tensor([]),
-            audio_waveforms_concat=torch.empty(0, dtype=torch.float32),
-            audio_waveforms_start=torch.tensor([]),
-            audio_sample_rate=torch.empty(0, dtype=torch.float32),
-            audio_speaker_indices=torch.empty(0, dtype=torch.long),
-            audio_label_ids_concat=torch.empty((8, 0), dtype=torch.long),
+            messages=processed_messages,
+            start_index=0,
+            speaker="unknown",
+            misc={},
+            # CRITICAL: Set audio fields exactly like inference expects
+            audio_ids_concat=reference_audio_concat,  # Reference audio for conditioning
+            audio_label_ids_concat=target_audio_concat,  # Target audio for loss
         )
 
 
@@ -524,16 +408,16 @@ class HiggsAudioDistributedTrainer:
         self.corrected_model_config = model_config
         
         # Create datasets
-        train_dataset = ArabicEnglishDataset(
-            train_samples,
-            tokenizer,
+        train_dataset = UnifiedChatMLDataset(
+            train_path,
             audio_tokenizer,
+            tokenizer,
         )
         
-        val_dataset = ArabicEnglishDataset(
-            val_samples,
-            tokenizer,
+        val_dataset = UnifiedChatMLDataset(
+            val_path,
             audio_tokenizer,
+            tokenizer,
         )
         
         # Create data collator with correct signature
