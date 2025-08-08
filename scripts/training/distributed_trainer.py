@@ -593,13 +593,31 @@ class HiggsAudioDistributedTrainer:
                         self.logger.info(f"Model input keys (no labels): {list(batch_dict.keys())}")
                         self.logger.info(f"Extracted labels shapes: labels={labels.shape if labels is not None else None}, audio_labels={audio_labels.shape if audio_labels is not None else None}")
                     
-                    # Forward pass WITHOUT labels (prevents middleware transformation)
-                    outputs = model(**batch_dict)
+                    # CRITICAL FIX: Call model.forward() directly with explicit arguments
+                    # This bypasses HuggingFace's **kwargs transformation that adds 'labels'
+                    # Filter to only include arguments that HiggsAudioModel.forward() actually accepts
+                    model_inputs = {
+                        'input_ids': batch_dict.get('input_ids'),
+                        'attention_mask': batch_dict.get('attention_mask'),
+                        'audio_features': batch_dict.get('audio_features'),
+                        'audio_feature_attention_mask': batch_dict.get('audio_feature_attention_mask'),
+                        'audio_in_ids': batch_dict.get('audio_in_ids'),
+                        'audio_in_ids_start': batch_dict.get('audio_in_ids_start'),
+                        'audio_out_ids': batch_dict.get('audio_out_ids'),
+                        'audio_out_ids_start': batch_dict.get('audio_out_ids_start'),
+                        'audio_out_ids_start_group_loc': batch_dict.get('audio_out_ids_start_group_loc'),
+                        'reward': batch_dict.get('reward'),
+                    }
+                    # Remove None values
+                    model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                     
-                    # Compute loss using LoRA trainer with extracted labels
-                    loss_batch = {"labels": labels, "audio_labels": audio_labels}
-                    loss = lora_trainer.compute_loss(loss_batch, outputs)
+                    if step == 0:
+                        self.logger.info(f"Final model inputs: {list(model_inputs.keys())}")
+                    
+                    # Call forward directly to bypass any middleware transformation
+                    outputs = model.forward(**model_inputs)
                 
+                loss = lora_trainer.compute_loss({"labels": labels, "audio_labels": audio_labels}, outputs)
                 train_loss += loss.item()
                 global_step += 1
                 
@@ -653,8 +671,26 @@ class HiggsAudioDistributedTrainer:
                 labels = batch_dict.pop("label_ids", None)
                 audio_labels = batch_dict.pop("label_audio_ids", None)
                 
-                # Forward pass WITHOUT labels (prevents middleware transformation)
-                outputs = model(**batch_dict)
+                # CRITICAL FIX: Call model.forward() directly with explicit arguments
+                # This bypasses HuggingFace's **kwargs transformation that adds 'labels'
+                # Filter to only include arguments that HiggsAudioModel.forward() actually accepts
+                model_inputs = {
+                    'input_ids': batch_dict.get('input_ids'),
+                    'attention_mask': batch_dict.get('attention_mask'),
+                    'audio_features': batch_dict.get('audio_features'),
+                    'audio_feature_attention_mask': batch_dict.get('audio_feature_attention_mask'),
+                    'audio_in_ids': batch_dict.get('audio_in_ids'),
+                    'audio_in_ids_start': batch_dict.get('audio_in_ids_start'),
+                    'audio_out_ids': batch_dict.get('audio_out_ids'),
+                    'audio_out_ids_start': batch_dict.get('audio_out_ids_start'),
+                    'audio_out_ids_start_group_loc': batch_dict.get('audio_out_ids_start_group_loc'),
+                    'reward': batch_dict.get('reward'),
+                }
+                # Remove None values
+                model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
+                
+                # Call forward directly to bypass any middleware transformation
+                outputs = model.forward(**model_inputs)
                 
                 # Compute loss using LoRA trainer with extracted labels
                 loss_batch = {"labels": labels, "audio_labels": audio_labels}
