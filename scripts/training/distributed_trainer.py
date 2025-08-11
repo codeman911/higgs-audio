@@ -575,63 +575,74 @@ def main():
                                 return tensor.to(device)
                         return tensor
                     
-                    outputs = model(
-                        input_ids=to_device(batch.input_ids),
-                        attention_mask=to_device(batch.attention_mask),
-                        audio_features=to_device(batch.audio_in_wv, convert_dtype=True) if hasattr(batch, 'audio_in_wv') else None,  # Convert dtype for audio features
-                        audio_feature_attention_mask=to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
-                        audio_in_ids=to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
-                        audio_in_ids_start=to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
-                        audio_out_ids=to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
-                        audio_out_ids_start=to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
-                        audio_out_ids_start_group_loc=to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
-                        labels=to_device(batch.label_ids),  # Use 'labels' because PEFT expects it
-                        label_audio_ids=to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None,
-                        return_dict=True
-                    )
+                    # CRITICAL FIX: Same proper approach for validation
+                    model_inputs = {
+                        'input_ids': to_device(batch.input_ids),
+                        'attention_mask': to_device(batch.attention_mask),
+                        'audio_features': to_device(batch.audio_in_wv, convert_dtype=True) if hasattr(batch, 'audio_in_wv') else None,
+                        'audio_feature_attention_mask': to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
+                        'audio_in_ids': to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
+                        'audio_in_ids_start': to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
+                        'audio_out_ids': to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
+                        'audio_out_ids_start': to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
+                        'audio_out_ids_start_group_loc': to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
+                    }
+                    model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                     
-                    # Manual loss computation for validation (same as training)
-                    if hasattr(outputs, 'logits') and outputs.logits is not None:
-                        logits = outputs.logits
-                        labels = to_device(batch.label_ids)
-                        
-                        # Ensure logits and labels have compatible shapes
-                        seq_len = min(logits.size(1), labels.size(1))
-                        logits = logits[:, :seq_len, :]
-                        labels = labels[:, :seq_len]
-                        
-                        # Compute cross-entropy loss manually
-                        shift_logits = logits[..., :-1, :].contiguous()
-                        shift_labels = labels[..., 1:].contiguous()
-                        
-                        # Flatten for loss computation
-                        shift_logits = shift_logits.view(-1, shift_logits.size(-1))
-                        shift_labels = shift_labels.view(-1)
-                        
-                        # Compute cross-entropy loss
-                        loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-                        loss = loss_fct(shift_logits, shift_labels)
-                        
-                        val_loss += loss.item()
-                        val_steps += 1
-                    
-                    elif hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None:
-                        # If only audio logits are available, compute audio loss
-                        audio_logits = outputs.audio_logits
-                        audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
-                        
-                        if audio_labels is not None:
-                            # Compute audio loss
-                            loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-                            loss = loss_fct(audio_logits.view(-1, audio_logits.size(-1)), audio_labels.view(-1))
-                            
-                            val_loss += loss.item()
-                            val_steps += 1
-                        else:
-                            continue  # Skip batch if no audio labels
-                    
+                    # Get underlying model
+                    if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
+                        actual_model = model.base_model.model
+                    elif hasattr(model, 'module'):
+                        actual_model = model.module
                     else:
-                        continue  # Skip batch if no logits available
+                        actual_model = model
+                    
+                    # Forward pass without labels
+                    outputs = actual_model(**model_inputs)
+                    
+                    # Extract labels for validation loss
+                    text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
+                    audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
+                    
+                    # PROPER VALIDATION LOSS for zero-shot voice cloning
+                    batch_loss = 0.0
+                    
+                    # Primary: Audio Loss
+                    if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
+                        audio_logits = outputs.audio_logits
+                        audio_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                        audio_loss = audio_loss_fct(
+                            audio_logits.view(-1, audio_logits.size(-1)), 
+                            audio_labels.view(-1)
+                        )
+                        batch_loss += audio_loss.item()
+                    
+                    # Secondary: Text Loss (weighted)
+                    if hasattr(outputs, 'logits') and outputs.logits is not None and text_labels is not None:
+                        text_logits = outputs.logits
+                        min_seq_len = min(text_logits.size(1), text_labels.size(1))
+                        if min_seq_len > 1:
+                            text_logits = text_logits[:, :min_seq_len, :]
+                            text_labels = text_labels[:, :min_seq_len]
+                            
+                            shift_logits = text_logits[..., :-1, :].contiguous()
+                            shift_labels = text_labels[..., 1:].contiguous()
+                            
+                            text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                            text_loss = text_loss_fct(
+                                shift_logits.view(-1, shift_logits.size(-1)),
+                                shift_labels.view(-1)
+                            )
+                            
+                            # Weight text loss lower for voice cloning
+                            batch_loss += 0.1 * text_loss.item()
+                    
+                    # Add to validation totals
+                    if batch_loss > 0:
+                        val_loss += batch_loss
+                        val_steps += 1
+                    else:
+                        continue  # Skip if no valid loss
             
             avg_val_loss = val_loss / val_steps
             logger.info(f"Epoch {epoch+1} - Validation loss: {avg_val_loss:.4f}")
