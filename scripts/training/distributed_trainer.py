@@ -429,16 +429,26 @@ class HiggsAudioDistributedTrainer:
             
             for msg in messages:
                 if msg.role == "system":
+                    # System message
                     chatml_dict["messages"].append({"role": "system", "content": msg.content})
                 elif msg.role == "user":
-                    user_content = []
-                    for content_item in msg.content:
-                        if isinstance(content_item, TextContent):
-                            user_content.append({"type": "text", "text": content_item.text})
-                        elif isinstance(content_item, AudioContent):
-                            user_content.append({"type": "audio", "audio_url": content_item.audio_url})
-                    chatml_dict["messages"].append({"role": "user", "content": user_content})
-            
+                    # User message with text and reference audio
+                    if isinstance(msg.content, list):
+                        user_content = []
+                        
+                        for content_item in msg.content:
+                            if isinstance(content_item, TextContent):
+                                # Extract target text
+                                text = content_item.text
+                                user_content.append({"type": "text", "text": text})
+                            
+                            elif isinstance(content_item, AudioContent):
+                                # Reference audio - load on-demand like inference
+                                audio_url = content_item.audio_url
+                                user_content.append({"type": "audio", "audio_url": audio_url})
+                        
+                        chatml_dict["messages"].append({"role": "user", "content": user_content})
+                    
             # Use prepare_chatml_sample to create proper input/label tokens
             input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
                 chatml_dict, self.text_tokenizer
@@ -471,6 +481,23 @@ class HiggsAudioDistributedTrainer:
         """Setup model and optimizer"""
         self.logger.info("Setting up model and optimizer...")
         
+        # Load model configuration (like inference pipeline)
+        from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
+        model_config = HiggsAudioConfig.from_pretrained(self.config.model_path)
+        
+        # Ensure 8-codebook configuration alignment (from memories)
+        expected_codebooks = 8
+        if model_config.audio_num_codebooks != expected_codebooks:
+            self.logger.info(f"Updating model config: {model_config.audio_num_codebooks} -> {expected_codebooks} codebooks")
+            model_config.audio_num_codebooks = expected_codebooks
+        
+        # Validate alignment with audio tokenizer
+        if audio_tokenizer.num_codebooks != expected_codebooks:
+            self.logger.error(f"Audio tokenizer codebook mismatch: {audio_tokenizer.num_codebooks} != {expected_codebooks}")
+            raise ValueError(f"Audio tokenizer must have {expected_codebooks} codebooks")
+        
+        self.logger.info(f" Model and tokenizer aligned: {expected_codebooks} codebooks")
+        
         # Create LoRA configuration
         lora_config = HiggsAudioLoRAConfig(
             lora_r=self.config.lora_r,
@@ -483,12 +510,12 @@ class HiggsAudioDistributedTrainer:
             enable_multilingual_lora=True
         )
         
-        # Create LoRA model
+        # Create LoRA model (like inference but with LoRA)
         trainer = create_lora_model(
             model_path=self.config.model_path,
             lora_config=lora_config,
             device="cpu",  # Build on CPU; Accelerate will place on the correct GPU
-            model_config=self.corrected_model_config
+            model_config=model_config  # Use the loaded and validated config
         )
         
         model = trainer.prepare_for_training()
@@ -506,7 +533,7 @@ class HiggsAudioDistributedTrainer:
             raise ValueError(f"Unsupported optimizer: {self.config.optimizer_type}")
         
         return model, optimizer, trainer
-    
+
     def setup_scheduler(self, optimizer, num_training_steps):
         """Setup learning rate scheduler"""
         num_warmup_steps = int(self.config.warmup_ratio * num_training_steps)
