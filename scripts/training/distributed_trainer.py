@@ -422,79 +422,102 @@ def main():
                 
                 # Forward pass - map collator output to model input correctly
                 # The collator returns audio_in_wv but model expects audio_features
-                # Use 'labels' here because PEFT wrapper will convert it to 'label_ids'
-                outputs = model(
-                    input_ids=to_device(batch.input_ids),
-                    attention_mask=to_device(batch.attention_mask),
-                    audio_features=to_device(batch.audio_in_wv, convert_dtype=True) if hasattr(batch, 'audio_in_wv') else None,  # Convert dtype for audio features
-                    audio_feature_attention_mask=to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
-                    audio_in_ids=to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
-                    audio_in_ids_start=to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
-                    audio_out_ids=to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
-                    audio_out_ids_start=to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
-                    audio_out_ids_start_group_loc=to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
-                    labels=to_device(batch.label_ids),  # Use 'labels' because PEFT expects it
-                    label_audio_ids=to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None,
-                    return_dict=True
-                )
+                # CRITICAL FIX: Clean separation of model inputs (NO LABELS to model)
+                # This is the proper approach for zero-shot voice cloning training
+                model_inputs = {
+                    'input_ids': to_device(batch.input_ids),
+                    'attention_mask': to_device(batch.attention_mask),
+                    'audio_features': to_device(batch.audio_in_wv, convert_dtype=True) if hasattr(batch, 'audio_in_wv') else None,
+                    'audio_feature_attention_mask': to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
+                    'audio_in_ids': to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
+                    'audio_in_ids_start': to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
+                    'audio_out_ids': to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
+                    'audio_out_ids_start': to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
+                    'audio_out_ids_start_group_loc': to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
+                }
+                # Remove None values for clean forward pass
+                model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                 
-                # The model doesn't compute loss internally, we need to compute it manually
-                # Extract logits and labels for loss computation
-                if hasattr(outputs, 'logits') and outputs.logits is not None:
-                    logits = outputs.logits
-                    labels = to_device(batch.label_ids)
-                    
-                    if step == 0:  # Debug info on first step
-                        logger.info(f"Original logits shape: {logits.shape}")
-                        logger.info(f"Original labels shape: {labels.shape}")
-                    
-                    # Ensure logits and labels have compatible shapes
-                    seq_len = min(logits.size(1), labels.size(1))
-                    logits = logits[:, :seq_len, :]
-                    labels = labels[:, :seq_len]
-                    
-                    # Compute cross-entropy loss manually
-                    # Shift labels for next-token prediction
-                    shift_logits = logits[..., :-1, :].contiguous()
-                    shift_labels = labels[..., 1:].contiguous()
-                    
-                    if step == 0:  # Debug info on first step
-                        logger.info(f"After trimming - logits: {logits.shape}, labels: {labels.shape}")
-                        logger.info(f"After shifting - shift_logits: {shift_logits.shape}, shift_labels: {shift_labels.shape}")
-                    
-                    # Flatten for loss computation
-                    shift_logits = shift_logits.view(-1, shift_logits.size(-1))
-                    shift_labels = shift_labels.view(-1)
-                    
-                    if step == 0:  # Debug info on first step
-                        logger.info(f"Flattened - shift_logits: {shift_logits.shape}, shift_labels: {shift_labels.shape}")
-                    
-                    # Compute cross-entropy loss
-                    loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-                    loss = loss_fct(shift_logits, shift_labels)
-                    
-                    if step == 0:  # Debug info on first step
-                        logger.info(f"Manual loss computation: {loss.item():.4f}")
+                # Get the underlying model (handle PEFT wrapping)
+                if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
+                    actual_model = model.base_model.model  # PEFT wrapped
+                elif hasattr(model, 'module'):
+                    actual_model = model.module  # Accelerate wrapped
+                else:
+                    actual_model = model
                 
-                elif hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None:
-                    # If only audio logits are available, compute audio loss
+                # Forward pass - call model directly WITHOUT labels
+                outputs = actual_model(**model_inputs)
+                
+                # CRITICAL: Extract labels separately for loss computation
+                text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
+                audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
+                
+                # PROPER LOSS COMPUTATION FOR ZERO-SHOT VOICE CLONING
+                total_loss = 0.0
+                loss_components = {}
+                
+                # 1. Audio Loss (PRIMARY for voice cloning)
+                if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
                     audio_logits = outputs.audio_logits
-                    audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
                     
-                    if audio_labels is not None:
-                        # Compute audio loss
-                        loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-                        loss = loss_fct(audio_logits.view(-1, audio_logits.size(-1)), audio_labels.view(-1))
+                    # Compute audio token prediction loss (the CORE of voice cloning)
+                    audio_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                    audio_loss = audio_loss_fct(
+                        audio_logits.view(-1, audio_logits.size(-1)), 
+                        audio_labels.view(-1)
+                    )
+                    total_loss += audio_loss
+                    loss_components['audio_loss'] = audio_loss.item()
+                    
+                    if step == 0:
+                        logger.info(f"🔊 AUDIO LOSS (Primary): {audio_loss.item():.4f}")
+                        logger.info(f"Audio logits shape: {audio_logits.shape}")
+                        logger.info(f"Audio labels shape: {audio_labels.shape}")
+                
+                # 2. Text Loss (SECONDARY - for text understanding)
+                if hasattr(outputs, 'logits') and outputs.logits is not None and text_labels is not None:
+                    text_logits = outputs.logits
+                    
+                    # Only use text loss if we have reasonable dimensions
+                    min_seq_len = min(text_logits.size(1), text_labels.size(1))
+                    if min_seq_len > 1:  # Need at least 2 tokens for shifting
+                        # Trim to matching sequence length 
+                        text_logits = text_logits[:, :min_seq_len, :]
+                        text_labels = text_labels[:, :min_seq_len]
+                        
+                        # Shift for next-token prediction
+                        shift_logits = text_logits[..., :-1, :].contiguous()
+                        shift_labels = text_labels[..., 1:].contiguous()
+                        
+                        # Compute text loss (weighted lower for voice cloning)
+                        text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                        text_loss = text_loss_fct(
+                            shift_logits.view(-1, shift_logits.size(-1)),
+                            shift_labels.view(-1)
+                        )
+                        
+                        # Weight text loss lower (audio is primary for voice cloning)
+                        weighted_text_loss = 0.1 * text_loss  
+                        total_loss += weighted_text_loss
+                        loss_components['text_loss'] = text_loss.item()
+                        loss_components['weighted_text_loss'] = weighted_text_loss.item()
                         
                         if step == 0:
-                            logger.info(f"Audio loss computation: {loss.item():.4f}")
-                    else:
-                        logger.warning("No labels available for loss computation, skipping batch")
-                        continue
+                            logger.info(f"📝 TEXT LOSS (Secondary): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f})")
                 
-                else:
-                    logger.error(f"Model output contains neither logits nor audio_logits: {list(outputs.keys()) if hasattr(outputs, 'keys') else outputs}")
+                # Final loss for backward pass
+                if total_loss == 0:
+                    logger.warning("⚠️  No valid loss computed, skipping batch")
                     continue
+                    
+                loss = total_loss
+                loss_components['total_loss'] = total_loss.item()
+                
+                if step == 0:
+                    logger.info(f"🎯 TOTAL LOSS: {total_loss.item():.4f}")
+                    logger.info(f"Loss breakdown: {loss_components}")
+                    logger.info("✅ Using proper zero-shot voice cloning loss computation!")
                 
                 # Backward pass
                 accelerator.backward(loss)
