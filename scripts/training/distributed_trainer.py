@@ -13,6 +13,7 @@ import torchaudio
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoConfig, WhisperProcessor
 from peft import LoraConfig, get_peft_model, TaskType
+import torch.nn as nn
 from accelerate import Accelerator
 from tqdm import tqdm
 from pathlib import Path
@@ -326,19 +327,42 @@ def main():
     lora_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
+        target_modules=[
+            "audio_decoder_projector.q_proj",
+            "audio_decoder_projector.k_proj",
+            "audio_decoder_projector.v_proj",
+            "audio_decoder_projector.o_proj",
+            "audio_encoder_projector.q_proj",
+            "audio_encoder_projector.k_proj",
+            "audio_encoder_projector.v_proj",
+            "audio_encoder_projector.o_proj",
+        ],
         lora_dropout=args.lora_dropout,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
-                       "gate_proj", "up_proj", "down_proj"],
-        task_type=TaskType.CAUSAL_LM
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
     )
     
-    model = get_peft_model(model, lora_config)
+    # Create a wrapper to handle the labels -> label_ids mapping
+    class HiggsAudioModelWrapper(nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+            
+        def forward(self, **kwargs):
+            # PEFT passes 'labels' but HiggsAudioModel expects 'label_ids'
+            if 'labels' in kwargs:
+                kwargs['label_ids'] = kwargs.pop('labels')
+            return self.model(**kwargs)
+    
+    # Wrap the model to handle argument mapping
+    wrapped_model = HiggsAudioModelWrapper(model)
+    model = get_peft_model(wrapped_model, lora_config)
     model.print_trainable_parameters()
     
     # Setup optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     
-    # Setup scheduler
+    # ... (rest of the code remains the same)
     num_training_steps = len(train_dataloader) * args.num_epochs
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=num_training_steps
@@ -366,6 +390,7 @@ def main():
             with accelerator.accumulate(model):
                 # Forward pass - map collator output to model input correctly
                 # The collator returns audio_in_wv but model expects audio_features
+                # Use 'labels' here because PEFT wrapper will convert it to 'label_ids'
                 outputs = model(
                     input_ids=batch.input_ids,
                     attention_mask=batch.attention_mask,
@@ -376,7 +401,7 @@ def main():
                     audio_out_ids=batch.audio_out_ids if hasattr(batch, 'audio_out_ids') else None,
                     audio_out_ids_start=batch.audio_out_ids_start if hasattr(batch, 'audio_out_ids_start') else None,
                     audio_out_ids_start_group_loc=batch.audio_out_ids_start_group_loc if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
-                    label_ids=batch.label_ids,
+                    labels=batch.label_ids,  # Use 'labels' because PEFT expects it
                     label_audio_ids=batch.label_audio_ids if hasattr(batch, 'label_audio_ids') else None,
                     return_dict=True
                 )
@@ -433,7 +458,7 @@ def main():
                         audio_out_ids=batch.audio_out_ids if hasattr(batch, 'audio_out_ids') else None,
                         audio_out_ids_start=batch.audio_out_ids_start if hasattr(batch, 'audio_out_ids_start') else None,
                         audio_out_ids_start_group_loc=batch.audio_out_ids_start_group_loc if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
-                        label_ids=batch.label_ids,
+                        labels=batch.label_ids,  # Use 'labels' because PEFT expects it
                         label_audio_ids=batch.label_audio_ids if hasattr(batch, 'label_audio_ids') else None,
                         return_dict=True
                     )
