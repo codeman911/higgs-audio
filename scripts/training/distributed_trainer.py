@@ -438,32 +438,49 @@ def main():
                     return_dict=True
                 )
                 
-                # Debug: Check what the model actually returns
-                if step == 0:  # Only log on first step to avoid spam
-                    logger.info(f"Model outputs type: {type(outputs)}")
-                    logger.info(f"Model outputs keys: {outputs.keys() if hasattr(outputs, 'keys') else 'No keys'}")
-                    if hasattr(outputs, 'loss'):
-                        logger.info(f"Loss type: {type(outputs.loss)}")
-                        logger.info(f"Loss value: {outputs.loss}")
+                # The model doesn't compute loss internally, we need to compute it manually
+                # Extract logits and labels for loss computation
+                if hasattr(outputs, 'logits') and outputs.logits is not None:
+                    logits = outputs.logits
+                    labels = to_device(batch.label_ids)
+                    
+                    # Compute cross-entropy loss manually
+                    # Shift labels for next-token prediction
+                    shift_logits = logits[..., :-1, :].contiguous()
+                    shift_labels = labels[..., 1:].contiguous()
+                    
+                    # Flatten for loss computation
+                    shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+                    shift_labels = shift_labels.view(-1)
+                    
+                    # Compute cross-entropy loss
+                    loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                    loss = loss_fct(shift_logits, shift_labels)
+                    
+                    if step == 0:  # Debug info on first step
+                        logger.info(f"Manual loss computation: {loss.item():.4f}")
+                        logger.info(f"Logits shape: {logits.shape}")
+                        logger.info(f"Labels shape: {labels.shape}")
                 
-                # Handle different output formats
-                if hasattr(outputs, 'loss') and outputs.loss is not None:
-                    loss = outputs.loss
-                    # If loss is a dict, extract the actual loss value
-                    if isinstance(loss, dict):
-                        if 'loss' in loss:
-                            loss = loss['loss']
-                        elif 'total_loss' in loss:
-                            loss = loss['total_loss']
-                        else:
-                            # Take the first loss value if available
-                            loss_values = [v for v in loss.values() if torch.is_tensor(v) and v.numel() == 1]
-                            if loss_values:
-                                loss = loss_values[0]
-                            else:
-                                raise ValueError(f"Cannot extract scalar loss from: {loss}")
+                elif hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None:
+                    # If only audio logits are available, compute audio loss
+                    audio_logits = outputs.audio_logits
+                    audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
+                    
+                    if audio_labels is not None:
+                        # Compute audio loss
+                        loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                        loss = loss_fct(audio_logits.view(-1, audio_logits.size(-1)), audio_labels.view(-1))
+                        
+                        if step == 0:
+                            logger.info(f"Audio loss computation: {loss.item():.4f}")
+                    else:
+                        logger.warning("No labels available for loss computation, skipping batch")
+                        continue
+                
                 else:
-                    raise ValueError(f"Model output does not contain loss: {outputs}")
+                    logger.error(f"Model output contains neither logits nor audio_logits: {list(outputs.keys()) if hasattr(outputs, 'keys') else outputs}")
+                    continue
                 
                 # Backward pass
                 accelerator.backward(loss)
@@ -536,26 +553,43 @@ def main():
                         return_dict=True
                     )
                     
-                    # Handle validation loss (same logic as training)
-                    if hasattr(outputs, 'loss') and outputs.loss is not None:
-                        loss = outputs.loss
-                        # If loss is a dict, extract the actual loss value
-                        if isinstance(loss, dict):
-                            if 'loss' in loss:
-                                loss = loss['loss']
-                            elif 'total_loss' in loss:
-                                loss = loss['total_loss']
-                            else:
-                                # Take the first loss value if available
-                                loss_values = [v for v in loss.values() if torch.is_tensor(v) and v.numel() == 1]
-                                if loss_values:
-                                    loss = loss_values[0]
-                                else:
-                                    continue  # Skip this batch if no valid loss
+                    # Manual loss computation for validation (same as training)
+                    if hasattr(outputs, 'logits') and outputs.logits is not None:
+                        logits = outputs.logits
+                        labels = to_device(batch.label_ids)
+                        
+                        # Compute cross-entropy loss manually
+                        shift_logits = logits[..., :-1, :].contiguous()
+                        shift_labels = labels[..., 1:].contiguous()
+                        
+                        # Flatten for loss computation
+                        shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+                        shift_labels = shift_labels.view(-1)
+                        
+                        # Compute cross-entropy loss
+                        loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                        loss = loss_fct(shift_logits, shift_labels)
+                        
                         val_loss += loss.item()
                         val_steps += 1
+                    
+                    elif hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None:
+                        # If only audio logits are available, compute audio loss
+                        audio_logits = outputs.audio_logits
+                        audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
+                        
+                        if audio_labels is not None:
+                            # Compute audio loss
+                            loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                            loss = loss_fct(audio_logits.view(-1, audio_logits.size(-1)), audio_labels.view(-1))
+                            
+                            val_loss += loss.item()
+                            val_steps += 1
+                        else:
+                            continue  # Skip batch if no audio labels
+                    
                     else:
-                        continue  # Skip this batch if no loss
+                        continue  # Skip batch if no logits available
             
             avg_val_loss = val_loss / val_steps
             logger.info(f"Epoch {epoch+1} - Validation loss: {avg_val_loss:.4f}")
