@@ -364,13 +364,13 @@ def main():
         
         for step, batch in enumerate(progress_bar):
             with accelerator.accumulate(model):
-                # Forward pass
+                # Forward pass - use correct argument names for HiggsAudioModel
                 outputs = model(
                     input_ids=batch.input_ids,
                     attention_mask=batch.attention_mask,
                     audio_in_ids=batch.audio_in_ids if hasattr(batch, 'audio_in_ids') else None,
                     audio_in_wv=batch.audio_in_wv if hasattr(batch, 'audio_in_wv') else None,
-                    labels=batch.label_ids,
+                    label_ids=batch.label_ids,  # HiggsAudioModel uses label_ids, not labels
                     return_dict=True
                 )
                 
@@ -421,7 +421,7 @@ def main():
                         attention_mask=batch.attention_mask,
                         audio_in_ids=batch.audio_in_ids if hasattr(batch, 'audio_in_ids') else None,
                         audio_in_wv=batch.audio_in_wv if hasattr(batch, 'audio_in_wv') else None,
-                        labels=batch.label_ids,
+                        label_ids=batch.label_ids,  # HiggsAudioModel uses label_ids, not labels
                         return_dict=True
                     )
                     val_loss += outputs.loss.item()
