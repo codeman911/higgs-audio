@@ -361,6 +361,13 @@ def main():
             if 'labels' in kwargs:
                 kwargs['label_ids'] = kwargs.pop('labels')
             return self.model(**kwargs)
+        
+        def __getattr__(self, name):
+            """Delegate all other attributes to the underlying model."""
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                return getattr(self.model, name)
     
     # Wrap the model to handle argument mapping
     wrapped_model = HiggsAudioModelWrapper(model)
