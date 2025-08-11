@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 from dataclasses import dataclass, field
 import yaml
+import torchaudio  # Add missing import for audio processing
 
 # Robust import handling for both CLI and module usage
 from pathlib import Path
@@ -464,7 +465,7 @@ class HiggsAudioDistributedTrainer:
                 audio_waveforms_concat=torch.cat(item['reference_waveforms'], dim=1) if item['reference_waveforms'] else torch.empty(0, dtype=torch.float32),
                 audio_waveforms_start=torch.tensor([0] if item['reference_waveforms'] else [], dtype=torch.long),
                 audio_sample_rate=torch.tensor([24000] if item['reference_waveforms'] else [], dtype=torch.float32),
-                audio_speaker_ids=torch.tensor([0] if item['reference_waveforms'] else [], dtype=torch.long)
+                audio_speaker_indices=torch.tensor([0] if item['reference_waveforms'] else [], dtype=torch.long)  # Fixed parameter name
             )
             
             chatml_samples.append(chatml_sample)
