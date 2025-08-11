@@ -4,7 +4,7 @@ Diagnostic script to reproduce and understand the collator TypeError.
 """
 
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, WhisperProcessor
 from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
 from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
 
@@ -18,13 +18,23 @@ def test_collator_issue():
     tokenizer = AutoTokenizer.from_pretrained("bosonai/higgs-audio-v2-generation-3B-base")
     audio_tokenizer = None  # Not needed for this test
     
+    # Initialize collator with correct parameters
+    whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
+    
     collator = HiggsAudioSampleCollator(
-        text_tokenizer=tokenizer,
-        audio_tokenizer=audio_tokenizer,
+        whisper_processor=whisper_processor,
+        audio_in_token_id=tokenizer.convert_tokens_to_ids("<|AUDIO|>"),  
+        audio_out_token_id=tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>"),  
+        pad_token_id=tokenizer.pad_token_id,
+        audio_stream_bos_id=tokenizer.convert_tokens_to_ids("<|audio_stream_bos|>"),  
+        audio_stream_eos_id=tokenizer.convert_tokens_to_ids("<|audio_stream_eos|>"),  
+        round_to=8,
+        pad_left=False,
+        encode_whisper_embed=True,
         return_audio_in_tokens=True,
-        return_labels=True,
-        mask_audio_out_token_label=True,
-        audio_num_codebooks=8
+        audio_num_codebooks=8,
+        use_delay_pattern=False,
+        disable_audio_codes_transform=False
     )
     
     audio_in_token_id = tokenizer.convert_tokens_to_ids("<|AUDIO|>")
