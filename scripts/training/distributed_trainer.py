@@ -113,6 +113,9 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000):
                     try:
                         # Tokenize audio
                         audio_codes = audio_tokenizer.encode(audio_path)
+                        # Ensure tensor is on CPU
+                        if audio_codes.is_cuda:
+                            audio_codes = audio_codes.cpu()
                         # Ensure 8 codebooks
                         if audio_codes.shape[0] != 8:
                             if audio_codes.shape[0] > 8:
@@ -249,9 +252,8 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Audio tokenizer
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    audio_tokenizer = load_higgs_audio_tokenizer(args.audio_tokenizer_path, device=device)
+    # Audio tokenizer - load on CPU, accelerator will handle device placement
+    audio_tokenizer = load_higgs_audio_tokenizer(args.audio_tokenizer_path, device="cpu")
     
     # Load model config
     model_config = AutoConfig.from_pretrained(args.model_path)
