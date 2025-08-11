@@ -138,160 +138,89 @@ def _resolve_path_multi(raw_path: str, dataset_dir: str, audio_base_dir: str) ->
     return None
 
 
-class UnifiedChatMLDataset(torch.utils.data.Dataset):
-    """
-    Unified dataset that processes ChatML data exactly like inference pipeline.
-    Uses the same logic as test_inference_final.py and ZeroShotDataProcessor.
-    """
+class InferenceStyleDataset:
+    """Dataset that processes data exactly like inference pipeline - using Message objects"""
     
-    def __init__(self, data_file, audio_tokenizer, text_tokenizer, max_length=2048, require_reference_audio: bool = True, data_file_path: str | None = None, audio_base_dir: str | None = None, debug_audio: bool = False, debug_warn_limit: int = 50):
+    def __init__(self, data_file, audio_tokenizer, text_tokenizer, max_length=2048):
+        self.data_file = data_file
         self.audio_tokenizer = audio_tokenizer
         self.text_tokenizer = text_tokenizer
         self.max_length = max_length
-        self.require_reference_audio = require_reference_audio
-        # Base directory to resolve relative audio paths
-        self.data_file_path = data_file_path
-        self.dataset_dir = os.path.dirname(data_file_path) if data_file_path else os.getcwd()
-        self.audio_base_dir = audio_base_dir or self.dataset_dir
-        # Debug controls
-        self.debug_audio = debug_audio
-        self._warn_limit = max(0, int(debug_warn_limit))
-        self._warn_count = 0
         
         # Load ChatML samples
         with open(data_file, 'r', encoding='utf-8') as f:
             self.samples = json.load(f)
         
         print(f"Loaded {len(self.samples)} samples from {data_file}")
-        
-        # Build a filtered index list that guarantees both user ref audio and assistant target audio
-        if self.require_reference_audio:
-            self.eligible_indices = []
-            for i, s in enumerate(self.samples):
-                has_user_audio = False
-                has_assistant_audio = False
-                for m in s.get('messages', []):
-                    role = m.get('role')
-                    content = m.get('content')
-                    if isinstance(content, list):
-                        for it in content:
-                            if isinstance(it, dict) and it.get('type') == 'audio':
-                                raw = it.get('audio_url', '')
-                                resolved = _resolve_path_multi(raw, self.dataset_dir, self.audio_base_dir)
-                                if role == 'user' and resolved is not None:
-                                    has_user_audio = True
-                                elif role == 'assistant' and resolved is not None:
-                                    has_assistant_audio = True
-                if has_user_audio and has_assistant_audio:
-                    self.eligible_indices.append(i)
-            
-            if len(self.eligible_indices) == 0:
-                print("[WARN] UnifiedChatMLDataset: No samples with both user reference audio and assistant target audio were found. All samples will be used; batches may lack reference audio.")
-                self.eligible_indices = list(range(len(self.samples)))
-        else:
-            self.eligible_indices = list(range(len(self.samples)))
     
     def __len__(self):
-        return len(self.eligible_indices)
+        return len(self.samples)
     
     def __getitem__(self, idx):
-        # Map through eligible indices to guarantee audio presence when required
-        true_idx = self.eligible_indices[idx]
-        sample = self.samples[true_idx]
-        messages = sample['messages']
+        sample = self.samples[idx]
         
-        # 1) Build raw ChatML-like message dicts and collect audio tokens
-        # IMPORTANT: prepare_chatml_sample expects a dict-structured ChatML sample,
-        # not instantiated Message/TextContent/AudioContent objects.
-        processed_messages: list[dict] = []
-        reference_audio_ids: list[torch.Tensor] = []
-        target_audio_ids: list[torch.Tensor] = []
-
-        for message in messages:
-            role = message["role"]
-            content = message["content"]
-
-            if isinstance(content, str):
-                processed_messages.append({"role": role, "content": content})
-                continue
-
-            if isinstance(content, list):
-                proc_content: list[dict] = []
-                for item in content:
-                    if item.get("type") == "text":
-                        proc_content.append({"type": "text", "text": item["text"]})
-                    elif item.get("type") == "audio":
-                        raw_audio_url = item.get("audio_url", "")
-                        # Robust multi-base resolution (CWD, dataset dir, audio_base_dir)
-                        resolved_path = _resolve_path_multi(raw_audio_url, self.dataset_dir, self.audio_base_dir)
-                        try:
-                            if resolved_path is not None and os.path.exists(resolved_path):
-                                # Tokenize reference/target audio into codebooks
-                                audio_tokens = self.audio_tokenizer.encode(resolved_path)  # (num_codebooks, seq_len)
-                                if role == "user":
-                                    reference_audio_ids.append(audio_tokens)
-                                elif role == "assistant":
-                                    target_audio_ids.append(audio_tokens)
-                                # Keep the original raw url in ChatML to match training/inference format
-                                proc_content.append({"type": "audio", "audio_url": raw_audio_url})
-                            else:
-                                # Keep placeholder for ChatML parity even if file missing, but log clearly
-                                if self.debug_audio and self._warn_count < self._warn_limit:
-                                    print(f"[WARN] Audio file not found: raw='{raw_audio_url}'. Tried CWD/dataset_dir/audio_base_dir. Placeholders will exist but no tokens.")
-                                    self._warn_count += 1
-                                proc_content.append({"type": "audio", "audio_url": raw_audio_url})
-                        except Exception as e:
-                            if self.debug_audio and self._warn_count < self._warn_limit:
-                                print(f"[ERROR] Tokenizing audio failed: raw='{raw_audio_url}' resolved='{resolved_path}'. Error: {e}")
-                                self._warn_count += 1
-                            proc_content.append({"type": "audio", "audio_url": raw_audio_url})
-                processed_messages.append({"role": role, "content": proc_content})
-
-        # 2) Use prepare_chatml_sample to create proper text input/labels with <AUDIO>/<AUDIO_OUT> placeholders
-        chatml_like = {
-            "messages": processed_messages,
-            "speaker": None,
-            "start_index": None,
+        # Convert ChatML to Message objects exactly like inference
+        messages = []
+        reference_waveforms = []
+        target_text = ""
+        
+        for msg in sample['messages']:
+            role = msg.get('role')
+            content = msg.get('content')
+            
+            if role == 'system':
+                # System message
+                messages.append(Message(role="system", content=content))
+                
+            elif role == 'user':
+                # User message with text and reference audio
+                if isinstance(content, list):
+                    message_content = []
+                    
+                    for item in content:
+                        if item.get('type') == 'text':
+                            # Extract target text
+                            text = item.get('text', '')
+                            target_text = text
+                            message_content.append(TextContent(text=text))
+                            
+                        elif item.get('type') == 'audio':
+                            # Reference audio - load on-demand like inference
+                            audio_url = item.get('audio_url', '')
+                            if audio_url and os.path.exists(audio_url):
+                                try:
+                                    # Load reference audio waveform
+                                    ref_waveform, ref_sr = torchaudio.load(audio_url)
+                                    if ref_sr != 24000:
+                                        ref_waveform = torchaudio.functional.resample(ref_waveform, ref_sr, 24000)
+                                    
+                                    # Add to message content (like inference)
+                                    message_content.append(AudioContent(audio_url=audio_url))
+                                    reference_waveforms.append(ref_waveform)
+                                    
+                                except Exception as e:
+                                    print(f"Error loading reference audio {audio_url}: {e}")
+                                    continue
+                    
+                    if message_content:
+                        messages.append(Message(role="user", content=message_content))
+                        
+            elif role == 'assistant':
+                # Extract target audio path for loss computation (but don't pass to model input)
+                target_audio_path = None
+                if isinstance(content, list):
+                    for item in content:
+                        if item.get('type') == 'audio':
+                            target_audio_path = item.get('audio_url', '')
+                            break
+        
+        return {
+            'messages': messages,
+            'reference_waveforms': reference_waveforms,
+            'target_text': target_text,
+            'target_audio_path': target_audio_path,
+            'sample_id': f"sample_{idx}"
         }
-        input_tokens, label_tokens, _audio_contents, _speaker_id = prepare_chatml_sample(chatml_like, self.text_tokenizer)
-
-        # 3) Concatenate audio tokens
-        if reference_audio_ids:
-            reference_audio_concat = torch.cat([a.cpu() for a in reference_audio_ids], dim=1)
-        else:
-            reference_audio_concat = torch.empty((8, 0), dtype=torch.long)
-
-        if target_audio_ids:
-            target_audio_concat = torch.cat([a.cpu() for a in target_audio_ids], dim=1)
-        else:
-            target_audio_concat = torch.empty((8, 0), dtype=torch.long)
-
-        # Build starts aligned to concatenation order (reference first, then target) —
-        # they are mainly used by utility methods; the trainer provides precise starts via the collate fn.
-        total_segments = (len(reference_audio_ids) + len(target_audio_ids))
-        audio_ids_start = torch.tensor([], dtype=torch.long)
-        if total_segments > 0:
-            starts = []
-            pos = 0
-            for a in reference_audio_ids:
-                starts.append(pos)
-                pos += a.shape[1]
-            for a in target_audio_ids:
-                starts.append(pos)
-                pos += a.shape[1]
-            audio_ids_start = torch.tensor(starts, dtype=torch.long)
-
-        return ChatMLDatasetSample(
-            input_ids=torch.tensor(input_tokens, dtype=torch.long),
-            label_ids=torch.tensor(label_tokens, dtype=torch.long),
-            audio_ids_concat=reference_audio_concat,
-            audio_ids_start=audio_ids_start,
-            audio_waveforms_concat=torch.empty(0, dtype=torch.float32),
-            audio_waveforms_start=torch.tensor([], dtype=torch.long),
-            audio_sample_rate=torch.tensor([], dtype=torch.float32),
-            audio_speaker_indices=torch.tensor([], dtype=torch.long),
-            audio_label_ids_concat=target_audio_concat,
-        )
 
 
 class HiggsAudioDistributedTrainer:
@@ -305,6 +234,9 @@ class HiggsAudioDistributedTrainer:
         self.scheduler = None
         self.train_dataloader = None
         self.val_dataloader = None
+        self.collator = None
+        self.text_tokenizer = None
+        self.audio_tokenizer_ref = None
         
         # Setup logging
         self._setup_logging()
@@ -423,212 +355,143 @@ class HiggsAudioDistributedTrainer:
     
     def create_dataloaders(self, train_samples, val_samples):
         """Create data loaders"""
+        self.logger.info("Creating data loaders...")
+        
+        # Load tokenizers
         from transformers import AutoTokenizer
         from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
         
-        # Load tokenizers
-        tokenizer = AutoTokenizer.from_pretrained(self.config.model_path)
-        audio_tokenizer = load_higgs_audio_tokenizer(
-            self.config.audio_tokenizer_path,
-            device="cpu"  # IMPORTANT: keep dataset outputs on CPU; Accelerate will move batches
+        tokenizer = AutoTokenizer.from_pretrained(self.config.model_path, trust_remote_code=True)
+        audio_tokenizer = load_higgs_audio_tokenizer(self.config.audio_tokenizer_path, device="cpu")
+        
+        # Create datasets using inference-style processing
+        train_dataset = InferenceStyleDataset(
+            data_file=train_samples,
+            audio_tokenizer=audio_tokenizer,
+            text_tokenizer=tokenizer,
+            max_length=self.config.max_text_length
         )
         
-        # CRITICAL DEBUG: Check codebook configuration mismatch
-        from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
-        model_config = HiggsAudioConfig.from_pretrained(self.config.model_path)
-        
-        self.logger.info(f"=== CODEBOOK CONFIGURATION DEBUG ===")
-        self.logger.info(f"Model expects audio_num_codebooks: {model_config.audio_num_codebooks}")
-        self.logger.info(f"Audio tokenizer has num_codebooks: {audio_tokenizer.num_codebooks}")
-        self.logger.info(f"Audio tokenizer n_q: {audio_tokenizer.n_q}")
-        
-        # CRITICAL FIX: Enforce 8-codebook configuration alignment
-        # The data processing pipeline has been fixed to generate 8-codebook audio tokens
-        expected_codebooks = 8
-        
-        # Validate audio tokenizer has 8 codebooks
-        if audio_tokenizer.num_codebooks != expected_codebooks:
-            self.logger.error(f"AUDIO TOKENIZER MISMATCH!")
-            self.logger.error(f"Audio tokenizer has {audio_tokenizer.num_codebooks} codebooks, expected {expected_codebooks}")
-            self.logger.error(f"Please use the correct audio tokenizer: bosonai/higgs-audio-v2-tokenizer")
-            raise ValueError(f"Audio tokenizer codebook mismatch: {audio_tokenizer.num_codebooks} != {expected_codebooks}")
-        
-        # Update model config to match the corrected 8-codebook specification
-        if model_config.audio_num_codebooks != expected_codebooks:
-            self.logger.info(f"UPDATING MODEL CONFIG: {model_config.audio_num_codebooks} -> {expected_codebooks} codebooks")
-            original_codebooks = model_config.audio_num_codebooks
-            model_config.audio_num_codebooks = expected_codebooks
-            self.logger.info(f"Model config updated to match audio tokenizer and processed data")
-        else:
-            self.logger.info(f"✅ Model config already aligned: {expected_codebooks} codebooks")
-        
-        # Validate that all components are aligned
-        self.logger.info(f"=== FINAL CONFIGURATION VALIDATION ===")
-        self.logger.info(f"Model config codebooks: {model_config.audio_num_codebooks}")
-        self.logger.info(f"Audio tokenizer codebooks: {audio_tokenizer.num_codebooks}")
-        self.logger.info(f"Expected data codebooks: {expected_codebooks}")
-        
-        if (model_config.audio_num_codebooks == audio_tokenizer.num_codebooks == expected_codebooks):
-            self.logger.info(f"✅ ALL CONFIGURATIONS ALIGNED: {expected_codebooks} codebooks")
-        else:
-            self.logger.error(f"❌ CONFIGURATION MISMATCH DETECTED!")
-            raise ValueError("Codebook configuration mismatch between model, tokenizer, and expected data")
-        
-        self.logger.info(f"=== END CODEBOOK DEBUG ===")
-        
-        # Store the corrected model config for use in model loading
-        self.corrected_model_config = model_config
-        
-        # Construct file paths for the UnifiedChatMLDataset
-        train_path = os.path.join(self.config.dataset_path, "train_chatml_samples.json")
-        val_path = os.path.join(self.config.dataset_path, "val_chatml_samples.json")
-        
-        # Create datasets
-        train_dataset = UnifiedChatMLDataset(
-            train_path,
-            audio_tokenizer,
-            tokenizer,
-            require_reference_audio=True,
-            data_file_path=train_path,
-            debug_audio=self.config.debug_audio_flow,
-            debug_warn_limit=self.config.debug_audio_warn_limit,
+        val_dataset = InferenceStyleDataset(
+            data_file=val_samples,
+            audio_tokenizer=audio_tokenizer,
+            text_tokenizer=tokenizer,
+            max_length=self.config.max_text_length
         )
         
-        val_dataset = UnifiedChatMLDataset(
-            val_path,
-            audio_tokenizer,
-            tokenizer,
-            require_reference_audio=True,
-            data_file_path=val_path,
-            debug_audio=self.config.debug_audio_flow,
-            debug_warn_limit=self.config.debug_audio_warn_limit,
-        )
+        # Create standard collator (no custom collate function)
+        from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
+        from transformers import WhisperProcessor
         
-        # Create data collator with correct signature
-        from transformers import AutoProcessor
-        from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
+        whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
         
-        # Use the corrected model config (already loaded above)
-        
-        whisper_processor = None
-        if getattr(self.corrected_model_config, "encode_whisper_embed", False):
-            try:
-                whisper_processor = AutoProcessor.from_pretrained(
-                    "openai/whisper-large-v3-turbo",
-                    trust_remote=True,
-                )
-            except Exception as e:
-                self.logger.warning(f"Failed to load Whisper processor: {e}. Proceeding without it.")
-        
-        collator = HiggsAudioSampleCollator(
+        self.collator = HiggsAudioSampleCollator(
             whisper_processor=whisper_processor,
-            encode_whisper_embed=getattr(self.corrected_model_config, "encode_whisper_embed", False),
-            audio_in_token_id=self.corrected_model_config.audio_in_token_idx,
-            audio_out_token_id=self.corrected_model_config.audio_out_token_idx,
-            audio_stream_bos_id=self.corrected_model_config.audio_stream_bos_id,
-            audio_stream_eos_id=self.corrected_model_config.audio_stream_eos_id,
-            pad_token_id=self.corrected_model_config.pad_token_id,
-            return_audio_in_tokens=True,  # training needs reference audio tokens
-            use_delay_pattern=getattr(self.corrected_model_config, "use_delay_pattern", False),
-            audio_num_codebooks=getattr(self.corrected_model_config, "audio_num_codebooks", None),
+            audio_in_token_id=tokenizer.convert_tokens_to_ids("<AUDIO>"),
+            audio_out_token_id=tokenizer.convert_tokens_to_ids("<AUDIO_OUT>"),
+            pad_token_id=tokenizer.pad_token_id,
+            audio_stream_bos_id=tokenizer.convert_tokens_to_ids("<audio_stream_bos>"),
+            audio_stream_eos_id=tokenizer.convert_tokens_to_ids("<audio_stream_eos>"),
+            round_to=8,
+            pad_left=False,
+            encode_whisper_embed=True,
+            return_audio_in_tokens=True,
+            audio_num_codebooks=8,  # Fixed to 8 codebooks
+            use_delay_pattern=False,
+            disable_audio_codes_transform=False
         )
+        
+        # Store tokenizers for use in collate function
+        self.text_tokenizer = tokenizer
+        self.audio_tokenizer_ref = audio_tokenizer
         
         # Create data loaders
         train_sampler = DistributedSampler(train_dataset) if self.accelerator.num_processes > 1 else None
         val_sampler = DistributedSampler(val_dataset, shuffle=False) if self.accelerator.num_processes > 1 else None
         
-        def custom_collate_fn(batch):
-            """Custom collate function to handle target audio tokens correctly"""
-            # Use the standard collator first
-            collated_batch = collator(batch)
-            
-            # CRITICAL FIX: Ensure reference audio flows through
-            reference_audio_tokens = []
-            reference_audio_starts = []
-            current_ref_pos = 0
-            
-            # Extract target audio tokens from the original batch samples
-            target_audio_tokens = []
-            target_audio_starts = []
-            current_target_pos = 0
-            
-            for sample in batch:
-                # CRITICAL: Process reference audio (audio_ids_concat)
-                if hasattr(sample, 'audio_ids_concat') and sample.audio_ids_concat is not None:
-                    if sample.audio_ids_concat.numel() > 0:
-                        reference_audio_tokens.append(sample.audio_ids_concat)
-                        reference_audio_starts.append(current_ref_pos)
-                        current_ref_pos += sample.audio_ids_concat.shape[1]
-                
-                # Process target audio (audio_label_ids_concat)
-                if hasattr(sample, 'audio_label_ids_concat') and sample.audio_label_ids_concat is not None:
-                    if sample.audio_label_ids_concat.numel() > 0:
-                        target_audio_tokens.append(sample.audio_label_ids_concat)
-                        target_audio_starts.append(current_target_pos)
-                        current_target_pos += sample.audio_label_ids_concat.shape[1]
-            
-            # CRITICAL FIX: Add reference audio to the collated batch (like inference)
-            if reference_audio_tokens:
-                reference_audio_concat = torch.cat(reference_audio_tokens, dim=1)
-                
-                # Convert to dict if needed
-                if hasattr(collated_batch, '__dict__'):
-                    # For model conditioning - reference audio
-                    collated_batch.audio_in_ids = reference_audio_concat
-                    collated_batch.audio_in_ids_start = torch.tensor(reference_audio_starts, dtype=torch.long)
-                    # Also keep audio_ids_concat for compatibility
-                    collated_batch.audio_ids_concat = reference_audio_concat
-                else:
-                    # If it's already a dict, add the keys
-                    collated_batch['audio_in_ids'] = reference_audio_concat
-                    collated_batch['audio_in_ids_start'] = torch.tensor(reference_audio_starts, dtype=torch.long)
-                    collated_batch['audio_ids_concat'] = reference_audio_concat
-            
-            # CRITICAL FIX: Add target audio tokens to the collated batch for BOTH forward pass and loss
-            if target_audio_tokens:
-                # Concatenate all target audio tokens
-                target_audio_concat = torch.cat(target_audio_tokens, dim=1)
-                
-                # Convert to dict if needed
-                if hasattr(collated_batch, '__dict__'):
-                    # For model forward pass - target audio prediction
-                    collated_batch.audio_out_ids = target_audio_concat
-                    collated_batch.audio_out_ids_start = torch.tensor(target_audio_starts, dtype=torch.long)
-                    collated_batch.audio_out_ids_start_group_loc = torch.zeros(len(target_audio_starts), dtype=torch.long)
-                    
-                    # For loss computation - target audio labels
-                    collated_batch.label_audio_ids = target_audio_concat
-                else:
-                    # If it's already a dict, add the keys
-                    collated_batch['audio_out_ids'] = target_audio_concat
-                    collated_batch['audio_out_ids_start'] = torch.tensor(target_audio_starts, dtype=torch.long)
-                    collated_batch['audio_out_ids_start_group_loc'] = torch.zeros(len(target_audio_starts), dtype=torch.long)
-                    collated_batch['label_audio_ids'] = target_audio_concat
-            
-            return collated_batch
-        
-        train_dataloader = DataLoader(
+        self.train_dataloader = DataLoader(
             train_dataset,
             batch_size=self.config.batch_size_per_device,
             sampler=train_sampler,
             shuffle=(train_sampler is None),
-            collate_fn=custom_collate_fn,  # Use custom collate function
+            collate_fn=self._inference_style_collate_fn,  # Custom collate to convert to ChatMLDatasetSample
             num_workers=self.config.num_workers,
-            pin_memory=True
+            pin_memory=True,
+            drop_last=True
         )
         
-        val_dataloader = DataLoader(
+        self.val_dataloader = DataLoader(
             val_dataset,
             batch_size=self.config.batch_size_per_device,
             sampler=val_sampler,
             shuffle=False,
-            collate_fn=custom_collate_fn,  # Use custom collate function
+            collate_fn=self._inference_style_collate_fn,  # Custom collate to convert to ChatMLDatasetSample
             num_workers=self.config.num_workers,
-            pin_memory=True
+            pin_memory=True,
+            drop_last=False
         )
         
-        return train_dataloader, val_dataloader, tokenizer, audio_tokenizer
-    
+        self.logger.info(f"Created train dataloader with {len(self.train_dataloader)} batches")
+        self.logger.info(f"Created val dataloader with {len(self.val_dataloader)} batches")
+        
+        return tokenizer, audio_tokenizer
+
+    def _inference_style_collate_fn(self, batch):
+        """Convert inference-style batch to ChatMLDatasetSample format for standard collator"""
+        from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
+        from boson_multimodal.data_types import TextContent, AudioContent
+        
+        chatml_samples = []
+        target_audio_paths = []
+        
+        for item in batch:
+            messages = item['messages']
+            target_audio_path = item['target_audio_path']
+            target_audio_paths.append(target_audio_path)
+            
+            # Convert Messages to ChatML dict format for prepare_chatml_sample
+            chatml_dict = {"messages": []}
+            
+            for msg in messages:
+                if msg.role == "system":
+                    chatml_dict["messages"].append({"role": "system", "content": msg.content})
+                elif msg.role == "user":
+                    user_content = []
+                    for content_item in msg.content:
+                        if isinstance(content_item, TextContent):
+                            user_content.append({"type": "text", "text": content_item.text})
+                        elif isinstance(content_item, AudioContent):
+                            user_content.append({"type": "audio", "audio_url": content_item.audio_url})
+                    chatml_dict["messages"].append({"role": "user", "content": user_content})
+            
+            # Use prepare_chatml_sample to create proper input/label tokens
+            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
+                chatml_dict, self.text_tokenizer
+            )
+            
+            # Create ChatMLDatasetSample with only reference audio (like inference)
+            # Target audio will be generated by model, not provided as input
+            chatml_sample = ChatMLDatasetSample(
+                input_ids=torch.tensor(input_tokens, dtype=torch.long),
+                label_ids=torch.tensor(label_tokens, dtype=torch.long),
+                audio_ids_concat=torch.empty((8, 0), dtype=torch.long),  # Will be filled by collator
+                audio_ids_start=torch.tensor([], dtype=torch.long),
+                audio_waveforms_concat=torch.cat(item['reference_waveforms'], dim=1) if item['reference_waveforms'] else torch.empty(0, dtype=torch.float32),
+                audio_waveforms_start=torch.tensor([0] if item['reference_waveforms'] else [], dtype=torch.long),
+                audio_sample_rate=torch.tensor([24000] if item['reference_waveforms'] else [], dtype=torch.float32),
+                audio_speaker_ids=torch.tensor([0] if item['reference_waveforms'] else [], dtype=torch.long)
+            )
+            
+            chatml_samples.append(chatml_sample)
+        
+        # Use standard collator (exactly like inference)
+        collated_batch = self.collator(chatml_samples)
+        
+        # Add target audio paths for loss computation
+        collated_batch.target_audio_paths = target_audio_paths
+        
+        return collated_batch
+
     def setup_model_and_optimizer(self, tokenizer, audio_tokenizer):
         """Setup model and optimizer"""
         self.logger.info("Setting up model and optimizer...")
