@@ -444,14 +444,30 @@ def main():
                     logits = outputs.logits
                     labels = to_device(batch.label_ids)
                     
+                    if step == 0:  # Debug info on first step
+                        logger.info(f"Original logits shape: {logits.shape}")
+                        logger.info(f"Original labels shape: {labels.shape}")
+                    
+                    # Ensure logits and labels have compatible shapes
+                    seq_len = min(logits.size(1), labels.size(1))
+                    logits = logits[:, :seq_len, :]
+                    labels = labels[:, :seq_len]
+                    
                     # Compute cross-entropy loss manually
                     # Shift labels for next-token prediction
                     shift_logits = logits[..., :-1, :].contiguous()
                     shift_labels = labels[..., 1:].contiguous()
                     
+                    if step == 0:  # Debug info on first step
+                        logger.info(f"After trimming - logits: {logits.shape}, labels: {labels.shape}")
+                        logger.info(f"After shifting - shift_logits: {shift_logits.shape}, shift_labels: {shift_labels.shape}")
+                    
                     # Flatten for loss computation
                     shift_logits = shift_logits.view(-1, shift_logits.size(-1))
                     shift_labels = shift_labels.view(-1)
+                    
+                    if step == 0:  # Debug info on first step
+                        logger.info(f"Flattened - shift_logits: {shift_logits.shape}, shift_labels: {shift_labels.shape}")
                     
                     # Compute cross-entropy loss
                     loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
@@ -459,8 +475,6 @@ def main():
                     
                     if step == 0:  # Debug info on first step
                         logger.info(f"Manual loss computation: {loss.item():.4f}")
-                        logger.info(f"Logits shape: {logits.shape}")
-                        logger.info(f"Labels shape: {labels.shape}")
                 
                 elif hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None:
                     # If only audio logits are available, compute audio loss
@@ -557,6 +571,11 @@ def main():
                     if hasattr(outputs, 'logits') and outputs.logits is not None:
                         logits = outputs.logits
                         labels = to_device(batch.label_ids)
+                        
+                        # Ensure logits and labels have compatible shapes
+                        seq_len = min(logits.size(1), labels.size(1))
+                        logits = logits[:, :seq_len, :]
+                        labels = labels[:, :seq_len]
                         
                         # Compute cross-entropy loss manually
                         shift_logits = logits[..., :-1, :].contiguous()
