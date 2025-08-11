@@ -20,7 +20,7 @@ def test_collate_function():
     logger.info("Testing collate function for zero-shot voice cloning training...")
     
     # Initialize tokenizer
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-3B-Instruct")
+    tokenizer = AutoTokenizer.from_pretrained("bosonai/higgs-audio-v2-generation-3B-base")
     
     # Create sample batch item (mimicking InferenceStyleDataset output)
     sample_item = {
