@@ -186,9 +186,9 @@ def main():
     parser.add_argument("--model_path", type=str, 
                         default="bosonai/higgs-audio-v2-generation-3B-base",
                         help="Path to base model")
-    parser.add_argument("--tokenizer_path", type=str,
+    parser.add_argument("--audio_tokenizer_path", type=str,
                         default="bosonai/higgs-audio-v2-tokenizer",
-                        help="Path to tokenizer")
+                        help="Path to audio tokenizer")
     
     # Training arguments
     parser.add_argument("--batch_size", type=int, default=1,
@@ -244,12 +244,14 @@ def main():
     
     # Load tokenizers
     logger.info("Loading tokenizers...")
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
+    # Text tokenizer from model path
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
+    # Audio tokenizer
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    audio_tokenizer = load_higgs_audio_tokenizer(args.tokenizer_path, device=device)
+    audio_tokenizer = load_higgs_audio_tokenizer(args.audio_tokenizer_path, device=device)
     
     # Load model config
     model_config = AutoConfig.from_pretrained(args.model_path)
