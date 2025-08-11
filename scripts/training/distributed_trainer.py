@@ -526,10 +526,41 @@ class HiggsAudioDistributedTrainer:
                 audio_speaker_indices=torch.tensor([speaker_id if speaker_id is not None else 0] if reference_waveforms else [], dtype=torch.long)  # Use speaker_id from prepare_chatml_sample or default to 0
             )
             
+            # Debug: Log sample details
+            audio_token_id = self.text_tokenizer.convert_tokens_to_ids("<|AUDIO|>")
+            input_tensor = chatml_sample.input_ids
+            audio_mask = (input_tensor == audio_token_id)
+            
+            self.logger.info(f"Sample {len(chatml_samples)}:")
+            self.logger.info(f"  - input_ids shape: {input_tensor.shape}")
+            self.logger.info(f"  - input_ids dtype: {input_tensor.dtype}")
+            self.logger.info(f"  - input_ids type: {type(input_tensor)}")
+            self.logger.info(f"  - audio_token_id: {audio_token_id}")
+            self.logger.info(f"  - audio_mask type: {type(audio_mask)}")
+            self.logger.info(f"  - audio_mask shape: {audio_mask.shape if hasattr(audio_mask, 'shape') else 'N/A'}")
+            self.logger.info(f"  - audio tokens found: {audio_mask.sum().item() if isinstance(audio_mask, torch.Tensor) else 0}")
+            self.logger.info(f"  - reference_waveforms: {len(reference_waveforms)}")
+            self.logger.info(f"  - audio_waveforms_concat shape: {chatml_sample.audio_waveforms_concat.shape}")
+            
             chatml_samples.append(chatml_sample)
         
+        self.logger.info(f"Total samples in batch: {len(chatml_samples)}")
+        
+        # Debug: Check all samples before collation
+        for i, sample in enumerate(chatml_samples):
+            input_tensor = sample.input_ids
+            audio_mask = (input_tensor == audio_token_id)
+            self.logger.info(f"Pre-collate sample {i}: input_ids={input_tensor.shape}, is_tensor={isinstance(input_tensor, torch.Tensor)}, audio_tokens={audio_mask.sum().item() if isinstance(audio_mask, torch.Tensor) else 'BOOL'}")
+        
         # Use standard collator (exactly like inference)
-        collated_batch = self.collator(chatml_samples)
+        try:
+            collated_batch = self.collator(chatml_samples)
+        except TypeError as e:
+            self.logger.error(f"Collator failed with TypeError: {e}")
+            self.logger.error(f"Batch size: {len(chatml_samples)}")
+            for i, sample in enumerate(chatml_samples):
+                self.logger.error(f"  Sample {i}: input_ids type={type(sample.input_ids)}, shape={sample.input_ids.shape if hasattr(sample.input_ids, 'shape') else 'N/A'}")
+            raise
         
         # Add target audio paths for loss computation
         collated_batch.target_audio_paths = target_audio_paths
