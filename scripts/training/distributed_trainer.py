@@ -199,7 +199,7 @@ def main():
                         help="Batch size per device")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
                         help="Gradient accumulation steps")
-    parser.add_argument("--learning_rate", type=float, default=1e-4,
+    parser.add_argument("--learning_rate", type=float, default=5e-4,
                         help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=3,
                         help="Number of epochs")
@@ -328,10 +328,20 @@ def main():
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         target_modules=[
-            # Audio output projection layers
+            # Audio output projection layers - CRITICAL for audio generation
             "audio_decoder_proj.audio_lm_head",
-            "audio_decoder_proj.text_lm_head",
-            # Audio MLP layers in transformer blocks (targeting later layers for fine-tuning)
+            
+            # Audio embedding layers - CRITICAL for audio token processing
+            "audio_out_embed_projector",
+            "audio_encoder_proj",
+            
+            # Extended audio MLP layers for better coverage (layers 8-15)
+            "layers.8.audio_mlp.gate_proj",
+            "layers.8.audio_mlp.up_proj", 
+            "layers.8.audio_mlp.down_proj",
+            "layers.9.audio_mlp.gate_proj",
+            "layers.9.audio_mlp.up_proj",
+            "layers.9.audio_mlp.down_proj",
             "layers.10.audio_mlp.gate_proj",
             "layers.10.audio_mlp.up_proj",
             "layers.10.audio_mlp.down_proj",
@@ -344,6 +354,26 @@ def main():
             "layers.13.audio_mlp.gate_proj",
             "layers.13.audio_mlp.up_proj",
             "layers.13.audio_mlp.down_proj",
+            "layers.14.audio_mlp.gate_proj",
+            "layers.14.audio_mlp.up_proj",
+            "layers.14.audio_mlp.down_proj",
+            "layers.15.audio_mlp.gate_proj",
+            "layers.15.audio_mlp.up_proj",
+            "layers.15.audio_mlp.down_proj",
+            
+            # Audio attention layers for better conditioning
+            "layers.10.audio_attn.q_proj",
+            "layers.10.audio_attn.k_proj", 
+            "layers.10.audio_attn.v_proj",
+            "layers.10.audio_attn.o_proj",
+            "layers.12.audio_attn.q_proj",
+            "layers.12.audio_attn.k_proj",
+            "layers.12.audio_attn.v_proj", 
+            "layers.12.audio_attn.o_proj",
+            "layers.14.audio_attn.q_proj",
+            "layers.14.audio_attn.k_proj",
+            "layers.14.audio_attn.v_proj",
+            "layers.14.audio_attn.o_proj",
         ],
         lora_dropout=args.lora_dropout,
         bias="none",
