@@ -1,0 +1,10 @@
+{
+  "sample_id": "sample_00000007",
+  "target_text": "Is SDS just a formality?",
+  "reference_audio": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000004_default_2366a789.wav",
+  "generated_audio": "en_res/sample_00000007_generated.wav",
+  "sampling_rate": 24000,
+  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nIs SDS just a formality?<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nIs SDS just a formality?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+  "generation_type": "voice_cloning",
+  "success": true
+}
