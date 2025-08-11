@@ -13,7 +13,7 @@ def test_audio_token_insertion():
     print("Testing audio token insertion fix...")
     
     # Initialize tokenizer
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-3B-Instruct")
+    tokenizer = AutoTokenizer.from_pretrained("bosonai/higgs-audio-v2-generation-3B-base")
     
     # Create a sample ChatML dict with audio
     chatml_dict = {
