@@ -979,6 +979,13 @@ class HiggsAudioModel(HiggsAudioPreTrainedModel, GenerationMixin):
         audio_outputs = self.audio_tower(audio_features, attention_mask=audio_attention_mask)
         selected_audio_feature = audio_outputs.last_hidden_state
         audio_features_embed = self.audio_encoder_proj(selected_audio_feature)
+        
+        # Convert audio features to match model dtype for mixed precision training
+        # This ensures compatibility when merging with text embeddings
+        if hasattr(self, 'embed_tokens'):
+            model_dtype = self.embed_tokens.weight.dtype
+            if audio_features_embed.dtype != model_dtype:
+                audio_features_embed = audio_features_embed.to(dtype=model_dtype)
 
         return audio_features_embed, audio_feat_out_lengths
 
