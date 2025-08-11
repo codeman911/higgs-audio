@@ -438,7 +438,32 @@ def main():
                     return_dict=True
                 )
                 
-                loss = outputs.loss
+                # Debug: Check what the model actually returns
+                if step == 0:  # Only log on first step to avoid spam
+                    logger.info(f"Model outputs type: {type(outputs)}")
+                    logger.info(f"Model outputs keys: {outputs.keys() if hasattr(outputs, 'keys') else 'No keys'}")
+                    if hasattr(outputs, 'loss'):
+                        logger.info(f"Loss type: {type(outputs.loss)}")
+                        logger.info(f"Loss value: {outputs.loss}")
+                
+                # Handle different output formats
+                if hasattr(outputs, 'loss') and outputs.loss is not None:
+                    loss = outputs.loss
+                    # If loss is a dict, extract the actual loss value
+                    if isinstance(loss, dict):
+                        if 'loss' in loss:
+                            loss = loss['loss']
+                        elif 'total_loss' in loss:
+                            loss = loss['total_loss']
+                        else:
+                            # Take the first loss value if available
+                            loss_values = [v for v in loss.values() if torch.is_tensor(v) and v.numel() == 1]
+                            if loss_values:
+                                loss = loss_values[0]
+                            else:
+                                raise ValueError(f"Cannot extract scalar loss from: {loss}")
+                else:
+                    raise ValueError(f"Model output does not contain loss: {outputs}")
                 
                 # Backward pass
                 accelerator.backward(loss)
@@ -510,8 +535,27 @@ def main():
                         label_audio_ids=to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None,
                         return_dict=True
                     )
-                    val_loss += outputs.loss.item()
-                    val_steps += 1
+                    
+                    # Handle validation loss (same logic as training)
+                    if hasattr(outputs, 'loss') and outputs.loss is not None:
+                        loss = outputs.loss
+                        # If loss is a dict, extract the actual loss value
+                        if isinstance(loss, dict):
+                            if 'loss' in loss:
+                                loss = loss['loss']
+                            elif 'total_loss' in loss:
+                                loss = loss['total_loss']
+                            else:
+                                # Take the first loss value if available
+                                loss_values = [v for v in loss.values() if torch.is_tensor(v) and v.numel() == 1]
+                                if loss_values:
+                                    loss = loss_values[0]
+                                else:
+                                    continue  # Skip this batch if no valid loss
+                        val_loss += loss.item()
+                        val_steps += 1
+                    else:
+                        continue  # Skip this batch if no loss
             
             avg_val_loss = val_loss / val_steps
             logger.info(f"Epoch {epoch+1} - Validation loss: {avg_val_loss:.4f}")
