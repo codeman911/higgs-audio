@@ -934,6 +934,14 @@ class HiggsAudioModel(HiggsAudioPreTrainedModel, GenerationMixin):
             audio_embed = torch.sum(audio_embed, dim=0)
         if self.use_audio_out_embed_projector:
             audio_embed = self.audio_out_embed_projector(audio_embed)
+        
+        # Convert audio embeddings to match model dtype for mixed precision training
+        # This ensures compatibility when merging with text embeddings
+        if hasattr(self, 'embed_tokens'):
+            model_dtype = self.embed_tokens.weight.dtype
+            if audio_embed.dtype != model_dtype:
+                audio_embed = audio_embed.to(dtype=model_dtype)
+        
         return audio_embed
 
     def _apply_audio_tower(self, audio_features, audio_feature_attention_mask):
