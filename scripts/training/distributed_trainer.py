@@ -364,13 +364,20 @@ def main():
         
         for step, batch in enumerate(progress_bar):
             with accelerator.accumulate(model):
-                # Forward pass - use correct argument names for HiggsAudioModel
+                # Forward pass - map collator output to model input correctly
+                # The collator returns audio_in_wv but model expects audio_features
                 outputs = model(
                     input_ids=batch.input_ids,
                     attention_mask=batch.attention_mask,
+                    audio_features=batch.audio_in_wv if hasattr(batch, 'audio_in_wv') else None,  
+                    audio_feature_attention_mask=batch.audio_feature_attention_mask if hasattr(batch, 'audio_feature_attention_mask') else None,
                     audio_in_ids=batch.audio_in_ids if hasattr(batch, 'audio_in_ids') else None,
-                    audio_in_wv=batch.audio_in_wv if hasattr(batch, 'audio_in_wv') else None,
-                    label_ids=batch.label_ids,  # HiggsAudioModel uses label_ids, not labels
+                    audio_in_ids_start=batch.audio_in_ids_start if hasattr(batch, 'audio_in_ids_start') else None,
+                    audio_out_ids=batch.audio_out_ids if hasattr(batch, 'audio_out_ids') else None,
+                    audio_out_ids_start=batch.audio_out_ids_start if hasattr(batch, 'audio_out_ids_start') else None,
+                    audio_out_ids_start_group_loc=batch.audio_out_ids_start_group_loc if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
+                    label_ids=batch.label_ids,
+                    label_audio_ids=batch.label_audio_ids if hasattr(batch, 'label_audio_ids') else None,
                     return_dict=True
                 )
                 
@@ -419,9 +426,15 @@ def main():
                     outputs = model(
                         input_ids=batch.input_ids,
                         attention_mask=batch.attention_mask,
+                        audio_features=batch.audio_in_wv if hasattr(batch, 'audio_in_wv') else None,  
+                        audio_feature_attention_mask=batch.audio_feature_attention_mask if hasattr(batch, 'audio_feature_attention_mask') else None,
                         audio_in_ids=batch.audio_in_ids if hasattr(batch, 'audio_in_ids') else None,
-                        audio_in_wv=batch.audio_in_wv if hasattr(batch, 'audio_in_wv') else None,
-                        label_ids=batch.label_ids,  # HiggsAudioModel uses label_ids, not labels
+                        audio_in_ids_start=batch.audio_in_ids_start if hasattr(batch, 'audio_in_ids_start') else None,
+                        audio_out_ids=batch.audio_out_ids if hasattr(batch, 'audio_out_ids') else None,
+                        audio_out_ids_start=batch.audio_out_ids_start if hasattr(batch, 'audio_out_ids_start') else None,
+                        audio_out_ids_start_group_loc=batch.audio_out_ids_start_group_loc if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
+                        label_ids=batch.label_ids,
+                        label_audio_ids=batch.label_audio_ids if hasattr(batch, 'label_audio_ids') else None,
                         return_dict=True
                     )
                     val_loss += outputs.loss.item()
