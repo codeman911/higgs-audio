@@ -403,14 +403,21 @@ def main():
         
         for step, batch in enumerate(progress_bar):
             with accelerator.accumulate(model):
-                # Move batch tensors to the correct device
+                # Move batch tensors to the correct device and dtype
                 # Accelerate sometimes doesn't handle custom batch objects properly
                 device = accelerator.device
                 
-                # Helper function to move tensor to device if it exists
-                def to_device(tensor):
+                # Get model dtype for audio features (model uses mixed precision)
+                model_dtype = next(model.parameters()).dtype
+                
+                # Helper function to move tensor to device and optionally convert dtype
+                def to_device(tensor, convert_dtype=False):
                     if tensor is not None and hasattr(tensor, 'to'):
-                        return tensor.to(device)
+                        if convert_dtype and tensor.dtype in [torch.float32, torch.float64]:
+                            # Convert float tensors to match model dtype (for audio features)
+                            return tensor.to(device=device, dtype=model_dtype)
+                        else:
+                            return tensor.to(device)
                     return tensor
                 
                 # Forward pass - map collator output to model input correctly
@@ -419,7 +426,7 @@ def main():
                 outputs = model(
                     input_ids=to_device(batch.input_ids),
                     attention_mask=to_device(batch.attention_mask),
-                    audio_features=to_device(batch.audio_in_wv) if hasattr(batch, 'audio_in_wv') else None,  
+                    audio_features=to_device(batch.audio_in_wv, convert_dtype=True) if hasattr(batch, 'audio_in_wv') else None,  # Convert dtype for audio features
                     audio_feature_attention_mask=to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
                     audio_in_ids=to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
                     audio_in_ids_start=to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
@@ -473,19 +480,26 @@ def main():
             
             with torch.no_grad():
                 for batch in tqdm(val_dataloader, desc="Validation"):
-                    # Move batch tensors to the correct device
+                    # Move batch tensors to the correct device and dtype
                     device = accelerator.device
                     
-                    # Helper function to move tensor to device if it exists
-                    def to_device(tensor):
+                    # Get model dtype for audio features (model uses mixed precision)
+                    model_dtype = next(model.parameters()).dtype
+                    
+                    # Helper function to move tensor to device and optionally convert dtype
+                    def to_device(tensor, convert_dtype=False):
                         if tensor is not None and hasattr(tensor, 'to'):
-                            return tensor.to(device)
+                            if convert_dtype and tensor.dtype in [torch.float32, torch.float64]:
+                                # Convert float tensors to match model dtype (for audio features)
+                                return tensor.to(device=device, dtype=model_dtype)
+                            else:
+                                return tensor.to(device)
                         return tensor
                     
                     outputs = model(
                         input_ids=to_device(batch.input_ids),
                         attention_mask=to_device(batch.attention_mask),
-                        audio_features=to_device(batch.audio_in_wv) if hasattr(batch, 'audio_in_wv') else None,  
+                        audio_features=to_device(batch.audio_in_wv, convert_dtype=True) if hasattr(batch, 'audio_in_wv') else None,  # Convert dtype for audio features
                         audio_feature_attention_mask=to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
                         audio_in_ids=to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
                         audio_in_ids_start=to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
