@@ -10,13 +10,13 @@ import torch
 
 # Load model config
 config = AutoConfig.from_pretrained(
-    "bosonai/higgs-audio-v2",
+    "bosonai/higgs-audio-v2-generation-3B-base",
     trust_remote_code=True
 )
 
 # Initialize model
 model = HiggsAudioModel.from_pretrained(
-    "bosonai/higgs-audio-v2",
+    "bosonai/higgs-audio-v2-generation-3B-base",
     config=config,
     trust_remote_code=True,
     torch_dtype=torch.float16,
