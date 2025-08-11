@@ -446,12 +446,44 @@ def main():
                 else:
                     actual_model = model
                 
+                # 🔍 CRITICAL DEBUGGING: Verify reference audio conditioning
+                if step == 0 or step % 10 == 0:  # Log every 10 steps for ongoing monitoring
+                    logger.info(f"\n🔍 === DEBUGGING STEP {step} ===")
+                    logger.info(f"📥 MODEL INPUTS:")
+                    for k, v in model_inputs.items():
+                        if torch.is_tensor(v):
+                            logger.info(f"  {k}: {v.shape} dtype={v.dtype}")
+                        else:
+                            logger.info(f"  {k}: {v}")
+                    
+                    # Critical: Verify audio conditioning inputs
+                    if 'audio_in_ids' in model_inputs:
+                        audio_in_ids = model_inputs['audio_in_ids']
+                        logger.info(f"🎤 REFERENCE AUDIO CONDITIONING:")
+                        logger.info(f"  audio_in_ids shape: {audio_in_ids.shape}")
+                        logger.info(f"  audio_in_ids non-zero: {(audio_in_ids != 0).sum().item()}/{audio_in_ids.numel()}")
+                        logger.info(f"  audio_in_ids sample: {audio_in_ids[0, :10] if audio_in_ids.numel() > 10 else audio_in_ids}")
+                    
+                    if 'audio_features' in model_inputs:
+                        audio_features = model_inputs['audio_features']
+                        logger.info(f"  audio_features shape: {audio_features.shape}")
+                        logger.info(f"  audio_features mean: {audio_features.mean().item():.4f}")
+                        logger.info(f"  audio_features std: {audio_features.std().item():.4f}")
+                
                 # Forward pass - call model directly WITHOUT labels
                 outputs = actual_model(**model_inputs)
                 
                 # CRITICAL: Extract labels separately for loss computation
                 text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
                 audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
+                
+                # 🔍 DEBUGGING: Verify what model outputs
+                if step == 0 or step % 10 == 0:
+                    logger.info(f"📤 MODEL OUTPUTS:")
+                    if hasattr(outputs, 'keys'):
+                        logger.info(f"  Output keys: {list(outputs.keys())}")
+                    else:
+                        logger.info(f"  Output type: {type(outputs)}")
                 
                 # PROPER LOSS COMPUTATION FOR ZERO-SHOT VOICE CLONING
                 total_loss = 0.0
@@ -460,6 +492,14 @@ def main():
                 # 1. Audio Loss (PRIMARY for voice cloning)
                 if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
                     audio_logits = outputs.audio_logits
+                    
+                    # 🔍 DEBUGGING: Verify audio loss computation
+                    if step == 0 or step % 10 == 0:
+                        logger.info(f"🔊 AUDIO LOSS COMPUTATION:")
+                        logger.info(f"  audio_logits shape: {audio_logits.shape}")
+                        logger.info(f"  audio_labels shape: {audio_labels.shape}")
+                        logger.info(f"  audio_labels non-ignore: {(audio_labels != -100).sum().item()}/{audio_labels.numel()}")
+                        logger.info(f"  audio_labels sample: {audio_labels[0, :10] if audio_labels.numel() > 10 else audio_labels[0]}")
                     
                     # Compute audio token prediction loss (the CORE of voice cloning)
                     audio_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
@@ -470,10 +510,9 @@ def main():
                     total_loss += audio_loss
                     loss_components['audio_loss'] = audio_loss.item()
                     
-                    if step == 0:
-                        logger.info(f"🔊 AUDIO LOSS (Primary): {audio_loss.item():.4f}")
-                        logger.info(f"Audio logits shape: {audio_logits.shape}")
-                        logger.info(f"Audio labels shape: {audio_labels.shape}")
+                    # 🔍 CRITICAL: Monitor audio loss trends
+                    if step % 10 == 0:
+                        logger.info(f"🔊 AUDIO LOSS (Step {step}): {audio_loss.item():.4f}")
                 
                 # 2. Text Loss (SECONDARY - for text understanding)
                 if hasattr(outputs, 'logits') and outputs.logits is not None and text_labels is not None:
@@ -490,6 +529,14 @@ def main():
                         shift_logits = text_logits[..., :-1, :].contiguous()
                         shift_labels = text_labels[..., 1:].contiguous()
                         
+                        # 🔍 DEBUGGING: Verify text loss computation
+                        if step == 0 or step % 10 == 0:
+                            logger.info(f"📝 TEXT LOSS COMPUTATION:")
+                            logger.info(f"  text_logits original: {text_logits.shape}")
+                            logger.info(f"  text_labels original: {text_labels.shape}")
+                            logger.info(f"  after shift - logits: {shift_logits.shape}, labels: {shift_labels.shape}")
+                            logger.info(f"  text_labels non-ignore: {(shift_labels != -100).sum().item()}/{shift_labels.numel()}")
+                        
                         # Compute text loss (weighted lower for voice cloning)
                         text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
                         text_loss = text_loss_fct(
@@ -503,8 +550,9 @@ def main():
                         loss_components['text_loss'] = text_loss.item()
                         loss_components['weighted_text_loss'] = weighted_text_loss.item()
                         
-                        if step == 0:
-                            logger.info(f"📝 TEXT LOSS (Secondary): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f})")
+                        # 🔍 CRITICAL: Monitor text loss trends  
+                        if step % 10 == 0:
+                            logger.info(f"📝 TEXT LOSS (Step {step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f})")
                 
                 # Final loss for backward pass
                 if total_loss == 0:
@@ -514,10 +562,18 @@ def main():
                 loss = total_loss
                 loss_components['total_loss'] = total_loss.item()
                 
-                if step == 0:
-                    logger.info(f"🎯 TOTAL LOSS: {total_loss.item():.4f}")
-                    logger.info(f"Loss breakdown: {loss_components}")
-                    logger.info("✅ Using proper zero-shot voice cloning loss computation!")
+                # 🔍 CRITICAL: Always log loss breakdown every 10 steps
+                if step % 10 == 0:
+                    logger.info(f"🎯 TOTAL LOSS (Step {step}): {total_loss.item():.4f}")
+                    logger.info(f"📊 Loss breakdown: {loss_components}")
+                    
+                    # 🚨 CRITICAL: Check for suspicious loss patterns
+                    if loss_components.get('audio_loss', 0) < 2.0:
+                        logger.warning(f"⚠️  SUSPICIOUS: Audio loss very low ({loss_components.get('audio_loss', 0):.4f}) - possible model collapse or wrong labels!")
+                    
+                    if step > 0:
+                        logger.info(f"✅ Zero-shot voice cloning training - Reference audio conditioning ACTIVE")
+                    logger.info(f"🔄 === END DEBUG STEP {step} ===\n")
                 
                 # Backward pass
                 accelerator.backward(loss)
