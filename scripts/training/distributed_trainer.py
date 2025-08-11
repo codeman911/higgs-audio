@@ -403,21 +403,31 @@ def main():
         
         for step, batch in enumerate(progress_bar):
             with accelerator.accumulate(model):
+                # Move batch tensors to the correct device
+                # Accelerate sometimes doesn't handle custom batch objects properly
+                device = accelerator.device
+                
+                # Helper function to move tensor to device if it exists
+                def to_device(tensor):
+                    if tensor is not None and hasattr(tensor, 'to'):
+                        return tensor.to(device)
+                    return tensor
+                
                 # Forward pass - map collator output to model input correctly
                 # The collator returns audio_in_wv but model expects audio_features
                 # Use 'labels' here because PEFT wrapper will convert it to 'label_ids'
                 outputs = model(
-                    input_ids=batch.input_ids,
-                    attention_mask=batch.attention_mask,
-                    audio_features=batch.audio_in_wv if hasattr(batch, 'audio_in_wv') else None,  
-                    audio_feature_attention_mask=batch.audio_feature_attention_mask if hasattr(batch, 'audio_feature_attention_mask') else None,
-                    audio_in_ids=batch.audio_in_ids if hasattr(batch, 'audio_in_ids') else None,
-                    audio_in_ids_start=batch.audio_in_ids_start if hasattr(batch, 'audio_in_ids_start') else None,
-                    audio_out_ids=batch.audio_out_ids if hasattr(batch, 'audio_out_ids') else None,
-                    audio_out_ids_start=batch.audio_out_ids_start if hasattr(batch, 'audio_out_ids_start') else None,
-                    audio_out_ids_start_group_loc=batch.audio_out_ids_start_group_loc if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
-                    labels=batch.label_ids,  # Use 'labels' because PEFT expects it
-                    label_audio_ids=batch.label_audio_ids if hasattr(batch, 'label_audio_ids') else None,
+                    input_ids=to_device(batch.input_ids),
+                    attention_mask=to_device(batch.attention_mask),
+                    audio_features=to_device(batch.audio_in_wv) if hasattr(batch, 'audio_in_wv') else None,  
+                    audio_feature_attention_mask=to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
+                    audio_in_ids=to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
+                    audio_in_ids_start=to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
+                    audio_out_ids=to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
+                    audio_out_ids_start=to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
+                    audio_out_ids_start_group_loc=to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
+                    labels=to_device(batch.label_ids),  # Use 'labels' because PEFT expects it
+                    label_audio_ids=to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None,
                     return_dict=True
                 )
                 
@@ -463,18 +473,27 @@ def main():
             
             with torch.no_grad():
                 for batch in tqdm(val_dataloader, desc="Validation"):
+                    # Move batch tensors to the correct device
+                    device = accelerator.device
+                    
+                    # Helper function to move tensor to device if it exists
+                    def to_device(tensor):
+                        if tensor is not None and hasattr(tensor, 'to'):
+                            return tensor.to(device)
+                        return tensor
+                    
                     outputs = model(
-                        input_ids=batch.input_ids,
-                        attention_mask=batch.attention_mask,
-                        audio_features=batch.audio_in_wv if hasattr(batch, 'audio_in_wv') else None,  
-                        audio_feature_attention_mask=batch.audio_feature_attention_mask if hasattr(batch, 'audio_feature_attention_mask') else None,
-                        audio_in_ids=batch.audio_in_ids if hasattr(batch, 'audio_in_ids') else None,
-                        audio_in_ids_start=batch.audio_in_ids_start if hasattr(batch, 'audio_in_ids_start') else None,
-                        audio_out_ids=batch.audio_out_ids if hasattr(batch, 'audio_out_ids') else None,
-                        audio_out_ids_start=batch.audio_out_ids_start if hasattr(batch, 'audio_out_ids_start') else None,
-                        audio_out_ids_start_group_loc=batch.audio_out_ids_start_group_loc if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
-                        labels=batch.label_ids,  # Use 'labels' because PEFT expects it
-                        label_audio_ids=batch.label_audio_ids if hasattr(batch, 'label_audio_ids') else None,
+                        input_ids=to_device(batch.input_ids),
+                        attention_mask=to_device(batch.attention_mask),
+                        audio_features=to_device(batch.audio_in_wv) if hasattr(batch, 'audio_in_wv') else None,  
+                        audio_feature_attention_mask=to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
+                        audio_in_ids=to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
+                        audio_in_ids_start=to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
+                        audio_out_ids=to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
+                        audio_out_ids_start=to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
+                        audio_out_ids_start_group_loc=to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
+                        labels=to_device(batch.label_ids),  # Use 'labels' because PEFT expects it
+                        label_audio_ids=to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None,
                         return_dict=True
                     )
                     val_loss += outputs.loss.item()
