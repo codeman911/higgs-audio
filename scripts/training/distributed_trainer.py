@@ -568,65 +568,37 @@ def main():
                             logger.info(f"🔧 MAPPING PAD TOKENS: {pad_count_before} tokens ({pad_id}) → -100")
                             audio_labels[audio_labels == pad_id] = -100
                     else:
-                        # CRITICAL FIX: Mask all special tokens that shouldn't be in training
-                        special_tokens_masked = 0
+                        # CRITICAL ARCHITECTURAL FIX: Preserve both BOS and EOS tokens
+                        # Both are used in generation logic and should not be masked
+                        
+                        special_tokens_preserved = 0
                         
                         # Token 1024: audio_stream_bos_id (Begin-of-Stream)
+                        # BOS tokens are used in generation delay patterns - preserve them
                         token_1024_count = (audio_labels == 1024).sum().item()
                         if token_1024_count > 0:
-                            logger.info(f"🔧 MASKING BOS TOKENS: {token_1024_count} BOS tokens (1024) → -100")
-                            audio_labels[audio_labels == 1024] = -100
-                            special_tokens_masked += token_1024_count
+                            logger.info(f"✅ PRESERVING BOS TOKENS: {token_1024_count} BOS tokens (1024) kept for learning")
+                            special_tokens_preserved += token_1024_count
                         
                         # Token 1025: audio_stream_eos_id (End-of-Stream)
+                        # EOS tokens are REQUIRED for inference generation stopping logic
                         token_1025_count = (audio_labels == 1025).sum().item()
                         if token_1025_count > 0:
-                            # SIMPLIFIED: Check if EOS tokens are at sequence ends
-                            try:
-                                # Find first few EOS positions across all codebooks
-                                eos_mask = (audio_labels == 1025)
-                                eos_indices = torch.nonzero(eos_mask, as_tuple=False)[:5]  # First 5 EOS positions
-                                
-                                eos_info = []
-                                for idx in eos_indices:
-                                    cb, t = idx[0].item(), idx[1].item()
-                                    end_dist = audio_labels.shape[1] - t - 1
-                                    eos_info.append(f"cb{cb}_t{t}(end-{end_dist})")
-                                
-                                logger.info(f"🔧 EOS POSITIONS SAMPLE: {eos_info}")
-                                
-                                # Check if most EOS are near sequence ends
-                                end_positions = []
-                                for idx in eos_indices:
-                                    end_dist = audio_labels.shape[1] - idx[1].item() - 1
-                                    end_positions.append(end_dist)
-                                
-                                if end_positions:
-                                    avg_end_dist = sum(end_positions) / len(end_positions)
-                                    logger.info(f"🔧 EOS AVG DISTANCE FROM END: {avg_end_dist:.1f}")
-                                    
-                                    if avg_end_dist < 5:
-                                        logger.warning(f"⚠️  EOS tokens very close to sequence ends - may impact inference!")
-                                    
-                            except Exception as e:
-                                logger.info(f"🔧 EOS POSITION CHECK FAILED: {str(e)}")
-                            
-                            logger.info(f"🔧 MASKING EOS TOKENS: {token_1025_count} EOS tokens (1025) → -100")
-                            audio_labels[audio_labels == 1025] = -100
-                            special_tokens_masked += token_1025_count
+                            logger.info(f"✅ PRESERVING EOS TOKENS: {token_1025_count} EOS tokens (1025) kept for learning")
+                            special_tokens_preserved += token_1025_count
                         
-                        # Log total special tokens masked
-                        if special_tokens_masked > 0:
-                            logger.info(f"🎯 TOTAL SPECIAL TOKENS MASKED: {special_tokens_masked}")
+                        # Log total special tokens preserved
+                        if special_tokens_preserved > 0:
+                            logger.info(f"🎯 TOTAL SPECIAL TOKENS PRESERVED: {special_tokens_preserved}")
                         
-                        # Check for any remaining out-of-vocab tokens
-                        oov_mask = audio_labels >= 1024
-                        oov_mask = oov_mask & (audio_labels != -100)  # Exclude already masked
-                        oov_count = oov_mask.sum().item()
-                        if oov_count > 0:
-                            oov_tokens = audio_labels[oov_mask].unique().tolist()
-                            logger.warning(f"🚨 FOUND OOV TOKENS: {oov_count} tokens with IDs {oov_tokens} - masking to -100")
-                            audio_labels[oov_mask] = -100
+                        # Check for any truly invalid tokens (> 1025)
+                        invalid_mask = audio_labels > 1025
+                        invalid_mask = invalid_mask & (audio_labels != -100)  # Exclude already masked
+                        invalid_count = invalid_mask.sum().item()
+                        if invalid_count > 0:
+                            invalid_tokens = audio_labels[invalid_mask].unique().tolist()
+                            logger.warning(f"🚨 FOUND INVALID TOKENS: {invalid_count} tokens with IDs {invalid_tokens} - masking to -100")
+                            audio_labels[invalid_mask] = -100
                 
                 # 🔍 DEBUGGING: Verify what model outputs
                 if step == 0 or step % 10 == 0:
