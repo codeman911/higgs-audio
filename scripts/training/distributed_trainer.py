@@ -328,53 +328,19 @@ def main():
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         target_modules=[
-            # Audio output projection layers - CRITICAL for audio generation
+            # CRITICAL: Audio output head - generates final audio tokens
             "audio_decoder_proj.audio_lm_head",
             
-            # Audio embedding layers - CRITICAL for audio token processing
-            "audio_out_embed_projector",
-            "audio_encoder_proj",
+            # STRATEGY 1: Audio MLP layers for ALL layers (0-27) - audio generation pathway
+            # Based on model analysis: these are the ACTUAL audio generation modules
+        ] + [f"layers.{i}.audio_mlp.gate_proj" for i in range(28)] + \
+          [f"layers.{i}.audio_mlp.up_proj" for i in range(28)] + \
+          [f"layers.{i}.audio_mlp.down_proj" for i in range(28)] + [
             
-            # Extended audio MLP layers for better coverage (layers 8-15)
-            "layers.8.audio_mlp.gate_proj",
-            "layers.8.audio_mlp.up_proj", 
-            "layers.8.audio_mlp.down_proj",
-            "layers.9.audio_mlp.gate_proj",
-            "layers.9.audio_mlp.up_proj",
-            "layers.9.audio_mlp.down_proj",
-            "layers.10.audio_mlp.gate_proj",
-            "layers.10.audio_mlp.up_proj",
-            "layers.10.audio_mlp.down_proj",
-            "layers.11.audio_mlp.gate_proj",
-            "layers.11.audio_mlp.up_proj",
-            "layers.11.audio_mlp.down_proj",
-            "layers.12.audio_mlp.gate_proj",
-            "layers.12.audio_mlp.up_proj",
-            "layers.12.audio_mlp.down_proj",
-            "layers.13.audio_mlp.gate_proj",
-            "layers.13.audio_mlp.up_proj",
-            "layers.13.audio_mlp.down_proj",
-            "layers.14.audio_mlp.gate_proj",
-            "layers.14.audio_mlp.up_proj",
-            "layers.14.audio_mlp.down_proj",
-            "layers.15.audio_mlp.gate_proj",
-            "layers.15.audio_mlp.up_proj",
-            "layers.15.audio_mlp.down_proj",
-            
-            # Audio attention layers for better conditioning
-            "layers.10.audio_attn.q_proj",
-            "layers.10.audio_attn.k_proj", 
-            "layers.10.audio_attn.v_proj",
-            "layers.10.audio_attn.o_proj",
-            "layers.12.audio_attn.q_proj",
-            "layers.12.audio_attn.k_proj",
-            "layers.12.audio_attn.v_proj", 
-            "layers.12.audio_attn.o_proj",
-            "layers.14.audio_attn.q_proj",
-            "layers.14.audio_attn.k_proj",
-            "layers.14.audio_attn.v_proj",
-            "layers.14.audio_attn.o_proj",
-        ],
+            # STRATEGY 2: Standard attention for reference conditioning (q_proj, v_proj only for efficiency)
+            # These help with understanding reference audio context
+        ] + [f"layers.{i}.self_attn.q_proj" for i in range(28)] + \
+          [f"layers.{i}.self_attn.v_proj" for i in range(28)],
         lora_dropout=args.lora_dropout,
         bias="none",
         task_type=TaskType.CAUSAL_LM,
