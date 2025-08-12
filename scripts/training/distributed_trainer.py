@@ -550,15 +550,26 @@ def main():
                         logger.info(f"  labels_flat min/max: {labels_flat[labels_flat != -100].min().item() if (labels_flat != -100).any() else 'N/A'} / {labels_flat[labels_flat != -100].max().item() if (labels_flat != -100).any() else 'N/A'}")
                         logger.info(f"  Expected range: 0-1025 (vocab size 1026)")
                     
+                    # 🚨 CRITICAL FIX: Align tensor dimensions before loss computation
+                    # Model outputs: [T, 8, V] (time-major)
+                    # Labels:        [8, T]    (codebook-major)
+                    # Without alignment, flattening happens in different orders → random CE!
+                    
+                    if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
+                        # Permute to [8, T, V] to match label order (codebook-major)
+                        audio_logits = audio_logits.permute(1, 0, 2).contiguous()
+                        if step == 0 or step % 10 == 0:
+                            logger.info(f"🔧 TENSOR ALIGNMENT: Permuted audio_logits from [T,8,V] to [8,T,V]: {audio_logits.shape}")
+                    
                     # Compute audio token prediction loss (the CORE of voice cloning)
                     audio_loss_fct = torch.nn.CrossEntropyLoss(
                         ignore_index=-100,
                         label_smoothing=args.audio_label_smoothing
                     )
                     
-                    # CRITICAL VERIFICATION: Check tensor alignment before loss
-                    logits_for_loss = audio_logits.view(-1, audio_logits.size(-1))  # [seq*codebooks, vocab]
-                    labels_for_loss = audio_labels.view(-1)  # [seq*codebooks]
+                    # CRITICAL VERIFICATION: Check tensor alignment after fix
+                    logits_for_loss = audio_logits.view(-1, audio_logits.size(-1))  # [(8*T), vocab]
+                    labels_for_loss = audio_labels.contiguous().view(-1)           # [(8*T)]
                     
                     # Verify no invalid labels
                     valid_mask = labels_for_loss != -100
@@ -768,16 +779,22 @@ def main():
                     # PROPER VALIDATION LOSS for zero-shot voice cloning
                     batch_loss = 0.0
                     
-                    # Primary: Audio Loss
+                    # Primary: Audio Loss - WITH TENSOR ALIGNMENT FIX
                     if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
                         audio_logits = outputs.audio_logits
+                        
+                        # 🚨 CRITICAL FIX: Same tensor alignment as training loop
+                        if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
+                            # Permute to [8, T, V] to match label order (codebook-major)
+                            audio_logits = audio_logits.permute(1, 0, 2).contiguous()
+                        
                         audio_loss_fct = torch.nn.CrossEntropyLoss(
                             ignore_index=-100,
                             label_smoothing=args.audio_label_smoothing
                         )
                         audio_loss = audio_loss_fct(
-                            audio_logits.view(-1, audio_logits.size(-1)), 
-                            audio_labels.view(-1)
+                            audio_logits.view(-1, audio_logits.size(-1)),   # [(8*T), vocab]
+                            audio_labels.contiguous().view(-1)               # [(8*T)]
                         )
                         batch_loss += audio_loss.item()
                     
