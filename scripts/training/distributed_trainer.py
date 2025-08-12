@@ -582,9 +582,65 @@ def main():
                     total_loss = audio_loss if total_loss is None else total_loss + audio_loss
                     loss_components['audio_loss'] = audio_loss.item()
                     
-                    # 🔍 CRITICAL: Monitor audio loss trends
+                    # 🔍 CRITICAL: Monitor audio loss trends + SANITY CHECKS FOR MODEL COLLAPSE
                     if step % 10 == 0:
                         logger.info(f"🔊 AUDIO LOSS (Step {step}): {audio_loss.item():.4f}")
+                        
+                        # 🚨 SANITY CHECK 1: Per-codebook CE breakdown
+                        with torch.no_grad():
+                            L = audio_logits  # Already permuted to [8, T, V]
+                            y = audio_labels.contiguous()  # [8, T]
+                            ce_per_q = []
+                            for q in range(8):
+                                mask_q = (y[q] != -100)
+                                if mask_q.any():
+                                    ce_q = torch.nn.functional.cross_entropy(L[q][mask_q], y[q][mask_q])
+                                    ce_per_q.append(ce_q.item())
+                            logger.info(f"📊 Per-codebook CE: {[f'{x:.3f}' for x in ce_per_q]}")
+                            
+                            # 🚨 SANITY CHECK 2: Prediction collapse detection
+                            pred = L.argmax(-1)  # [8, T] 
+                            valid_mask = (y != -100)
+                            if valid_mask.any():
+                                pred_tokens = pred[valid_mask]
+                                label_tokens = y[valid_mask]
+                                
+                                # Count unique predictions vs unique labels
+                                pred_unique = len(torch.unique(pred_tokens))
+                                label_unique = len(torch.unique(label_tokens))
+                                logger.info(f"🔍 Token diversity: pred={pred_unique}, labels={label_unique}")
+                                
+                                # Check for mode collapse (model predicting same few tokens)
+                                pred_hist = torch.bincount(pred_tokens, minlength=1026)
+                                top_5_pred = torch.topk(pred_hist, 5)
+                                pred_concentration = top_5_pred.values.sum().item() / pred_tokens.numel()
+                                logger.info(f"🚨 Top-5 prediction concentration: {pred_concentration:.3f}")
+                                
+                                if pred_concentration > 0.8:
+                                    logger.warning(f"⚠️  HIGH PREDICTION CONCENTRATION: {pred_concentration:.3f} - POSSIBLE COLLAPSE!")
+                                
+                                # Log most frequent predictions vs labels
+                                logger.info(f"🔍 Top pred tokens: {top_5_pred.indices[:5].tolist()}")
+                                label_hist = torch.bincount(label_tokens, minlength=1026)
+                                top_5_label = torch.topk(label_hist, 5)
+                                logger.info(f"🔍 Top label tokens: {top_5_label.indices[:5].tolist()}")
+                        
+                        # 🚨 SANITY CHECK 3: Mask boundary verification
+                        audio_out_mask = model_inputs.get('audio_out_mask')
+                        if audio_out_mask is not None:
+                            mask_sum = audio_out_mask.sum().item()
+                            non_ignore = (audio_labels != -100).sum().item()
+                            logger.info(f"🔍 Mask alignment: audio_out_mask_sum={mask_sum}, non_ignore_labels={non_ignore}")
+                            
+                            if abs(mask_sum - non_ignore) > 100:  # Allow some tolerance
+                                logger.warning(f"⚠️  MASK MISMATCH: mask_sum({mask_sum}) != non_ignore({non_ignore})")
+                        
+                        # 🚨 SANITY CHECK 4: Check for suspicious loss ratios
+                        if audio_loss.item() < 0.5:
+                            logger.warning(f"🚨 EXTREMELY LOW AUDIO LOSS: {audio_loss.item():.4f} - INVESTIGATE!")
+                        
+                        if step > 50 and loss_components.get('text_loss', 10) < 0.1:
+                            logger.warning(f"🚨 EXTREMELY LOW TEXT LOSS: {loss_components.get('text_loss', 0):.4f} - POSSIBLE COLLAPSE!")
                 
                 # 2. Text Loss (SECONDARY - for text understanding)
                 if hasattr(outputs, 'logits') and outputs.logits is not None and text_labels is not None:
