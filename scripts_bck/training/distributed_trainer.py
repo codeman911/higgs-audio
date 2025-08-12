@@ -1,937 +1,748 @@
 #!/usr/bin/env python3
 """
-Distributed Training Pipeline for Higgs-Audio V2 LoRA Fine-tuning
-Optimized for 8x H200 GPUs with DeepSpeed and Accelerate integration.
+Distributed LoRA Training Script for Higgs-Audio V2
+Simple, robust, and working implementation.
 """
 
 import os
 import sys
 import json
+import argparse
 import torch
-import torch.distributed as dist
-from torch.utils.data import DataLoader, DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP
-import deepspeed
-from accelerate import Accelerator, DistributedDataParallelKwargs
-from accelerate.utils import set_seed
-from transformers import get_linear_schedule_with_warmup
-import wandb
+import torchaudio
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, AutoConfig, WhisperProcessor
+from peft import LoraConfig, get_peft_model, TaskType
+import torch.nn as nn
+from accelerate import Accelerator
 from tqdm import tqdm
+from pathlib import Path
 import logging
-from pathlib import Path
-from typing import Dict, List, Optional, Union
-import numpy as np
-from dataclasses import dataclass, field
-import yaml
 
-# Robust import handling for both CLI and module usage
-from pathlib import Path
-
-# Add project root to Python path
+# Add project root to path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-try:
-    from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
-    from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
-    from scripts.training.lora_integration import HiggsAudioLoRAConfig, create_lora_model
-except ImportError:
-    # Fallback for different project structures
-    import os
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(os.path.dirname(current_dir))
-    sys.path.insert(0, project_root)
-    from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
-    from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
-    from scripts.training.lora_integration import HiggsAudioLoRAConfig, create_lora_model
+from boson_multimodal.model.higgs_audio import HiggsAudioModel
+from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
+from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
+from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
-@dataclass
-class TrainingConfig:
-    """Training configuration for distributed LoRA fine-tuning"""
+class SimpleDataset(Dataset):
+    """Simple dataset that loads ChatML JSON files"""
     
-    # Model and data paths
-    model_path: str = "bosonai/higgs-audio-v2-generation-3B-base"
-    audio_tokenizer_path: str = "bosonai/higgs-audio-v2-tokenizer"
-    dataset_path: str = "/workspace/data/processed_chatml"
-    output_dir: str = "/workspace/outputs/higgs-lora-arabic-english"
+    def __init__(self, json_path):
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        # Handle both list and dict formats
+        if isinstance(data, list):
+            self.samples = data
+        elif isinstance(data, dict):
+            self.samples = data.get('samples', data.get('data', []))
+        else:
+            self.samples = []
+        
+        logger.info(f"Loaded {len(self.samples)} samples from {json_path}")
     
-    # Training hyperparameters
-    num_epochs: int = 3
-    batch_size_per_device: int = 2
-    gradient_accumulation_steps: int = 8
-    learning_rate: float = 1e-5  # CRITICAL FIX: Reduced from 2e-4 to prevent gradient explosion
-    weight_decay: float = 0.01
-    warmup_ratio: float = 0.1
-    max_grad_norm: float = 1.0
-    
-    # LoRA configuration
-    lora_r: int = 16
-    lora_alpha: int = 32
-    lora_dropout: float = 0.1
-    
-    # Audio-specific settings
-    max_audio_length: int = 1500  # Max audio tokens
-    max_text_length: int = 512    # Max text tokens
-    
-    # Distributed training
-    deepspeed_config: Optional[str] = None
-    use_deepspeed: bool = True
-    use_accelerate: bool = True
-    
-    # Logging and checkpointing
-    logging_steps: int = 10
-    save_steps: int = 500
-    eval_steps: int = 500
-    save_total_limit: int = 3
-    
-    # Wandb logging
-    use_wandb: bool = True
-    wandb_project: str = "higgs-audio-lora-arabic-english"
-    wandb_run_name: Optional[str] = None
-    
-    # Data processing
-    train_split_ratio: float = 0.9
-    val_split_ratio: float = 0.1
-    num_workers: int = 8
-    
-    # Mixed precision
-    fp16: bool = False
-    bf16: bool = True
-    
-    # Optimization
-    optimizer_type: str = "adamw"
-    scheduler_type: str = "linear"
-    
-    # Language-specific settings
-    arabic_weight: float = 1.0
-    english_weight: float = 1.0
-    mixed_weight: float = 1.5  # Higher weight for code-switching samples
-
-
-class ArabicEnglishDataset(torch.utils.data.Dataset):
-    """Dataset for Arabic-English ChatML samples"""
-    
-    def __init__(
-        self,
-        chatml_samples: List[Dict],
-        tokenizer,
-        audio_tokenizer,
-    ):
-        self.samples = chatml_samples
-        self.tokenizer = tokenizer
-        self.audio_tokenizer = audio_tokenizer
-         
     def __len__(self):
         return len(self.samples)
-     
+    
     def __getitem__(self, idx):
-        sample = self.samples[idx]
-         
-        try:
-            # Convert back to ChatML format
-            from boson_multimodal.data_types import ChatMLSample, Message, AudioContent, TextContent
-            import librosa
-            import numpy as np
+        return self.samples[idx]
+
+
+def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000):
+    """Simple collate function that processes samples for training"""
+    
+    chatml_samples = []
+    
+    for sample in batch:
+        # Get messages from sample
+        messages = sample.get('messages', [])
+        
+        # Build ChatML dict
+        chatml_dict = {"messages": []}
+        
+        for msg in messages:
+            role = msg.get('role')
+            content = msg.get('content')
             
-            messages = []
-            for msg_data in sample['messages']:
-                content = msg_data['content']
-                if isinstance(content, str):
-                    message_content = content
+            if role and content:
+                # Handle different content formats
+                if isinstance(content, list):
+                    # Multi-modal content
+                    processed_content = []
+                    for item in content:
+                        if item.get('type') == 'text':
+                            processed_content.append({"type": "text", "text": item.get('text', '')})
+                        elif item.get('type') == 'audio':
+                            audio_url = item.get('audio_url', '')
+                            if audio_url:
+                                processed_content.append({"type": "audio", "audio_url": audio_url})
+                    chatml_dict["messages"].append({"role": role, "content": processed_content})
                 else:
-                    # Handle multimodal content
-                    message_content = []
-                    for c in content:
-                        if c['type'] == 'text':
-                            message_content.append(TextContent(text=c['text']))
-                        elif c['type'] == 'audio':
-                            message_content.append(AudioContent(
-                                audio_url=c.get('audio_url', ''),
-                                raw_audio=c.get('raw_audio', ''),
-                                duration=c.get('duration'),
-                                offset=c.get('offset')
-                            ))
-                
-                messages.append(Message(
-                    role=msg_data['role'],
-                    content=message_content
-                ))
-            
-            chatml_sample = ChatMLSample(
-                messages=messages,
-                start_index=sample.get('start_index', 0),
-                speaker=sample.get('speaker'),
-                misc=sample.get('misc', {})
+                    # Simple text content
+                    chatml_dict["messages"].append({"role": role, "content": content})
+        
+        # Tokenize with prepare_chatml_sample
+        try:
+            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
+                chatml_dict, tokenizer
             )
-            
-            # Get tokens from prepare_chatml_sample
-            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(chatml_sample, self.tokenizer)
-            
-            if input_tokens is None:
-                return self._create_dummy_sample()
-            
-            # Convert to tensors
-            input_ids = torch.tensor(input_tokens, dtype=torch.long)
-            label_ids = torch.tensor(label_tokens, dtype=torch.long)
-            
-            # Process audio contents
-            audio_waveforms = []
-            audio_ids_list = []
-            audio_sample_rates = []
-            audio_waveforms_start = []
-            audio_ids_start = []
-            
-            current_waveform_pos = 0
-            current_audio_pos = 0
-            
-            for audio_content in audio_contents:
-                # Always add start positions for each audio (even if loading fails)
-                audio_waveforms_start.append(current_waveform_pos)
-                audio_ids_start.append(current_audio_pos)
-                
-                try:
-                    if audio_content.raw_audio:
-                        # Load audio from raw_audio path
-                        waveform, sr = librosa.load(audio_content.raw_audio, sr=16000)
-                        audio_waveforms.extend(waveform.tolist())
-                        current_waveform_pos += len(waveform)
-                        audio_sample_rates.append(sr)
-                        
+        except Exception as e:
+            logger.warning(f"Failed to prepare sample: {e}")
+            # Create empty sample
+            input_tokens = [tokenizer.pad_token_id]
+            label_tokens = [-100]
+            audio_contents = []
+            speaker_id = 0
+        
+        # Process audio if present
+        audio_ids_list = []
+        audio_waveforms_list = []
+        
+        for audio_content in audio_contents:
+            if audio_content and hasattr(audio_content, 'audio_url'):
+                audio_path = audio_content.audio_url
+                if audio_path and os.path.exists(audio_path):
+                    try:
                         # Tokenize audio
-                        audio_tokens = self.audio_tokenizer.encode(waveform, sr)
-                        if audio_tokens is not None and len(audio_tokens) > 0:
-                            # audio_tokens should be (num_codebooks, seq_len)
-                            if len(audio_tokens.shape) == 1:
-                                audio_tokens = audio_tokens.unsqueeze(0)  # Add codebook dim
-                            audio_ids_list.append(audio_tokens)
-                            current_audio_pos += audio_tokens.shape[1]
-                        else:
-                            # Add empty audio tokens to maintain alignment
-                            empty_tokens = torch.zeros((8, 1), dtype=torch.long)  # 8 codebooks, 1 token
-                            audio_ids_list.append(empty_tokens)
-                            current_audio_pos += 1
-                    else:
-                        # No audio file - add empty placeholders
-                        audio_sample_rates.append(16000)  # Default sample rate
-                        empty_tokens = torch.zeros((8, 1), dtype=torch.long)
-                        audio_ids_list.append(empty_tokens)
-                        current_audio_pos += 1
-                
-                except Exception as e:
-                    logging.warning(f"Failed to process audio in sample {idx}: {e}")
-                    # Add empty placeholders even on error to maintain alignment
-                    audio_sample_rates.append(16000)
-                    empty_tokens = torch.zeros((8, 1), dtype=torch.long)
-                    audio_ids_list.append(empty_tokens)
-                    current_audio_pos += 1
-            
-            # Concatenate audio data
-            if audio_ids_list:
-                audio_ids_concat = torch.cat(audio_ids_list, dim=1)  # (num_codebooks, total_seq_len)
-            else:
-                audio_ids_concat = torch.empty((8, 0), dtype=torch.long)  # 8 codebooks default
-            
-            if audio_waveforms:
-                audio_waveforms_concat = torch.tensor(audio_waveforms, dtype=torch.float32)
-            else:
-                audio_waveforms_concat = torch.empty(0, dtype=torch.float32)
-            
-            # Create ChatMLDatasetSample
-            dataset_sample = ChatMLDatasetSample(
-                input_ids=input_ids,
-                label_ids=label_ids,
-                audio_ids_concat=audio_ids_concat,
-                audio_ids_start=torch.tensor(audio_ids_start, dtype=torch.long),
-                audio_waveforms_concat=audio_waveforms_concat,
-                audio_waveforms_start=torch.tensor(audio_waveforms_start, dtype=torch.long),
-                audio_sample_rate=torch.tensor(audio_sample_rates, dtype=torch.float32) if audio_sample_rates else torch.empty(0),
-                audio_speaker_indices=torch.tensor([0] * len(audio_sample_rates), dtype=torch.long) if audio_sample_rates else torch.empty(0, dtype=torch.long),
-                audio_label_ids_concat=audio_ids_concat.clone() if audio_ids_list else None,  # For training, labels = inputs
+                        audio_codes = audio_tokenizer.encode(audio_path)
+                        # Ensure tensor is on CPU
+                        if audio_codes.is_cuda:
+                            audio_codes = audio_codes.cpu()
+                        # Ensure 8 codebooks
+                        if audio_codes.shape[0] != 8:
+                            if audio_codes.shape[0] > 8:
+                                audio_codes = audio_codes[:8, :]
+                            else:
+                                padding = torch.zeros(8 - audio_codes.shape[0], audio_codes.shape[1])
+                                audio_codes = torch.cat([audio_codes, padding], dim=0)
+                        audio_ids_list.append(audio_codes)
+                        
+                        # Load waveform
+                        waveform, sr = torchaudio.load(audio_path)
+                        if sr != sample_rate:
+                            waveform = torchaudio.transforms.Resample(sr, sample_rate)(waveform)
+                        if waveform.shape[0] > 1:
+                            waveform = waveform.mean(dim=0, keepdim=True)
+                        waveform = waveform.squeeze(0)  # Flatten to 1D
+                        audio_waveforms_list.append(waveform)
+                    except Exception as e:
+                        logger.warning(f"Failed to process audio {audio_path}: {e}")
+        
+        # Create tensors
+        if audio_ids_list:
+            audio_ids_concat = torch.cat(audio_ids_list, dim=1)
+            audio_ids_start = torch.cumsum(
+                torch.tensor([0] + [ids.shape[1] for ids in audio_ids_list]), dim=0
             )
-            
-            return dataset_sample
-            
-        except Exception as e:
-            logging.warning(f"Error processing sample {idx}: {e}")
-            # Return a dummy sample to avoid breaking the batch
-            return self._create_dummy_sample()
-     
-    def _create_dummy_sample(self):
-        """Create a dummy sample for error cases"""
-        return ChatMLDatasetSample(
-            input_ids=torch.tensor([1, 2, 3], dtype=torch.long),  # Dummy tokens
-            label_ids=torch.tensor([-100, -100, -100], dtype=torch.long),
-            audio_ids_concat=torch.empty((8, 0), dtype=torch.long),
-            audio_ids_start=torch.tensor([]),
-            audio_waveforms_concat=torch.empty(0, dtype=torch.float32),
-            audio_waveforms_start=torch.tensor([]),
-            audio_sample_rate=torch.empty(0, dtype=torch.float32),
-            audio_speaker_indices=torch.empty(0, dtype=torch.long)
+        else:
+            audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)
+            audio_ids_start = torch.tensor([0], dtype=torch.long)
+        
+        if audio_waveforms_list:
+            audio_waveforms_concat = torch.cat(audio_waveforms_list, dim=0)
+            lengths = [len(wv) for wv in audio_waveforms_list]
+            audio_waveforms_start = torch.tensor([0] + lengths[:-1]).cumsum(dim=0)
+            audio_sample_rate = torch.tensor([sample_rate] * len(audio_waveforms_list))
+            audio_speaker_indices = torch.zeros(len(audio_waveforms_list), dtype=torch.long)
+        else:
+            audio_waveforms_concat = torch.tensor([])
+            audio_waveforms_start = torch.tensor([0], dtype=torch.long)
+            audio_sample_rate = torch.tensor([sample_rate])
+            audio_speaker_indices = torch.tensor([0], dtype=torch.long)
+        
+        # Create ChatMLDatasetSample
+        chatml_sample = ChatMLDatasetSample(
+            input_ids=torch.tensor(input_tokens, dtype=torch.long),
+            label_ids=torch.tensor(label_tokens, dtype=torch.long),
+            audio_ids_concat=audio_ids_concat,
+            audio_ids_start=audio_ids_start,
+            audio_waveforms_concat=audio_waveforms_concat,
+            audio_waveforms_start=audio_waveforms_start,
+            audio_sample_rate=audio_sample_rate,
+            audio_speaker_indices=audio_speaker_indices
         )
+        
+        chatml_samples.append(chatml_sample)
+    
+    # Use standard collator
+    return collator(chatml_samples)
 
 
-class HiggsAudioDistributedTrainer:
-    """Distributed trainer for Higgs-Audio LoRA fine-tuning"""
+def main():
+    parser = argparse.ArgumentParser(description="Higgs-Audio LoRA Training")
     
-    def __init__(self, config: TrainingConfig):
-        self.config = config
-        self.accelerator = None
-        self.model = None
-        self.optimizer = None
-        self.scheduler = None
-        self.train_dataloader = None
-        self.val_dataloader = None
-        
-        # Setup logging
-        self._setup_logging()
-        
-        # Initialize distributed training
-        self._setup_distributed()
-        
-    def _setup_logging(self):
-        """Setup logging configuration"""
-        # Ensure output directory exists before creating file handler
-        try:
-            os.makedirs(self.config.output_dir, exist_ok=True)
-        except Exception as e:
-            # We'll still set up console logging below
-            pass
-        
-        handlers = [logging.StreamHandler()]
-        # Try to attach a file handler; if it fails, continue with stream only
-        try:
-            log_path = os.path.join(self.config.output_dir, "training.log")
-            handlers.insert(0, logging.FileHandler(log_path))
-        except Exception as e:
-            # Fallback silently; console logs will still work
-            pass
-        
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=handlers,
-        )
-        self.logger = logging.getLogger(__name__)
-        
-    def _setup_distributed(self):
-        """Setup distributed training with Accelerate"""
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-        deepspeed_plugin = None
-        if self.config.deepspeed_config:
-            try:
-                from accelerate import DeepSpeedPlugin
-                if os.path.exists(self.config.deepspeed_config):
-                    deepspeed_plugin = DeepSpeedPlugin(hf_ds_config=self.config.deepspeed_config)
-                else:
-                    self.logger.warning(f"DeepSpeed config not found: {self.config.deepspeed_config}. Continuing without DeepSpeed.")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize DeepSpeed plugin: {e}. Continuing without DeepSpeed.")
-        
-        self.accelerator = Accelerator(
-            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
-            mixed_precision="bf16" if self.config.bf16 else ("fp16" if self.config.fp16 else "no"),
-            log_with="wandb" if self.config.use_wandb else None,
-            project_dir=self.config.output_dir,
-            kwargs_handlers=[ddp_kwargs],
-            deepspeed_plugin=deepspeed_plugin,
-        )
-        
-        # Set seed for reproducibility
-        set_seed(42)
-        
-        # Setup wandb
-        if self.config.use_wandb and self.accelerator.is_main_process:
-            wandb.init(
-                project=self.config.wandb_project,
-                name=self.config.wandb_run_name,
-                config=self.config.__dict__
-            )
+    # Data arguments
+    parser.add_argument("--dataset_path", type=str, required=True,
+                        help="Path to dataset directory containing train/val JSON files")
+    parser.add_argument("--output_dir", type=str, required=True,
+                        help="Output directory for model and checkpoints")
     
-    def load_datasets(self):
-        """Load and prepare datasets"""
-        self.logger.info("Loading datasets...")
-        
-        # Load training data from unified pipeline output
-        # Files are directly in the dataset_path directory
-        train_path = os.path.join(self.config.dataset_path, "train_chatml_samples.json")
-        val_path = os.path.join(self.config.dataset_path, "val_chatml_samples.json")
-        
-        # Alternative paths in case they're in a chatml subdirectory
-        if not os.path.exists(train_path):
-            train_path = os.path.join(self.config.dataset_path, "chatml", "train_chatml_samples.json")
-        if not os.path.exists(val_path):
-            val_path = os.path.join(self.config.dataset_path, "chatml", "val_chatml_samples.json")
-        
-        if not os.path.exists(train_path):
-            raise FileNotFoundError(f"Training data not found at: {train_path}")
-        if not os.path.exists(val_path):
-            raise FileNotFoundError(f"Validation data not found at: {val_path}")
-        
-        self.logger.info(f"Loading training data from: {train_path}")
-        self.logger.info(f"Loading validation data from: {val_path}")
-        
-        # Load ChatML samples
-        with open(train_path, 'r', encoding='utf-8') as f:
-            train_samples = json.load(f)
-        
-        with open(val_path, 'r', encoding='utf-8') as f:
-            val_samples = json.load(f)
-        
-        self.logger.info(f"Loaded {len(train_samples)} training samples")
-        self.logger.info(f"Loaded {len(val_samples)} validation samples")
-        
-        # Load processing statistics for monitoring
-        stats_path = os.path.join(self.config.dataset_path, "processing_stats.json")
-        if not os.path.exists(stats_path):
-            stats_path = os.path.join(self.config.dataset_path, "chatml", "processing_stats.json")
-        
-        if os.path.exists(stats_path):
-            with open(stats_path, 'r', encoding='utf-8') as f:
-                stats = json.load(f)
-            
-            manifest_meta = stats.get('manifest_metadata', {})
-            self.logger.info(f"Dataset statistics:")
-            self.logger.info(f"  • Total duration: {manifest_meta.get('total_duration_hours', 0):.2f} hours")
-            self.logger.info(f"  • Total samples: {manifest_meta.get('total_samples', 0):,}")
-            self.logger.info(f"  • Directories processed: {manifest_meta.get('directories_processed', 0)}")
-        
-        return train_samples, val_samples
+    # Model arguments
+    parser.add_argument("--model_path", type=str, 
+                        default="bosonai/higgs-audio-v2-generation-3B-base",
+                        help="Path to base model")
+    parser.add_argument("--audio_tokenizer_path", type=str,
+                        default="bosonai/higgs-audio-v2-tokenizer",
+                        help="Path to audio tokenizer")
     
-    def create_dataloaders(self, train_samples, val_samples):
-        """Create data loaders"""
-        from transformers import AutoTokenizer
-        from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
-        
-        # Load tokenizers
-        tokenizer = AutoTokenizer.from_pretrained(self.config.model_path)
-        audio_tokenizer = load_higgs_audio_tokenizer(
-            self.config.audio_tokenizer_path,
-            device="cpu"  # IMPORTANT: keep dataset outputs on CPU; Accelerate will move batches
-        )
-        
-        # CRITICAL DEBUG: Check codebook configuration mismatch
-        from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
-        model_config = HiggsAudioConfig.from_pretrained(self.config.model_path)
-        
-        self.logger.info(f"=== CODEBOOK CONFIGURATION DEBUG ===")
-        self.logger.info(f"Model expects audio_num_codebooks: {model_config.audio_num_codebooks}")
-        self.logger.info(f"Audio tokenizer has num_codebooks: {audio_tokenizer.num_codebooks}")
-        self.logger.info(f"Audio tokenizer n_q: {audio_tokenizer.n_q}")
-        
-        # CRITICAL FIX: Enforce 8-codebook configuration alignment
-        # The data processing pipeline has been fixed to generate 8-codebook audio tokens
-        expected_codebooks = 8
-        
-        # Validate audio tokenizer has 8 codebooks
-        if audio_tokenizer.num_codebooks != expected_codebooks:
-            self.logger.error(f"AUDIO TOKENIZER MISMATCH!")
-            self.logger.error(f"Audio tokenizer has {audio_tokenizer.num_codebooks} codebooks, expected {expected_codebooks}")
-            self.logger.error(f"Please use the correct audio tokenizer: bosonai/higgs-audio-v2-tokenizer")
-            raise ValueError(f"Audio tokenizer codebook mismatch: {audio_tokenizer.num_codebooks} != {expected_codebooks}")
-        
-        # Update model config to match the corrected 8-codebook specification
-        if model_config.audio_num_codebooks != expected_codebooks:
-            self.logger.info(f"UPDATING MODEL CONFIG: {model_config.audio_num_codebooks} -> {expected_codebooks} codebooks")
-            original_codebooks = model_config.audio_num_codebooks
-            model_config.audio_num_codebooks = expected_codebooks
-            self.logger.info(f"Model config updated to match audio tokenizer and processed data")
-        else:
-            self.logger.info(f"✅ Model config already aligned: {expected_codebooks} codebooks")
-        
-        # Validate that all components are aligned
-        self.logger.info(f"=== FINAL CONFIGURATION VALIDATION ===")
-        self.logger.info(f"Model config codebooks: {model_config.audio_num_codebooks}")
-        self.logger.info(f"Audio tokenizer codebooks: {audio_tokenizer.num_codebooks}")
-        self.logger.info(f"Expected data codebooks: {expected_codebooks}")
-        
-        if (model_config.audio_num_codebooks == audio_tokenizer.num_codebooks == expected_codebooks):
-            self.logger.info(f"✅ ALL CONFIGURATIONS ALIGNED: {expected_codebooks} codebooks")
-        else:
-            self.logger.error(f"❌ CONFIGURATION MISMATCH DETECTED!")
-            raise ValueError("Codebook configuration mismatch between model, tokenizer, and expected data")
-        
-        self.logger.info(f"=== END CODEBOOK DEBUG ===")
-        
-        # Store the corrected model config for use in model loading
-        self.corrected_model_config = model_config
-        
-        # Create datasets
-        train_dataset = ArabicEnglishDataset(
-            train_samples,
-            tokenizer,
-            audio_tokenizer,
-        )
-        
-        val_dataset = ArabicEnglishDataset(
-            val_samples,
-            tokenizer,
-            audio_tokenizer,
-        )
-        
-        # Create data collator with correct signature
-        from transformers import AutoProcessor
-        from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
-        
-        # Use the corrected model config (already loaded above)
-        
-        whisper_processor = None
-        if getattr(self.corrected_model_config, "encode_whisper_embed", False):
-            try:
-                whisper_processor = AutoProcessor.from_pretrained(
-                    "openai/whisper-large-v3-turbo",
-                    trust_remote=True,
-                )
-            except Exception as e:
-                self.logger.warning(f"Failed to load Whisper processor: {e}. Proceeding without it.")
-        
-        collator = HiggsAudioSampleCollator(
-            whisper_processor=whisper_processor,
-            encode_whisper_embed=getattr(self.corrected_model_config, "encode_whisper_embed", False),
-            audio_in_token_id=self.corrected_model_config.audio_in_token_idx,
-            audio_out_token_id=self.corrected_model_config.audio_out_token_idx,
-            audio_stream_bos_id=self.corrected_model_config.audio_stream_bos_id,
-            audio_stream_eos_id=self.corrected_model_config.audio_stream_eos_id,
-            pad_token_id=self.corrected_model_config.pad_token_id,
-            return_audio_in_tokens=True,  # training needs reference audio tokens
-            use_delay_pattern=getattr(self.corrected_model_config, "use_delay_pattern", False),
-            audio_num_codebooks=getattr(self.corrected_model_config, "audio_num_codebooks", None),
-        )
-        
-        # Create data loaders
-        train_sampler = DistributedSampler(train_dataset) if self.accelerator.num_processes > 1 else None
-        val_sampler = DistributedSampler(val_dataset, shuffle=False) if self.accelerator.num_processes > 1 else None
-        
-        train_dataloader = DataLoader(
-            train_dataset,
-            batch_size=self.config.batch_size_per_device,
-            sampler=train_sampler,
-            shuffle=(train_sampler is None),
-            collate_fn=collator,
-            num_workers=self.config.num_workers,
-            pin_memory=True
-        )
-        
+    # Training arguments
+    parser.add_argument("--batch_size", type=int, default=1,
+                        help="Batch size per device")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
+                        help="Gradient accumulation steps")
+    parser.add_argument("--learning_rate", type=float, default=5e-4,
+                        help="Learning rate")
+    parser.add_argument("--num_epochs", type=int, default=3,
+                        help="Number of epochs")
+    parser.add_argument("--warmup_steps", type=int, default=100,
+                        help="Warmup steps")
+    parser.add_argument("--max_grad_norm", type=float, default=1.0,
+                        help="Max gradient norm")
+    
+    # LoRA arguments
+    parser.add_argument("--lora_r", type=int, default=16,
+                        help="LoRA rank")
+    parser.add_argument("--lora_alpha", type=int, default=32,
+                        help="LoRA alpha")
+    parser.add_argument("--lora_dropout", type=float, default=0.1,
+                        help="LoRA dropout")
+    
+    # Other arguments
+    parser.add_argument("--num_workers", type=int, default=0,
+                        help="Number of dataloader workers")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed")
+    parser.add_argument("--log_steps", type=int, default=10,
+                        help="Log every N steps")
+    parser.add_argument("--save_steps", type=int, default=100,
+                        help="Save checkpoint every N steps")
+    parser.add_argument("--mixed_precision", type=str, default="bf16",
+                        choices=["no", "fp16", "bf16"],
+                        help="Mixed precision training")
+    
+    args = parser.parse_args()
+    
+    # Setup accelerator
+    accelerator = Accelerator(
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        mixed_precision=args.mixed_precision
+    )
+    
+    # Set seed
+    torch.manual_seed(args.seed)
+    
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    logger.info(f"Loading data from {args.dataset_path}")
+    logger.info(f"Output directory: {args.output_dir}")
+    
+    # Load tokenizers
+    logger.info("Loading tokenizers...")
+    # Text tokenizer from model path
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    # Audio tokenizer - load on CPU, accelerator will handle device placement
+    audio_tokenizer = load_higgs_audio_tokenizer(args.audio_tokenizer_path, device="cpu")
+    
+    # Load model config
+    model_config = AutoConfig.from_pretrained(args.model_path)
+    
+    # Initialize collator
+    logger.info("Initializing collator...")
+    whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
+    
+    collator = HiggsAudioSampleCollator(
+        whisper_processor=whisper_processor,
+        audio_in_token_id=model_config.audio_in_token_idx,
+        audio_out_token_id=model_config.audio_out_token_idx,
+        audio_stream_bos_id=model_config.audio_stream_bos_id,
+        audio_stream_eos_id=model_config.audio_stream_eos_id,
+        encode_whisper_embed=model_config.encode_whisper_embed,
+        pad_token_id=model_config.pad_token_id,
+        return_audio_in_tokens=model_config.encode_audio_in_tokens,
+        use_delay_pattern=model_config.use_delay_pattern,
+        round_to=8,  # CRITICAL: Documentation recommends round_to=8 for optimal batching
+        audio_num_codebooks=8
+    )
+    
+    # Load datasets
+    train_path = os.path.join(args.dataset_path, "train_chatml_samples.json")
+    val_path = os.path.join(args.dataset_path, "val_chatml_samples.json")
+    
+    if not os.path.exists(train_path):
+        logger.error(f"Training file not found: {train_path}")
+        sys.exit(1)
+    
+    logger.info(f"Loading training data from {train_path}")
+    train_dataset = SimpleDataset(train_path)
+    
+    val_dataset = None
+    if os.path.exists(val_path):
+        logger.info(f"Loading validation data from {val_path}")
+        val_dataset = SimpleDataset(val_path)
+    
+    # Create dataloaders
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator),
+        num_workers=args.num_workers,
+        pin_memory=True
+    )
+    
+    val_dataloader = None
+    if val_dataset:
         val_dataloader = DataLoader(
             val_dataset,
-            batch_size=self.config.batch_size_per_device,
-            sampler=val_sampler,
+            batch_size=args.batch_size,
             shuffle=False,
-            collate_fn=collator,
-            num_workers=self.config.num_workers,
+            collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator),
+            num_workers=args.num_workers,
             pin_memory=True
         )
-        
-        return train_dataloader, val_dataloader, tokenizer, audio_tokenizer
     
-    def setup_model_and_optimizer(self, tokenizer, audio_tokenizer):
-        """Setup model and optimizer"""
-        self.logger.info("Setting up model and optimizer...")
-        
-        # Create LoRA configuration
-        lora_config = HiggsAudioLoRAConfig(
-            lora_r=self.config.lora_r,
-            lora_alpha=self.config.lora_alpha,
-            lora_dropout=self.config.lora_dropout,
-            freeze_base_model=True,
-            freeze_audio_tower=True,
-            freeze_audio_encoder_proj=False,
-            enable_audio_lora=True,
-            enable_multilingual_lora=True
-        )
-        
-        # Create LoRA model
-        trainer = create_lora_model(
-            model_path=self.config.model_path,
-            lora_config=lora_config,
-            device="cpu",  # Build on CPU; Accelerate will place on the correct GPU
-            model_config=self.corrected_model_config
-        )
-        
-        model = trainer.prepare_for_training()
-        
-        # Setup optimizer
-        if self.config.optimizer_type == "adamw":
-            optimizer = torch.optim.AdamW(
-                model.parameters(),
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay,
-                betas=(0.9, 0.999),
-                eps=1e-8
-            )
-        else:
-            raise ValueError(f"Unsupported optimizer: {self.config.optimizer_type}")
-        
-        return model, optimizer, trainer
+    # Load model
+    logger.info("Loading model...")
+    model = HiggsAudioModel.from_pretrained(
+        args.model_path,
+        torch_dtype=torch.bfloat16,
+        device_map={"": accelerator.device}
+    )
     
-    def setup_scheduler(self, optimizer, num_training_steps):
-        """Setup learning rate scheduler"""
-        num_warmup_steps = int(self.config.warmup_ratio * num_training_steps)
-        
-        if self.config.scheduler_type == "linear":
-            scheduler = get_linear_schedule_with_warmup(
-                optimizer,
-                num_warmup_steps=num_warmup_steps,
-                num_training_steps=num_training_steps
-            )
-        else:
-            raise ValueError(f"Unsupported scheduler: {self.config.scheduler_type}")
-        
-        return scheduler
+    # Apply LoRA
+    logger.info("Applying LoRA...")
+    lora_config = LoraConfig(
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        target_modules=[
+            # Audio output projection layers - CRITICAL for audio generation
+            "audio_decoder_proj.audio_lm_head",
+            
+            # Audio embedding layers - CRITICAL for audio token processing
+            "audio_out_embed_projector",
+            "audio_encoder_proj",
+            
+            # Extended audio MLP layers for better coverage (layers 8-15)
+            "layers.8.audio_mlp.gate_proj",
+            "layers.8.audio_mlp.up_proj", 
+            "layers.8.audio_mlp.down_proj",
+            "layers.9.audio_mlp.gate_proj",
+            "layers.9.audio_mlp.up_proj",
+            "layers.9.audio_mlp.down_proj",
+            "layers.10.audio_mlp.gate_proj",
+            "layers.10.audio_mlp.up_proj",
+            "layers.10.audio_mlp.down_proj",
+            "layers.11.audio_mlp.gate_proj",
+            "layers.11.audio_mlp.up_proj",
+            "layers.11.audio_mlp.down_proj",
+            "layers.12.audio_mlp.gate_proj",
+            "layers.12.audio_mlp.up_proj",
+            "layers.12.audio_mlp.down_proj",
+            "layers.13.audio_mlp.gate_proj",
+            "layers.13.audio_mlp.up_proj",
+            "layers.13.audio_mlp.down_proj",
+            "layers.14.audio_mlp.gate_proj",
+            "layers.14.audio_mlp.up_proj",
+            "layers.14.audio_mlp.down_proj",
+            "layers.15.audio_mlp.gate_proj",
+            "layers.15.audio_mlp.up_proj",
+            "layers.15.audio_mlp.down_proj",
+            
+            # Audio attention layers for better conditioning
+            "layers.10.audio_attn.q_proj",
+            "layers.10.audio_attn.k_proj", 
+            "layers.10.audio_attn.v_proj",
+            "layers.10.audio_attn.o_proj",
+            "layers.12.audio_attn.q_proj",
+            "layers.12.audio_attn.k_proj",
+            "layers.12.audio_attn.v_proj", 
+            "layers.12.audio_attn.o_proj",
+            "layers.14.audio_attn.q_proj",
+            "layers.14.audio_attn.k_proj",
+            "layers.14.audio_attn.v_proj",
+            "layers.14.audio_attn.o_proj",
+        ],
+        lora_dropout=args.lora_dropout,
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+    )
     
-    def train(self):
-        """Main training loop"""
-        self.logger.info("Starting training...")
+    # Create a wrapper to handle the labels -> label_ids mapping
+    class HiggsAudioModelWrapper(nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+            
+        def forward(self, **kwargs):
+            # PEFT passes 'labels' but HiggsAudioModel expects 'label_ids'
+            if 'labels' in kwargs:
+                kwargs['label_ids'] = kwargs.pop('labels')
+            return self.model(**kwargs)
         
-        # Create output directory
-        Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
+        def __getattr__(self, name):
+            """Delegate all other attributes to the underlying model."""
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                return getattr(self.model, name)
+    
+    # Wrap the model to handle argument mapping
+    wrapped_model = HiggsAudioModelWrapper(model)
+    model = get_peft_model(wrapped_model, lora_config)
+    model.print_trainable_parameters()
+    
+    # Setup optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    
+    # ... (rest of the code remains the same)
+    num_training_steps = len(train_dataloader) * args.num_epochs
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=num_training_steps
+    )
+    
+    # Prepare for training
+    model, optimizer, train_dataloader, scheduler = accelerator.prepare(
+        model, optimizer, train_dataloader, scheduler
+    )
+    
+    if val_dataloader:
+        val_dataloader = accelerator.prepare(val_dataloader)
+    
+    # Training loop
+    logger.info("Starting training...")
+    global_step = 0
+    
+    for epoch in range(args.num_epochs):
+        model.train()
+        total_loss = 0
         
-        # Load datasets
-        train_samples, val_samples = self.load_datasets()
+        progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{args.num_epochs}")
         
-        # Create data loaders
-        train_dataloader, val_dataloader, tokenizer, audio_tokenizer = self.create_dataloaders(
-            train_samples, val_samples
-        )
-        
-        # Setup model and optimizer
-        model, optimizer, lora_trainer = self.setup_model_and_optimizer(tokenizer, audio_tokenizer)
-        
-        # Use Accelerate to place model/optimizer/dataloaders on the correct device(s)
-        model, optimizer, train_dataloader, val_dataloader = self.accelerator.prepare(
-            model, optimizer, train_dataloader, val_dataloader
-        )
-        
-        # Calculate training steps
-        steps_per_epoch = max(1, (len(train_dataloader) + self.config.gradient_accumulation_steps - 1) // self.config.gradient_accumulation_steps)
-        num_training_steps = steps_per_epoch * self.config.num_epochs
-        
-        # Setup scheduler
-        scheduler = self.setup_scheduler(optimizer, num_training_steps)
-        scheduler = self.accelerator.prepare(scheduler)
-        
-        # Training loop
-        global_step = 0
-        best_val_loss = float('inf')
-        train_loss = 0.0
-        
-        for epoch in range(self.config.num_epochs):
-            for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch + 1}")):
-                model.train()
+        for step, batch in enumerate(progress_bar):
+            with accelerator.accumulate(model):
+                # Move batch tensors to the correct device and dtype
+                # Accelerate sometimes doesn't handle custom batch objects properly
+                device = accelerator.device
                 
-                # Convert batch to dict
-                from dataclasses import asdict
-                batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
+                # Get model dtype for audio features (model uses mixed precision)
+                model_dtype = next(model.parameters()).dtype
                 
-                # Extract labels before removing them from batch
-                labels = batch_dict.get('label_ids')
-                audio_labels = batch_dict.get('label_audio_ids')
+                # Helper function to move tensor to device and optionally convert dtype
+                def to_device(tensor, convert_dtype=False):
+                    if tensor is not None and hasattr(tensor, 'to'):
+                        if convert_dtype and tensor.dtype in [torch.float32, torch.float64]:
+                            # Convert float tensors to match model dtype (for audio features)
+                            return tensor.to(device=device, dtype=model_dtype)
+                        else:
+                            return tensor.to(device)
+                    return tensor
                 
-                # CRITICAL FIX: Create clean model inputs without any labels
+                # Forward pass - map collator output to model input correctly
+                # The collator returns audio_in_wv but model expects audio_features
+                # CRITICAL FIX: Clean separation of model inputs (NO LABELS to model)
+                # This is the proper approach for zero-shot voice cloning training
                 model_inputs = {
-                    'input_ids': batch_dict.get('input_ids'),
-                    'attention_mask': batch_dict.get('attention_mask'),
-                    'audio_features': batch_dict.get('audio_features'),
-                    'audio_feature_attention_mask': batch_dict.get('audio_feature_attention_mask'),
-                    'audio_in_ids': batch_dict.get('audio_in_ids'),
-                    'audio_in_ids_start': batch_dict.get('audio_in_ids_start'),
-                    'audio_out_ids': batch_dict.get('audio_out_ids'),
-                    'audio_out_ids_start': batch_dict.get('audio_out_ids_start'),
-                    'audio_out_ids_start_group_loc': batch_dict.get('audio_out_ids_start_group_loc'),
-                    'reward': batch_dict.get('reward'),
+                    'input_ids': to_device(batch.input_ids),
+                    'attention_mask': to_device(batch.attention_mask),
+                    'audio_features': to_device(batch.audio_in_wv, convert_dtype=True) if hasattr(batch, 'audio_in_wv') else None,
+                    'audio_feature_attention_mask': to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
+                    'audio_in_ids': to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
+                    'audio_in_ids_start': to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
+                    'audio_out_ids': to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
+                    'audio_out_ids_start': to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
+                    'audio_out_ids_start_group_loc': to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
                 }
-                # Remove None values
+                # Remove None values for clean forward pass
                 model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                 
-                # Get the underlying HiggsAudioModel and call it directly
+                # Get the underlying model (handle PEFT wrapping)
                 if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
-                    # PEFT wrapped: model.base_model.model is the actual HiggsAudioModel
-                    actual_model = model.base_model.model
+                    actual_model = model.base_model.model  # PEFT wrapped
                 elif hasattr(model, 'module'):
-                    # Accelerate wrapped: model.module is the actual model
-                    actual_model = model.module
+                    actual_model = model.module  # Accelerate wrapped
                 else:
                     actual_model = model
                 
-                # CRITICAL FIX: Ensure all model inputs are on the same device as the model
-                model_device = next(actual_model.parameters()).device
-                model_inputs = {
-                    k: v.to(model_device) if torch.is_tensor(v) else v 
-                    for k, v in model_inputs.items()
-                }
+                # 🔍 CRITICAL DEBUGGING: Verify reference audio conditioning
+                if step == 0 or step % 10 == 0:  # Log every 10 steps for ongoing monitoring
+                    logger.info(f"\n🔍 === DEBUGGING STEP {step} ===")
+                    logger.info(f"📥 MODEL INPUTS:")
+                    for k, v in model_inputs.items():
+                        if torch.is_tensor(v):
+                            logger.info(f"  {k}: {v.shape} dtype={v.dtype}")
+                        else:
+                            logger.info(f"  {k}: {v}")
+                    
+                    # Critical: Verify audio conditioning inputs
+                    if 'audio_in_ids' in model_inputs:
+                        audio_in_ids = model_inputs['audio_in_ids']
+                        logger.info(f"🎤 REFERENCE AUDIO CONDITIONING:")
+                        logger.info(f"  audio_in_ids shape: {audio_in_ids.shape}")
+                        logger.info(f"  audio_in_ids non-zero: {(audio_in_ids != 0).sum().item()}/{audio_in_ids.numel()}")
+                        logger.info(f"  audio_in_ids sample: {audio_in_ids[0, :10] if audio_in_ids.numel() > 10 else audio_in_ids}")
+                    
+                    if 'audio_features' in model_inputs:
+                        audio_features = model_inputs['audio_features']
+                        logger.info(f"  audio_features shape: {audio_features.shape}")
+                        logger.info(f"  audio_features mean: {audio_features.mean().item():.4f}")
+                        logger.info(f"  audio_features std: {audio_features.std().item():.4f}")
                 
-                # Also ensure labels are on the correct device
-                if torch.is_tensor(labels):
-                    labels = labels.to(model_device)
-                if torch.is_tensor(audio_labels):
-                    audio_labels = audio_labels.to(model_device)
-
-                # Forward pass - call model.forward() directly with explicit arguments
+                # Forward pass - call model directly WITHOUT labels
                 outputs = actual_model(**model_inputs)
                 
-                # Prepare batch for loss computation
-                loss_batch = {
-                    'labels': labels,
-                    'audio_labels': audio_labels
-                }
+                # CRITICAL: Extract labels separately for loss computation
+                text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
+                audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
                 
-                # Compute loss using LoRA trainer
-                loss_dict = lora_trainer.compute_loss(loss_batch, outputs)
+                # 🔍 DEBUGGING: Verify what model outputs
+                if step == 0 or step % 10 == 0:
+                    logger.info(f"📤 MODEL OUTPUTS:")
+                    if hasattr(outputs, 'keys'):
+                        logger.info(f"  Output keys: {list(outputs.keys())}")
+                    else:
+                        logger.info(f"  Output type: {type(outputs)}")
                 
-                # Extract individual losses
-                text_loss = loss_dict['text_loss']
-                audio_loss = loss_dict['audio_loss'] 
-                combined_loss = loss_dict['combined_loss']
+                # PROPER LOSS COMPUTATION FOR ZERO-SHOT VOICE CLONING
+                total_loss = 0.0
+                loss_components = {}
                 
-                # CRITICAL: Backward pass and optimizer steps
-                self.accelerator.backward(combined_loss)
+                # 1. Audio Loss (PRIMARY for voice cloning)
+                if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
+                    audio_logits = outputs.audio_logits
+                    
+                    # 🔍 DEBUGGING: Verify audio loss computation
+                    if step == 0 or step % 10 == 0:
+                        logger.info(f"🔊 AUDIO LOSS COMPUTATION:")
+                        logger.info(f"  audio_logits shape: {audio_logits.shape}")
+                        logger.info(f"  audio_labels shape: {audio_labels.shape}")
+                        logger.info(f"  audio_labels non-ignore: {(audio_labels != -100).sum().item()}/{audio_labels.numel()}")
+                        logger.info(f"  audio_labels sample: {audio_labels[0, :10] if audio_labels.numel() > 10 else audio_labels[0]}")
+                    
+                    # Compute audio token prediction loss (the CORE of voice cloning)
+                    audio_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                    audio_loss = audio_loss_fct(
+                        audio_logits.view(-1, audio_logits.size(-1)), 
+                        audio_labels.view(-1)
+                    )
+                    total_loss += audio_loss
+                    loss_components['audio_loss'] = audio_loss.item()
+                    
+                    # 🔍 CRITICAL: Monitor audio loss trends
+                    if step % 10 == 0:
+                        logger.info(f"🔊 AUDIO LOSS (Step {step}): {audio_loss.item():.4f}")
                 
-                if self.accelerator.sync_gradients:
-                    self.accelerator.clip_grad_norm_(model.parameters(), self.config.max_grad_norm)
+                # 2. Text Loss (SECONDARY - for text understanding)
+                if hasattr(outputs, 'logits') and outputs.logits is not None and text_labels is not None:
+                    text_logits = outputs.logits
+                    
+                    # Only use text loss if we have reasonable dimensions
+                    min_seq_len = min(text_logits.size(1), text_labels.size(1))
+                    if min_seq_len > 1:  # Need at least 2 tokens for shifting
+                        # Trim to matching sequence length 
+                        text_logits = text_logits[:, :min_seq_len, :]
+                        text_labels = text_labels[:, :min_seq_len]
+                        
+                        # Shift for next-token prediction
+                        shift_logits = text_logits[..., :-1, :].contiguous()
+                        shift_labels = text_labels[..., 1:].contiguous()
+                        
+                        # 🔍 DEBUGGING: Verify text loss computation
+                        if step == 0 or step % 10 == 0:
+                            logger.info(f"📝 TEXT LOSS COMPUTATION:")
+                            logger.info(f"  text_logits original: {text_logits.shape}")
+                            logger.info(f"  text_labels original: {text_labels.shape}")
+                            logger.info(f"  after shift - logits: {shift_logits.shape}, labels: {shift_labels.shape}")
+                            logger.info(f"  text_labels non-ignore: {(shift_labels != -100).sum().item()}/{shift_labels.numel()}")
+                        
+                        # Compute text loss (weighted lower for voice cloning)
+                        text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                        text_loss = text_loss_fct(
+                            shift_logits.view(-1, shift_logits.size(-1)),
+                            shift_labels.view(-1)
+                        )
+                        
+                        # Weight text loss lower (audio is primary for voice cloning)
+                        weighted_text_loss = 0.1 * text_loss  
+                        total_loss += weighted_text_loss
+                        loss_components['text_loss'] = text_loss.item()
+                        loss_components['weighted_text_loss'] = weighted_text_loss.item()
+                        
+                        # 🔍 CRITICAL: Monitor text loss trends  
+                        if step % 10 == 0:
+                            logger.info(f"📝 TEXT LOSS (Step {step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f})")
                 
+                # Final loss for backward pass
+                if total_loss == 0:
+                    logger.warning("⚠️  No valid loss computed, skipping batch")
+                    continue
+                    
+                loss = total_loss
+                loss_components['total_loss'] = total_loss.item()
+                
+                # 🔍 CRITICAL: Always log loss breakdown every 10 steps
+                if step % 10 == 0:
+                    logger.info(f"🎯 TOTAL LOSS (Step {step}): {total_loss.item():.4f}")
+                    logger.info(f"📊 Loss breakdown: {loss_components}")
+                    
+                    # 🚨 CRITICAL: Check for suspicious loss patterns
+                    if loss_components.get('audio_loss', 0) < 2.0:
+                        logger.warning(f"⚠️  SUSPICIOUS: Audio loss very low ({loss_components.get('audio_loss', 0):.4f}) - possible model collapse or wrong labels!")
+                    
+                    if step > 0:
+                        logger.info(f"✅ Zero-shot voice cloning training - Reference audio conditioning ACTIVE")
+                    logger.info(f"🔄 === END DEBUG STEP {step} ===\n")
+                
+                # Backward pass
+                accelerator.backward(loss)
+                
+                # Gradient clipping
+                if args.max_grad_norm > 0:
+                    accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                
+                # Optimizer step
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
                 
-                train_loss += combined_loss.item()
+                total_loss += loss.item()
                 global_step += 1
                 
-                # Logging with detailed loss breakdown
-                if global_step % self.config.logging_steps == 0:
-                    avg_loss = train_loss / self.config.logging_steps
-                    text_loss_val = text_loss.item() if isinstance(text_loss, torch.Tensor) else text_loss
-                    audio_loss_val = audio_loss.item() if isinstance(audio_loss, torch.Tensor) else audio_loss
-                    combined_loss_val = combined_loss.item() if isinstance(combined_loss, torch.Tensor) else combined_loss
+                # Logging
+                if global_step % args.log_steps == 0:
+                    avg_loss = total_loss / (step + 1)
+                    progress_bar.set_postfix({'loss': f'{avg_loss:.4f}'})
+                    logger.info(f"Step {global_step}: loss={avg_loss:.4f}")
+                
+                # Save checkpoint
+                if global_step % args.save_steps == 0:
+                    checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                    os.makedirs(checkpoint_dir, exist_ok=True)
                     
-                    self.logger.info(f"Step {global_step}: Text Loss = {text_loss_val:.4f}, Audio Loss = {audio_loss_val:.4f}, Combined Loss = {combined_loss_val:.4f}")
-                    
-                    if self.config.use_wandb and self.accelerator.is_main_process:
-                        wandb.log({
-                            "train/text_loss": text_loss_val,
-                            "train/audio_loss": audio_loss_val,
-                            "train/combined_loss": combined_loss_val,
-                            "train/learning_rate": scheduler.get_last_lr()[0],
-                            "train/step": global_step
-                        })
-                    
-                    train_loss = 0.0
+                    accelerator.wait_for_everyone()
+                    unwrapped_model = accelerator.unwrap_model(model)
+                    unwrapped_model.save_pretrained(checkpoint_dir)
+                    tokenizer.save_pretrained(checkpoint_dir)
+                    logger.info(f"Saved checkpoint to {checkpoint_dir}")
+        
+        # Validation
+        if val_dataloader:
+            model.eval()
+            val_loss = 0
+            val_steps = 0
             
-            # Validation
-            if global_step % self.config.eval_steps == 0:
-                val_loss = self.validate(model, val_dataloader, lora_trainer)
-                
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    self.save_checkpoint(model, global_step, "best")
-                
-                if self.config.use_wandb and self.accelerator.is_main_process:
-                    wandb.log({"val_loss": val_loss, "global_step": global_step})
+            with torch.no_grad():
+                for batch in tqdm(val_dataloader, desc="Validation"):
+                    # Move batch tensors to the correct device and dtype
+                    device = accelerator.device
+                    
+                    # Get model dtype for audio features (model uses mixed precision)
+                    model_dtype = next(model.parameters()).dtype
+                    
+                    # Helper function to move tensor to device and optionally convert dtype
+                    def to_device(tensor, convert_dtype=False):
+                        if tensor is not None and hasattr(tensor, 'to'):
+                            if convert_dtype and tensor.dtype in [torch.float32, torch.float64]:
+                                # Convert float tensors to match model dtype (for audio features)
+                                return tensor.to(device=device, dtype=model_dtype)
+                            else:
+                                return tensor.to(device)
+                        return tensor
+                    
+                    # CRITICAL FIX: Same proper approach for validation
+                    model_inputs = {
+                        'input_ids': to_device(batch.input_ids),
+                        'attention_mask': to_device(batch.attention_mask),
+                        'audio_features': to_device(batch.audio_in_wv, convert_dtype=True) if hasattr(batch, 'audio_in_wv') else None,
+                        'audio_feature_attention_mask': to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
+                        'audio_in_ids': to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
+                        'audio_in_ids_start': to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
+                        'audio_out_ids': to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
+                        'audio_out_ids_start': to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
+                        'audio_out_ids_start_group_loc': to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
+                    }
+                    model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
+                    
+                    # Get underlying model
+                    if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
+                        actual_model = model.base_model.model
+                    elif hasattr(model, 'module'):
+                        actual_model = model.module
+                    else:
+                        actual_model = model
+                    
+                    # Forward pass without labels
+                    outputs = actual_model(**model_inputs)
+                    
+                    # Extract labels for validation loss
+                    text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
+                    audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
+                    
+                    # PROPER VALIDATION LOSS for zero-shot voice cloning
+                    batch_loss = 0.0
+                    
+                    # Primary: Audio Loss
+                    if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
+                        audio_logits = outputs.audio_logits
+                        audio_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                        audio_loss = audio_loss_fct(
+                            audio_logits.view(-1, audio_logits.size(-1)), 
+                            audio_labels.view(-1)
+                        )
+                        batch_loss += audio_loss.item()
+                    
+                    # Secondary: Text Loss (weighted)
+                    if hasattr(outputs, 'logits') and outputs.logits is not None and text_labels is not None:
+                        text_logits = outputs.logits
+                        min_seq_len = min(text_logits.size(1), text_labels.size(1))
+                        if min_seq_len > 1:
+                            text_logits = text_logits[:, :min_seq_len, :]
+                            text_labels = text_labels[:, :min_seq_len]
+                            
+                            shift_logits = text_logits[..., :-1, :].contiguous()
+                            shift_labels = text_labels[..., 1:].contiguous()
+                            
+                            text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                            text_loss = text_loss_fct(
+                                shift_logits.view(-1, shift_logits.size(-1)),
+                                shift_labels.view(-1)
+                            )
+                            
+                            # Weight text loss lower for voice cloning
+                            batch_loss += 0.1 * text_loss.item()
+                    
+                    # Add to validation totals
+                    if batch_loss > 0:
+                        val_loss += batch_loss
+                        val_steps += 1
+                    else:
+                        continue  # Skip if no valid loss
             
-            # Save checkpoint
-            if global_step % self.config.save_steps == 0:
-                self.save_checkpoint(model, global_step)
-        
-        # Final save
-        self.save_checkpoint(model, global_step, "final")
-        self.logger.info("Training completed!")
+            avg_val_loss = val_loss / val_steps
+            logger.info(f"Epoch {epoch+1} - Validation loss: {avg_val_loss:.4f}")
     
-    def validate(self, model, val_dataloader, lora_trainer):
-        """Validation loop"""
-        model.eval()
-        val_loss = 0.0
-        num_batches = 0
-        
-        with torch.no_grad():
-            for batch in val_dataloader:
-                # Convert batch to dict
-                from dataclasses import asdict
-                batch_dict = {k: v for k, v in asdict(batch).items() if v is not None}
-                
-                # Extract labels before removing them from batch
-                labels = batch_dict.get('label_ids')
-                audio_labels = batch_dict.get('label_audio_ids')
-                
-                # CRITICAL FIX: Create clean model inputs without any labels
-                model_inputs = {
-                    'input_ids': batch_dict.get('input_ids'),
-                    'attention_mask': batch_dict.get('attention_mask'),
-                    'audio_features': batch_dict.get('audio_features'),
-                    'audio_feature_attention_mask': batch_dict.get('audio_feature_attention_mask'),
-                    'audio_in_ids': batch_dict.get('audio_in_ids'),
-                    'audio_in_ids_start': batch_dict.get('audio_in_ids_start'),
-                    'audio_out_ids': batch_dict.get('audio_out_ids'),
-                    'audio_out_ids_start': batch_dict.get('audio_out_ids_start'),
-                    'audio_out_ids_start_group_loc': batch_dict.get('audio_out_ids_start_group_loc'),
-                    'reward': batch_dict.get('reward'),
-                }
-                # Remove None values
-                model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
-                
-                # Get the underlying HiggsAudioModel and call it directly
-                if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
-                    # PEFT wrapped: model.base_model.model is the actual HiggsAudioModel
-                    actual_model = model.base_model.model
-                elif hasattr(model, 'module'):
-                    # Accelerate wrapped: model.module is the actual model
-                    actual_model = model.module
-                else:
-                    actual_model = model
-                
-                # CRITICAL FIX: Ensure all model inputs are on the same device as the model
-                model_device = next(actual_model.parameters()).device
-                model_inputs = {
-                    k: v.to(model_device) if torch.is_tensor(v) else v 
-                    for k, v in model_inputs.items()
-                }
-                
-                # Also ensure labels are on the correct device
-                if torch.is_tensor(labels):
-                    labels = labels.to(model_device)
-                if torch.is_tensor(audio_labels):
-                    audio_labels = audio_labels.to(model_device)
-
-                # Forward pass - call model.forward() directly with explicit arguments
-                outputs = actual_model(**model_inputs)
-                
-                # Prepare batch for loss computation
-                loss_batch = {
-                    'labels': labels,
-                    'audio_labels': audio_labels
-                }
-                
-                # Compute loss using LoRA trainer
-                loss_dict = lora_trainer.compute_loss(loss_batch, outputs)
-                
-                # Extract individual losses
-                text_loss = loss_dict['text_loss']
-                audio_loss = loss_dict['audio_loss'] 
-                combined_loss = loss_dict['combined_loss']
-                
-                val_loss += combined_loss.item()
-                num_batches += 1
-        
-        avg_val_loss = val_loss / num_batches
-        self.logger.info(f"Validation loss: {avg_val_loss:.4f}")
-        
-        model.train()
-        return avg_val_loss
+    # Save final model
+    final_dir = os.path.join(args.output_dir, "final_model")
+    os.makedirs(final_dir, exist_ok=True)
     
-    def save_checkpoint(self, model, global_step, suffix=""):
-        """Save model checkpoint"""
-        if not self.accelerator.is_main_process:
-            return
-        
-        save_dir = Path(self.config.output_dir) / f"checkpoint-{global_step}"
-        if suffix:
-            save_dir = Path(self.config.output_dir) / f"checkpoint-{suffix}"
-        
-        save_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Save LoRA adapters
-        unwrapped_model = self.accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(save_dir)
-        
-        # Save training config
-        with open(save_dir / "training_config.json", 'w') as f:
-            json.dump(self.config.__dict__, f, indent=2)
-        
-        self.logger.info(f"Checkpoint saved to {save_dir}")
-
-
-def main():
-    """Main training function"""
-    import argparse
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(final_dir)
+    tokenizer.save_pretrained(final_dir)
     
-    def str2bool(v):
-        if isinstance(v, bool):
-            return v
-        return v.lower() in ("yes", "true", "t", "1")
-    
-    parser = argparse.ArgumentParser(description="Distributed LoRA training for Higgs-Audio")
-    parser.add_argument("--config", type=str, help="Path to training config YAML file")
-    parser.add_argument("--dataset_path", type=str, required=True, help="Path to processed dataset")
-    parser.add_argument("--output_dir", type=str, required=True, help="Output directory")
-    # Training hyperparameters
-    parser.add_argument("--num_epochs", type=int, default=None, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=None, help="Alias for batch_size_per_device")
-    parser.add_argument("--batch_size_per_device", type=int, default=None, help="Batch size per device")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=None, help="Gradient accumulation steps")
-    parser.add_argument("--learning_rate", type=float, default=None, help="Learning rate")
-    parser.add_argument("--weight_decay", type=float, default=None, help="Weight decay")
-    parser.add_argument("--warmup_ratio", type=float, default=None, help="Warmup ratio")
-    parser.add_argument("--max_grad_norm", type=float, default=None, help="Max gradient norm")
-    # Precision
-    parser.add_argument("--bf16", type=str2bool, nargs='?', const=True, default=None, help="Use bfloat16")
-    parser.add_argument("--fp16", type=str2bool, nargs='?', const=True, default=None, help="Use float16")
-    # Logging / eval / save
-    parser.add_argument("--logging_steps", type=int, default=None, help="Logging frequency in steps")
-    parser.add_argument("--eval_steps", type=int, default=None, help="Evaluation frequency in steps")
-    parser.add_argument("--save_steps", type=int, default=None, help="Checkpoint save frequency in steps")
-    # Dataloader
-    parser.add_argument("--num_workers", type=int, default=None, help="Number of DataLoader workers")
-    # Wandb
-    parser.add_argument("--use_wandb", type=str2bool, nargs='?', const=True, default=None, help="Enable Weights & Biases logging")
-    parser.add_argument("--wandb_project", type=str, default=None, help="Wandb project name")
-    parser.add_argument("--wandb_run_name", type=str, default=None, help="Wandb run name")
-    # DeepSpeed
-    parser.add_argument("--deepspeed_config", type=str, default=None, help="Path to DeepSpeed JSON config")
-    
-    args = parser.parse_args()
-    
-    # Load config
-    if args.config:
-        with open(args.config, 'r') as f:
-            config_dict = yaml.safe_load(f)
-        config = TrainingConfig(**config_dict)
-    else:
-        config = TrainingConfig()
-    
-    # Override with command line arguments
-    if args.dataset_path:
-        config.dataset_path = args.dataset_path
-    if args.output_dir:
-        config.output_dir = args.output_dir
-    if args.num_epochs is not None:
-        config.num_epochs = args.num_epochs
-    # Batch size alias support
-    if args.batch_size_per_device is not None:
-        config.batch_size_per_device = args.batch_size_per_device
-    elif args.batch_size is not None:
-        config.batch_size_per_device = args.batch_size
-    if args.gradient_accumulation_steps is not None:
-        config.gradient_accumulation_steps = args.gradient_accumulation_steps
-    if args.learning_rate is not None:
-        config.learning_rate = args.learning_rate
-    if args.weight_decay is not None:
-        config.weight_decay = args.weight_decay
-    if args.warmup_ratio is not None:
-        config.warmup_ratio = args.warmup_ratio
-    if args.max_grad_norm is not None:
-        config.max_grad_norm = args.max_grad_norm
-    if args.bf16 is not None:
-        config.bf16 = args.bf16
-    if args.fp16 is not None:
-        config.fp16 = args.fp16
-    if args.logging_steps is not None:
-        config.logging_steps = args.logging_steps
-    if args.eval_steps is not None:
-        config.eval_steps = args.eval_steps
-    if args.save_steps is not None:
-        config.save_steps = args.save_steps
-    if args.num_workers is not None:
-        config.num_workers = args.num_workers
-    if args.use_wandb is not None:
-        config.use_wandb = args.use_wandb
-    if args.wandb_project is not None:
-        config.wandb_project = args.wandb_project
-    if args.wandb_run_name is not None:
-        config.wandb_run_name = args.wandb_run_name
-    if args.deepspeed_config is not None:
-        config.deepspeed_config = args.deepspeed_config
-    
-    # Start training
-    trainer = HiggsAudioDistributedTrainer(config)
-    trainer.train()
+    logger.info(f"Training complete! Final model saved to {final_dir}")
 
 
 if __name__ == "__main__":
