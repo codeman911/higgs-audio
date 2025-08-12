@@ -518,17 +518,62 @@ def main():
                 audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
                 
                 # 🚨 CRITICAL PAD TOKEN FIX: Map pad tokens to -100 if applicable
-                if audio_labels is not None and hasattr(audio_tokenizer, 'pad_id'):
-                    pad_id = audio_tokenizer.pad_id
+                if audio_labels is not None:
                     if step == 0 or step % 50 == 0:
+                        # Deep investigation of audio_tokenizer attributes
+                        logger.info(f"🔍 AUDIO TOKENIZER INVESTIGATION:")
+                        logger.info(f"  Type: {type(audio_tokenizer)}")
+                        tokenizer_attrs = [attr for attr in dir(audio_tokenizer) if 'pad' in attr.lower()]
+                        logger.info(f"  Pad-related attributes: {tokenizer_attrs}")
+                        
+                        # Check all possible pad token attributes
+                        pad_candidates = []
+                        for attr in ['pad_id', 'pad_token_id', 'padding_idx', 'pad_index']:
+                            if hasattr(audio_tokenizer, attr):
+                                pad_val = getattr(audio_tokenizer, attr)
+                                pad_candidates.append(f"{attr}={pad_val}")
+                        logger.info(f"  Pad candidates: {pad_candidates}")
+                        
+                        # Manual investigation of token 1025
+                        token_1025_count = (audio_labels == 1025).sum().item()
+                        total_labels = (audio_labels != -100).sum().item()
+                        token_1025_ratio = token_1025_count / max(total_labels, 1) * 100
+                        logger.info(f"🚨 TOKEN 1025 ANALYSIS: {token_1025_count}/{total_labels} ({token_1025_ratio:.1f}%) of non-ignore labels")
+                        
+                        # Check if 1025 appears at sequence ends (typical for pad tokens)
+                        batch_size, seq_len = audio_labels.shape
+                        end_positions = []
+                        for b in range(min(3, batch_size)):  # Check first 3 samples
+                            last_non_ignore = -1
+                            for t in range(seq_len-1, -1, -1):
+                                if audio_labels[b, t] != -100:
+                                    last_non_ignore = t
+                                    break
+                            if last_non_ignore >= 0 and last_non_ignore < seq_len - 1:
+                                # Check tokens after last non-ignore
+                                trailing_tokens = audio_labels[b, last_non_ignore+1:last_non_ignore+6].tolist()
+                                end_positions.append(f"sample_{b}_end: {trailing_tokens}")
+                        logger.info(f"🔍 SEQUENCE END ANALYSIS: {end_positions}")
+                    
+                    # Apply pad token mapping if we find the right attribute
+                    pad_id = None
+                    for attr in ['pad_id', 'pad_token_id', 'padding_idx', 'pad_index']:
+                        if hasattr(audio_tokenizer, attr):
+                            pad_id = getattr(audio_tokenizer, attr)
+                            break
+                    
+                    if pad_id is not None:
                         pad_count_before = (audio_labels == pad_id).sum().item()
-                        logger.info(f"🔍 PAD TOKEN CHECK: Found {pad_count_before} pad tokens (id={pad_id}) before mapping to -100")
-                    audio_labels[audio_labels == pad_id] = -100
-                elif audio_labels is not None and step == 0:
-                    logger.info(f"🔍 PAD TOKEN CHECK: No pad_id attribute found in audio_tokenizer")
-                    # Manual check for 1025 as potential pad
-                    token_1025_count = (audio_labels == 1025).sum().item()
-                    logger.info(f"🚨 TOKEN 1025 CHECK: Found {token_1025_count} instances of token 1025 in labels")
+                        if pad_count_before > 0:
+                            logger.info(f"🔧 MAPPING PAD TOKENS: {pad_count_before} tokens ({pad_id}) → -100")
+                            audio_labels[audio_labels == pad_id] = -100
+                    else:
+                        # If no pad_id found, but token 1025 is very common, map it manually
+                        token_1025_count = (audio_labels == 1025).sum().item()
+                        total_labels = (audio_labels != -100).sum().item()
+                        if token_1025_count > total_labels * 0.3:  # If >30% of labels, likely padding
+                            logger.warning(f"🚨 MANUAL PAD MAPPING: Token 1025 is {token_1025_count}/{total_labels} ({token_1025_count/max(total_labels,1)*100:.1f}%) of labels - mapping to -100")
+                            audio_labels[audio_labels == 1025] = -100
                 
                 # 🔍 DEBUGGING: Verify what model outputs
                 if step == 0 or step % 10 == 0:
