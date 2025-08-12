@@ -621,6 +621,18 @@ def main():
                     logger.info(f"🎯 TOTAL LOSS (Step {step}): {total_loss.item():.4f}")
                     logger.info(f"📊 Loss breakdown: {loss_components}")
                     
+                    # CRITICAL DIAGNOSTIC: Check if learning rate is active
+                    for i, pg in enumerate(optimizer.param_groups):
+                        logger.info(f"📈 LR[{i}]={pg['lr']:.6e} (step {step})")
+                    
+                    # CRITICAL: Check if random baseline comparison
+                    audio_loss_val = loss_components.get('audio_loss', 0)
+                    random_baseline = 6.9334  # ln(1026) for 1026-class codebook
+                    if audio_loss_val > random_baseline - 0.05:
+                        logger.warning(f"⚠️  AUDIO LOSS ({audio_loss_val:.4f}) NEAR/ABOVE RANDOM BASELINE ({random_baseline:.4f}) - NOT LEARNING YET!")
+                    else:
+                        logger.info(f"✅ AUDIO LOSS ({audio_loss_val:.4f}) BELOW RANDOM BASELINE ({random_baseline:.4f}) - LEARNING ACTIVE!")
+                    
                     # 🚨 CRITICAL: Check for suspicious loss patterns
                     if loss_components.get('audio_loss', 0) < 2.0:
                         logger.warning(f"⚠️  SUSPICIOUS: Audio loss very low ({loss_components.get('audio_loss', 0):.4f}) - possible model collapse or wrong labels!")
@@ -631,6 +643,27 @@ def main():
                 
                 # Backward pass
                 accelerator.backward(loss)
+                
+                # CRITICAL DIAGNOSTIC: Check LoRA gradient norms every 50 steps
+                if step % 50 == 0:
+                    total_lora_grad_norm = 0.0
+                    lora_param_count = 0
+                    for n, p in model.named_parameters():
+                        if p.requires_grad and hasattr(p, 'grad') and p.grad is not None:
+                            grad_norm = p.grad.data.float().norm().item()
+                            # Focus on LoRA targets
+                            if any(k in n for k in ['self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj', 'self_attn.o_proj', 'audio_lm_head', 'audio_mlp']):
+                                logger.info(f"🔍 Grad ||{n}|| = {grad_norm:.4e}")
+                                total_lora_grad_norm += grad_norm
+                                lora_param_count += 1
+                    
+                    if lora_param_count > 0:
+                        avg_lora_grad_norm = total_lora_grad_norm / lora_param_count
+                        logger.info(f"📊 Average LoRA grad norm: {avg_lora_grad_norm:.4e} ({lora_param_count} params)")
+                        if avg_lora_grad_norm < 1e-6:
+                            logger.warning(f"⚠️  VERY LOW LORA GRAD NORMS - POSSIBLE GRADIENT FLOW ISSUE!")
+                    else:
+                        logger.warning(f"⚠️  NO LORA GRADIENTS FOUND - LoRA NOT ACTIVE!")
                 
                 # Gradient clipping
                 if args.max_grad_norm > 0:
