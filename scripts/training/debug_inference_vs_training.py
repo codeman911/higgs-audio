@@ -207,11 +207,11 @@ def debug_inference_pipeline(args):
     logger.info(f"  Reference audio shape: {ref_audio.shape}")
     logger.info(f"  Target audio shape: {target_audio.shape}")
     
-    # Tokenize audio directly with audio tokenizer
+    # Tokenize audio directly with audio tokenizer (using file paths)
     logger.info("🎯 Tokenizing audio with audio tokenizer...")
     with torch.no_grad():
-        ref_tokens = audio_tokenizer.encode(ref_audio.unsqueeze(0))  # Add batch dim
-        target_tokens = audio_tokenizer.encode(target_audio.unsqueeze(0))
+        ref_tokens = audio_tokenizer.encode(ref_audio_path)  # Pass file path
+        target_tokens = audio_tokenizer.encode(target_audio_path)  # Pass file path
     
     logger.info(f"  Reference tokens shape: {ref_tokens.shape}")
     logger.info(f"  Target tokens shape: {target_tokens.shape}")
