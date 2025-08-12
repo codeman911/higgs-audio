@@ -15,9 +15,9 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from boson_multimodal.model.higgs_audio import HiggsAudioModel
-from boson_multimodal.audio_processing.higgs_audio_tokenizer import HiggsAudioTokenizer
-from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample
-from boson_multimodal.data_collator.higgs_audio_sample_collator import HiggsAudioSampleCollator
+from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
+from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
+from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
 from transformers import AutoTokenizer
 import torchaudio
 
