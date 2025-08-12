@@ -238,8 +238,10 @@ def main():
                         help="Use <audio_path>.codes.pt if present (faster training)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
-    parser.add_argument("--log_steps", type=int, default=10,
+    parser.add_argument("--log_steps", type=int, default=100,
                         help="Log every N steps")
+    parser.add_argument("--val_steps", type=int, default=1000,
+                        help="Run validation every N steps")
     parser.add_argument("--save_steps", type=int, default=100,
                         help="Save checkpoint every N steps")
     parser.add_argument("--mixed_precision", type=str, default="bf16",
@@ -799,7 +801,105 @@ def main():
                 running_text  += loss_components.get('weighted_text_loss', 0.0)
                 running_total += loss_components.get('total_loss', 0.0)
                 running_n     += 1
-                if (step % args.log_steps) == 0 and running_n > 0:
+                
+                # Validation accuracy every 1000 steps
+                if step % args.val_steps == 0 and step > 0 and val_dataloader:
+                    model.eval()
+                    val_audio_correct = 0
+                    val_audio_total = 0
+                    val_loss_accum = 0
+                    val_steps_count = 0
+                    
+                    with torch.no_grad():
+                        # Sample a few batches for validation accuracy
+                        for i, batch in enumerate(val_dataloader):
+                            if i >= 5:  # Only validate on 5 batches for speed
+                                break
+                                
+                            device = accelerator.device
+                            model_dtype = next(model.parameters()).dtype
+                            
+                            def to_device(tensor, convert_dtype=False):
+                                if tensor is not None and hasattr(tensor, 'to'):
+                                    if convert_dtype and tensor.dtype in [torch.float32, torch.float64]:
+                                        return tensor.to(device=device, dtype=model_dtype)
+                                    else:
+                                        return tensor.to(device)
+                                return tensor
+                            
+                            model_inputs = {
+                                'input_ids': to_device(batch.input_ids),
+                                'attention_mask': to_device(batch.attention_mask),
+                                'audio_features': to_device(batch.audio_in_wv, convert_dtype=True) if hasattr(batch, 'audio_in_wv') else None,
+                                'audio_feature_attention_mask': to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
+                                'audio_in_ids': to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
+                                'audio_in_ids_start': to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
+                                'audio_out_ids': to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
+                                'audio_out_ids_start': to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
+                                'audio_out_ids_start_group_loc': to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
+                            }
+                            model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
+                            
+                            if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
+                                actual_model = model.base_model.model
+                            elif hasattr(model, 'module'):
+                                actual_model = model.module
+                            else:
+                                actual_model = model
+                            
+                            outputs = actual_model(**model_inputs)
+                            audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
+                            
+                            if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
+                                audio_logits = outputs.audio_logits
+                                
+                                # Apply same tensor alignment as training
+                                if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
+                                    audio_logits = audio_logits.permute(1, 0, 2).contiguous()
+                                
+                                # Calculate accuracy
+                                audio_preds = torch.argmax(audio_logits, dim=-1)
+                                valid_mask = (audio_labels != -100)
+                                
+                                if valid_mask.sum() > 0:
+                                    correct = (audio_preds[valid_mask] == audio_labels[valid_mask]).sum().item()
+                                    total = valid_mask.sum().item()
+                                    val_audio_correct += correct
+                                    val_audio_total += total
+                                    
+                                    # Calculate loss for this batch
+                                    audio_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                                    audio_loss = audio_loss_fct(
+                                        audio_logits.view(-1, audio_logits.size(-1)),
+                                        audio_labels.contiguous().view(-1)
+                                    )
+                                    val_loss_accum += audio_loss.item()
+                                    val_steps_count += 1
+                                    
+                                    # Log first/last tokens for first batch only
+                                    if i == 0:
+                                        flat_preds = audio_preds.view(-1)[valid_mask.view(-1)]
+                                        flat_labels = audio_labels.view(-1)[valid_mask.view(-1)]
+                                        
+                                        if len(flat_preds) >= 10:
+                                            first_10_pred = flat_preds[:10].tolist()
+                                            first_10_true = flat_labels[:10].tolist()
+                                            last_10_pred = flat_preds[-10:].tolist()
+                                            last_10_true = flat_labels[-10:].tolist()
+                                            
+                                            logger.info(f"🎯 VAL First 10: pred={first_10_pred} | true={first_10_true}")
+                                            logger.info(f"🎯 VAL Last 10:  pred={last_10_pred} | true={last_10_true}")
+                    
+                    # Log validation results
+                    if val_audio_total > 0:
+                        val_accuracy = val_audio_correct / val_audio_total
+                        avg_val_loss = val_loss_accum / val_steps_count if val_steps_count > 0 else 0
+                        logger.info(f"📊 VALIDATION (Step {step}): Loss={avg_val_loss:.4f}, Audio Accuracy={val_accuracy:.4f} ({val_audio_correct}/{val_audio_total})")
+                    
+                    model.train()  # Return to training mode
+        
+                # Training logs every 100 steps
+                if step % args.log_steps == 0 and running_n > 0:
                     logger.info(f"[rolling/{args.log_steps}] audio_ce={running_audio/running_n:.4f} "
                                 f"text_w={running_text/running_n:.4f} total={running_total/running_n:.4f}")
                     running_audio = running_text = running_total = 0.0
