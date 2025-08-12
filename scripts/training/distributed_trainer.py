@@ -166,40 +166,10 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
             audio_sample_rate = torch.tensor([sample_rate])
             audio_speaker_indices = torch.tensor([0], dtype=torch.long)
         
-        # CRITICAL: Split audio for zero-shot voice cloning
-        # First audio = reference (for conditioning)
-        # Rest = target (for generation)
-        if len(audio_ids_list) > 0:
-            # Reference audio (first segment)
-            audio_in_ids = [audio_ids_list[0]]  # List with single tensor
-            audio_in_wv = [audio_waveforms_list[0]] if audio_waveforms_list else []
-            
-            # Target audio (remaining segments, or duplicate first if only one)
-            if len(audio_ids_list) > 1:
-                audio_out_ids = audio_ids_list[1:]  # Rest are targets
-                audio_out_wv = audio_waveforms_list[1:] if audio_waveforms_list else []
-            else:
-                # If only one audio segment, use it for both ref and target
-                audio_out_ids = [audio_ids_list[0]]  
-                audio_out_wv = [audio_waveforms_list[0]] if audio_waveforms_list else []
-        else:
-            # No audio case
-            audio_in_ids = []
-            audio_in_wv = []
-            audio_out_ids = []
-            audio_out_wv = []
-        
-        # Create ChatMLDatasetSample with proper zero-shot structure
+        # Create ChatMLDatasetSample - SIMPLE and WORKING format
         chatml_sample = ChatMLDatasetSample(
             input_ids=torch.tensor(input_tokens, dtype=torch.long),
             label_ids=torch.tensor(label_tokens, dtype=torch.long),
-            # Reference audio for conditioning
-            audio_in_ids=audio_in_ids,
-            audio_in_wv=audio_in_wv,
-            # Target audio for generation
-            audio_out_ids=audio_out_ids,
-            audio_out_wv=audio_out_wv,
-            # Keep legacy fields for compatibility (if needed)
             audio_ids_concat=audio_ids_concat,
             audio_ids_start=audio_ids_start,
             audio_waveforms_concat=audio_waveforms_concat,
