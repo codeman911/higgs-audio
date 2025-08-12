@@ -52,7 +52,7 @@ class SimpleDataset(Dataset):
         return self.samples[idx]
 
 
-def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000):
+def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, use_cached_codes=False):
     """Simple collate function that processes samples for training"""
     
     chatml_samples = []
@@ -109,7 +109,7 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000):
                     try:
                         # Tokenize audio (with optional caching for speed)
                         audio_codes = None
-                        if args.use_cached_codes:
+                        if use_cached_codes:
                             cached_codes = f"{audio_path}.codes.pt"
                             if os.path.exists(cached_codes):
                                 try:
@@ -319,7 +319,7 @@ def main():
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator),
+        collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator, use_cached_codes=args.use_cached_codes),
         num_workers=args.num_workers,
         pin_memory=True,
         prefetch_factor=(args.prefetch_factor if args.num_workers > 0 else None),
@@ -332,7 +332,7 @@ def main():
             val_dataset,
             batch_size=args.batch_size,
             shuffle=False,
-            collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator),
+            collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator, use_cached_codes=args.use_cached_codes),
             num_workers=args.num_workers,
             pin_memory=True,
             prefetch_factor=(args.prefetch_factor if args.num_workers > 0 else None),
