@@ -568,11 +568,10 @@ def main():
                             logger.info(f"🔧 MAPPING PAD TOKENS: {pad_count_before} tokens ({pad_id}) → -100")
                             audio_labels[audio_labels == pad_id] = -100
                     else:
-                        # If no pad_id found, but token 1025 is very common, map it manually
+                        # CRITICAL FIX: Token 1025 is audio_stream_eos_id - always mask it
                         token_1025_count = (audio_labels == 1025).sum().item()
-                        total_labels = (audio_labels != -100).sum().item()
-                        if token_1025_count > total_labels * 0.3:  # If >30% of labels, likely padding
-                            logger.warning(f"🚨 MANUAL PAD MAPPING: Token 1025 is {token_1025_count}/{total_labels} ({token_1025_count/max(total_labels,1)*100:.1f}%) of labels - mapping to -100")
+                        if token_1025_count > 0:
+                            logger.info(f"🔧 MASKING EOS TOKENS: {token_1025_count} EOS tokens (1025) → -100")
                             audio_labels[audio_labels == 1025] = -100
                 
                 # 🔍 DEBUGGING: Verify what model outputs
