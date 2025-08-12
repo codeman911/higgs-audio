@@ -568,30 +568,12 @@ def main():
                             logger.info(f"🔧 MAPPING PAD TOKENS: {pad_count_before} tokens ({pad_id}) → -100")
                             audio_labels[audio_labels == pad_id] = -100
                     else:
-                        # CRITICAL ARCHITECTURAL FIX: Preserve both BOS and EOS tokens
-                        # Both are used in generation logic and should not be masked
+                        # CRITICAL: The collator ALREADY handles BOS/EOS tokens correctly!
+                        # - BOS (1024) is added at start and masked to -100 in labels
+                        # - EOS (1025) is added at end and preserved for learning
+                        # DO NOT duplicate this logic here - it causes training/inference mismatch
                         
-                        special_tokens_preserved = 0
-                        
-                        # Token 1024: audio_stream_bos_id (Begin-of-Stream)
-                        # BOS tokens are used in generation delay patterns - preserve them
-                        token_1024_count = (audio_labels == 1024).sum().item()
-                        if token_1024_count > 0:
-                            logger.info(f"✅ PRESERVING BOS TOKENS: {token_1024_count} BOS tokens (1024) kept for learning")
-                            special_tokens_preserved += token_1024_count
-                        
-                        # Token 1025: audio_stream_eos_id (End-of-Stream)
-                        # EOS tokens are REQUIRED for inference generation stopping logic
-                        token_1025_count = (audio_labels == 1025).sum().item()
-                        if token_1025_count > 0:
-                            logger.info(f"✅ PRESERVING EOS TOKENS: {token_1025_count} EOS tokens (1025) kept for learning")
-                            special_tokens_preserved += token_1025_count
-                        
-                        # Log total special tokens preserved
-                        if special_tokens_preserved > 0:
-                            logger.info(f"🎯 TOTAL SPECIAL TOKENS PRESERVED: {special_tokens_preserved}")
-                        
-                        # Check for any truly invalid tokens (> 1025)
+                        # Only check for truly invalid tokens (> 1025)
                         invalid_mask = audio_labels > 1025
                         invalid_mask = invalid_mask & (audio_labels != -100)  # Exclude already masked
                         invalid_count = invalid_mask.sum().item()
@@ -599,6 +581,18 @@ def main():
                             invalid_tokens = audio_labels[invalid_mask].unique().tolist()
                             logger.warning(f"🚨 FOUND INVALID TOKENS: {invalid_count} tokens with IDs {invalid_tokens} - masking to -100")
                             audio_labels[invalid_mask] = -100
+                        
+                        # Log token distribution for debugging (but don't modify!)
+                        token_1024_count = (audio_labels == 1024).sum().item()
+                        token_1025_count = (audio_labels == 1025).sum().item()
+                        masked_count = (audio_labels == -100).sum().item()
+                        
+                        if step == 0 or step % 10 == 0:
+                            logger.info(f"📊 Token Distribution After Collator:")
+                            logger.info(f"   • BOS (1024): {token_1024_count} (should be 0 - already masked by collator)")
+                            logger.info(f"   • EOS (1025): {token_1025_count} (preserved for stopping logic)")
+                            logger.info(f"   • Masked (-100): {masked_count} (includes BOS + any padding)")
+                            logger.info(f"   • Valid audio tokens (0-1023): {((audio_labels >= 0) & (audio_labels <= 1023)).sum().item()}")
                 
                 # 🔍 DEBUGGING: Verify what model outputs
                 if step == 0 or step % 10 == 0:
