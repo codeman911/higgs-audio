@@ -45,7 +45,7 @@ def debug_inference_pipeline(args):
     # Load tokenizers and model
     logger.info("📥 Loading model and tokenizers...")
     text_tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    audio_tokenizer = HiggsAudioTokenizer.from_pretrained(args.audio_tokenizer_path)
+    audio_tokenizer = load_higgs_audio_tokenizer(args.audio_tokenizer_path)
     model = HiggsAudioModel.from_pretrained(args.model_path, torch_dtype=torch.bfloat16)
     
     # Investigate audio tokenizer attributes
