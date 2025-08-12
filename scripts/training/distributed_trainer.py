@@ -581,17 +581,35 @@ def main():
                         # Token 1025: audio_stream_eos_id (End-of-Stream)
                         token_1025_count = (audio_labels == 1025).sum().item()
                         if token_1025_count > 0:
-                            # Check if EOS tokens are at sequence ends (suspicious) or scattered (normal)
-                            eos_positions = []
-                            for b in range(audio_labels.shape[0]):  # codebook dim
-                                for t in range(audio_labels.shape[1]):  # time dim
-                                    if audio_labels[b, t] == 1025:
-                                        # Check if this is near the end of sequence
-                                        remaining_tokens = audio_labels.shape[1] - t - 1
-                                        eos_positions.append(f"cb{b}_t{t}(end-{remaining_tokens})")
-                            
-                            if len(eos_positions) <= 10:  # Only log if not too many
-                                logger.info(f"🔧 EOS POSITIONS: {eos_positions[:10]}")
+                            # SIMPLIFIED: Check if EOS tokens are at sequence ends
+                            try:
+                                # Find first few EOS positions across all codebooks
+                                eos_mask = (audio_labels == 1025)
+                                eos_indices = torch.nonzero(eos_mask, as_tuple=False)[:5]  # First 5 EOS positions
+                                
+                                eos_info = []
+                                for idx in eos_indices:
+                                    cb, t = idx[0].item(), idx[1].item()
+                                    end_dist = audio_labels.shape[1] - t - 1
+                                    eos_info.append(f"cb{cb}_t{t}(end-{end_dist})")
+                                
+                                logger.info(f"🔧 EOS POSITIONS SAMPLE: {eos_info}")
+                                
+                                # Check if most EOS are near sequence ends
+                                end_positions = []
+                                for idx in eos_indices:
+                                    end_dist = audio_labels.shape[1] - idx[1].item() - 1
+                                    end_positions.append(end_dist)
+                                
+                                if end_positions:
+                                    avg_end_dist = sum(end_positions) / len(end_positions)
+                                    logger.info(f"🔧 EOS AVG DISTANCE FROM END: {avg_end_dist:.1f}")
+                                    
+                                    if avg_end_dist < 5:
+                                        logger.warning(f"⚠️  EOS tokens very close to sequence ends - may impact inference!")
+                                    
+                            except Exception as e:
+                                logger.info(f"🔧 EOS POSITION CHECK FAILED: {str(e)}")
                             
                             logger.info(f"🔧 MASKING EOS TOKENS: {token_1025_count} EOS tokens (1025) → -100")
                             audio_labels[audio_labels == 1025] = -100
