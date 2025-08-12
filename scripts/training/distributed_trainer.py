@@ -540,16 +540,34 @@ def main():
                         logger.info(f"  audio_labels shape: {audio_labels.shape}")
                         logger.info(f"  audio_labels non-ignore: {(audio_labels != -100).sum().item()}/{audio_labels.numel()}")
                         logger.info(f"  audio_labels sample: {audio_labels[0, :10] if audio_labels.numel() > 10 else audio_labels[0]}")
+                        
+                        # CRITICAL: Verify loss tensor shapes before flattening
+                        logits_flat = audio_logits.view(-1, audio_logits.size(-1))
+                        labels_flat = audio_labels.view(-1)
+                        logger.info(f"🚨 CRITICAL SHAPE CHECK:")
+                        logger.info(f"  logits_flat: {logits_flat.shape} (should be [N, 1026])")
+                        logger.info(f"  labels_flat: {labels_flat.shape} (should be [N])")
+                        logger.info(f"  labels_flat min/max: {labels_flat[labels_flat != -100].min().item() if (labels_flat != -100).any() else 'N/A'} / {labels_flat[labels_flat != -100].max().item() if (labels_flat != -100).any() else 'N/A'}")
+                        logger.info(f"  Expected range: 0-1025 (vocab size 1026)")
                     
                     # Compute audio token prediction loss (the CORE of voice cloning)
                     audio_loss_fct = torch.nn.CrossEntropyLoss(
                         ignore_index=-100,
                         label_smoothing=args.audio_label_smoothing
                     )
-                    audio_loss = audio_loss_fct(
-                        audio_logits.view(-1, audio_logits.size(-1)), 
-                        audio_labels.view(-1)
-                    )
+                    
+                    # CRITICAL VERIFICATION: Check tensor alignment before loss
+                    logits_for_loss = audio_logits.view(-1, audio_logits.size(-1))  # [seq*codebooks, vocab]
+                    labels_for_loss = audio_labels.view(-1)  # [seq*codebooks]
+                    
+                    # Verify no invalid labels
+                    valid_mask = labels_for_loss != -100
+                    if valid_mask.any():
+                        valid_labels = labels_for_loss[valid_mask]
+                        if valid_labels.min() < 0 or valid_labels.max() >= 1026:
+                            logger.error(f"🚨 INVALID AUDIO LABELS: min={valid_labels.min()}, max={valid_labels.max()} (expected 0-1025)")
+                    
+                    audio_loss = audio_loss_fct(logits_for_loss, labels_for_loss)
                     total_loss = audio_loss if total_loss is None else total_loss + audio_loss
                     loss_components['audio_loss'] = audio_loss.item()
                     
