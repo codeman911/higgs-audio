@@ -6,7 +6,7 @@ import argparse
 import torch
 import torchaudio
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoConfig, WhisperProcessor
+from transformers import AutoTokenizer, AutoConfig, WhisperProcessor, get_cosine_schedule_with_warmup
 from peft import LoraConfig, get_peft_model, TaskType
 import torch.nn as nn
 from accelerate import Accelerator
@@ -107,8 +107,17 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000):
                 audio_path = audio_content.audio_url
                 if audio_path and os.path.exists(audio_path):
                     try:
-                        # Tokenize audio
-                        audio_codes = audio_tokenizer.encode(audio_path)
+                        # Tokenize audio (with optional caching for speed)
+                        audio_codes = None
+                        if args.use_cached_codes:
+                            cached_codes = f"{audio_path}.codes.pt"
+                            if os.path.exists(cached_codes):
+                                try:
+                                    audio_codes = torch.load(cached_codes, map_location="cpu")
+                                except Exception:
+                                    audio_codes = None
+                        if audio_codes is None:
+                            audio_codes = audio_tokenizer.encode(audio_path)
                         # Ensure tensor is on CPU
                         if audio_codes.is_cuda:
                             audio_codes = audio_codes.cpu()
@@ -117,7 +126,10 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000):
                             if audio_codes.shape[0] > 8:
                                 audio_codes = audio_codes[:8, :]
                             else:
-                                padding = torch.zeros(8 - audio_codes.shape[0], audio_codes.shape[1])
+                                padding = torch.zeros(
+                                    (8 - audio_codes.shape[0], audio_codes.shape[1]),
+                                    dtype=torch.long, device=audio_codes.device
+                                )
                                 audio_codes = torch.cat([audio_codes, padding], dim=0)
                         audio_ids_list.append(audio_codes)
                         
@@ -214,6 +226,16 @@ def main():
     # Other arguments
     parser.add_argument("--num_workers", type=int, default=0,
                         help="Number of dataloader workers")
+    parser.add_argument("--prefetch_factor", type=int, default=8,
+                        help="DataLoader prefetch factor per worker (if num_workers>0)")
+    parser.add_argument("--persistent_workers", action="store_true", default=True,
+                        help="Keep workers alive across epochs for speed")
+    parser.add_argument("--audio_label_smoothing", type=float, default=0.05,
+                        help="Label smoothing for audio CE over codebooks")
+    parser.add_argument("--compile_model", action="store_true", default=False,
+                        help="Enable torch.compile (PyTorch >= 2.4) for extra speed")
+    parser.add_argument("--use_cached_codes", action="store_true", default=False,
+                        help="Use <audio_path>.codes.pt if present (faster training)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
     parser.add_argument("--log_steps", type=int, default=10,
@@ -234,6 +256,10 @@ def main():
     
     # Set seed
     torch.manual_seed(args.seed)
+    
+    # Fast + stable matmul on Hopper; keep BF16 for mixed precision
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -295,7 +321,9 @@ def main():
         shuffle=True,
         collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator),
         num_workers=args.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        prefetch_factor=(args.prefetch_factor if args.num_workers > 0 else None),
+        persistent_workers=(args.persistent_workers if args.num_workers > 0 else False),
     )
     
     val_dataloader = None
@@ -306,7 +334,9 @@ def main():
             shuffle=False,
             collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator),
             num_workers=args.num_workers,
-            pin_memory=True
+            pin_memory=True,
+            prefetch_factor=(args.prefetch_factor if args.num_workers > 0 else None),
+            persistent_workers=(args.persistent_workers if args.num_workers > 0 else False),
         )
     
     # Load model
@@ -367,6 +397,14 @@ def main():
     model = get_peft_model(wrapped_model, lora_config)
     model.print_trainable_parameters()
     
+    # Optional torch.compile for free speedups
+    if args.compile_model:
+        try:
+            model = torch.compile(model, mode="max-autotune")
+            logger.info("Torch.compile enabled (max-autotune)")
+        except Exception as e:
+            logger.warning(f"torch.compile could not be enabled: {e}")
+    
     # Setup optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     
@@ -375,7 +413,6 @@ def main():
     
     # CRITICAL FIX: Use warmup + cosine scheduler (Point B Fix #2)
     # Large models with PEFT benefit from warmup to avoid early instability
-    from transformers import get_cosine_schedule_with_warmup
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=args.warmup_steps,
@@ -397,6 +434,10 @@ def main():
     for epoch in range(args.num_epochs):
         model.train()
         total_loss = 0
+        
+        # rolling means for clearer telemetry
+        running_audio = running_text = running_total = 0.0
+        running_n = 0
         
         progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{args.num_epochs}")
         
@@ -485,7 +526,7 @@ def main():
                         logger.info(f"  Output type: {type(outputs)}")
                 
                 # PROPER LOSS COMPUTATION FOR ZERO-SHOT VOICE CLONING
-                total_loss = 0.0
+                total_loss = None  # use None sentinel; keep this a Tensor
                 loss_components = {}
                 
                 # 1. Audio Loss (PRIMARY for voice cloning)
@@ -501,12 +542,15 @@ def main():
                         logger.info(f"  audio_labels sample: {audio_labels[0, :10] if audio_labels.numel() > 10 else audio_labels[0]}")
                     
                     # Compute audio token prediction loss (the CORE of voice cloning)
-                    audio_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                    audio_loss_fct = torch.nn.CrossEntropyLoss(
+                        ignore_index=-100,
+                        label_smoothing=args.audio_label_smoothing
+                    )
                     audio_loss = audio_loss_fct(
                         audio_logits.view(-1, audio_logits.size(-1)), 
                         audio_labels.view(-1)
                     )
-                    total_loss += audio_loss
+                    total_loss = audio_loss if total_loss is None else total_loss + audio_loss
                     loss_components['audio_loss'] = audio_loss.item()
                     
                     # 🔍 CRITICAL: Monitor audio loss trends
@@ -545,7 +589,7 @@ def main():
                         
                         # Weight text loss lower (audio is primary for voice cloning)
                         weighted_text_loss = 0.1 * text_loss  
-                        total_loss += weighted_text_loss
+                        total_loss = weighted_text_loss if total_loss is None else total_loss + weighted_text_loss
                         loss_components['text_loss'] = text_loss.item()
                         loss_components['weighted_text_loss'] = weighted_text_loss.item()
                         
@@ -554,12 +598,23 @@ def main():
                             logger.info(f"📝 TEXT LOSS (Step {step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f})")
                 
                 # Final loss for backward pass
-                if total_loss == 0:
-                    logger.warning("⚠️  No valid loss computed, skipping batch")
+                if total_loss is None:
+                    logger.warning("No valid loss this batch; skipping")
                     continue
                     
                 loss = total_loss
-                loss_components['total_loss'] = total_loss.item()
+                loss_components['total_loss'] = float(loss.detach().item())
+                
+                # Rolling means
+                running_audio += loss_components.get('audio_loss', 0.0)
+                running_text  += loss_components.get('weighted_text_loss', 0.0)
+                running_total += loss_components.get('total_loss', 0.0)
+                running_n     += 1
+                if (step % args.log_steps) == 0 and running_n > 0:
+                    logger.info(f"[rolling/{args.log_steps}] audio_ce={running_audio/running_n:.4f} "
+                                f"text_w={running_text/running_n:.4f} total={running_total/running_n:.4f}")
+                    running_audio = running_text = running_total = 0.0
+                    running_n = 0
                 
                 # 🔍 CRITICAL: Always log loss breakdown every 10 steps
                 if step % 10 == 0:
@@ -665,7 +720,10 @@ def main():
                     # Primary: Audio Loss
                     if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
                         audio_logits = outputs.audio_logits
-                        audio_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                        audio_loss_fct = torch.nn.CrossEntropyLoss(
+                            ignore_index=-100,
+                            label_smoothing=args.audio_label_smoothing
+                        )
                         audio_loss = audio_loss_fct(
                             audio_logits.view(-1, audio_logits.size(-1)), 
                             audio_labels.view(-1)
