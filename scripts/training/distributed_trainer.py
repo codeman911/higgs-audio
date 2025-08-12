@@ -675,9 +675,24 @@ def main():
                                     ce_per_q.append(ce_q.item())
                             logger.info(f"📊 Per-codebook CE: {[f'{x:.3f}' for x in ce_per_q]}")
                             
-                            # 🚨 SANITY CHECK 2: Prediction collapse detection
+                            # 🚨 SANITY CHECK 2: Audio token comparison (first/last 10)
                             pred = L.argmax(-1)  # [8, T] 
                             valid_mask = (y != -100)
+                            
+                            # Show first and last 10 predicted vs actual tokens for codebook 0
+                            if valid_mask[0].any():
+                                valid_positions = torch.where(valid_mask[0])[0]
+                                if len(valid_positions) >= 10:
+                                    first_10_idx = valid_positions[:10]
+                                    last_10_idx = valid_positions[-10:]
+                                    
+                                    first_pred = pred[0][first_10_idx].cpu().tolist()
+                                    first_true = y[0][first_10_idx].cpu().tolist()
+                                    last_pred = pred[0][last_10_idx].cpu().tolist()
+                                    last_true = y[0][last_10_idx].cpu().tolist()
+                                    
+                                    logger.info(f"🎯 First 10 tokens: pred={first_pred} | true={first_true}")
+                                    logger.info(f"🎯 Last 10 tokens:  pred={last_pred} | true={last_true}")
                             if valid_mask.any():
                                 pred_tokens = pred[valid_mask]
                                 label_tokens = y[valid_mask]
@@ -818,26 +833,21 @@ def main():
                 # Backward pass
                 accelerator.backward(loss)
                 
-                # CRITICAL DIAGNOSTIC: Check LoRA gradient norms every 50 steps
-                if step % 50 == 0:
+                # Simplified LoRA health check
+                if step % 100 == 0:
                     total_lora_grad_norm = 0.0
                     lora_param_count = 0
                     for n, p in model.named_parameters():
                         if p.requires_grad and hasattr(p, 'grad') and p.grad is not None:
-                            grad_norm = p.grad.data.float().norm().item()
-                            # Focus on LoRA targets
-                            if any(k in n for k in ['self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj', 'self_attn.o_proj', 'audio_lm_head', 'audio_mlp']):
-                                logger.info(f"🔍 Grad ||{n}|| = {grad_norm:.4e}")
-                                total_lora_grad_norm += grad_norm
+                            if 'lora' in n.lower():
+                                total_lora_grad_norm += p.grad.data.float().norm().item()
                                 lora_param_count += 1
                     
                     if lora_param_count > 0:
                         avg_lora_grad_norm = total_lora_grad_norm / lora_param_count
-                        logger.info(f"📊 Average LoRA grad norm: {avg_lora_grad_norm:.4e} ({lora_param_count} params)")
-                        if avg_lora_grad_norm < 1e-6:
-                            logger.warning(f"⚠️  VERY LOW LORA GRAD NORMS - POSSIBLE GRADIENT FLOW ISSUE!")
+                        logger.info(f"📊 LoRA grad health: {avg_lora_grad_norm:.2e} avg ({lora_param_count} params)")
                     else:
-                        logger.warning(f"⚠️  NO LORA GRADIENTS FOUND - LoRA NOT ACTIVE!")
+                        logger.warning(f"⚠️  NO LORA GRADIENTS FOUND")
                 
                 # Gradient clipping
                 if args.max_grad_norm > 0:
