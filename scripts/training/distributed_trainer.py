@@ -568,11 +568,35 @@ def main():
                             logger.info(f"🔧 MAPPING PAD TOKENS: {pad_count_before} tokens ({pad_id}) → -100")
                             audio_labels[audio_labels == pad_id] = -100
                     else:
-                        # CRITICAL FIX: Token 1025 is audio_stream_eos_id - always mask it
+                        # CRITICAL FIX: Mask all special tokens that shouldn't be in training
+                        special_tokens_masked = 0
+                        
+                        # Token 1024: audio_stream_bos_id (Begin-of-Stream)
+                        token_1024_count = (audio_labels == 1024).sum().item()
+                        if token_1024_count > 0:
+                            logger.info(f"🔧 MASKING BOS TOKENS: {token_1024_count} BOS tokens (1024) → -100")
+                            audio_labels[audio_labels == 1024] = -100
+                            special_tokens_masked += token_1024_count
+                        
+                        # Token 1025: audio_stream_eos_id (End-of-Stream)
                         token_1025_count = (audio_labels == 1025).sum().item()
                         if token_1025_count > 0:
                             logger.info(f"🔧 MASKING EOS TOKENS: {token_1025_count} EOS tokens (1025) → -100")
                             audio_labels[audio_labels == 1025] = -100
+                            special_tokens_masked += token_1025_count
+                        
+                        # Log total special tokens masked
+                        if special_tokens_masked > 0:
+                            logger.info(f"🎯 TOTAL SPECIAL TOKENS MASKED: {special_tokens_masked}")
+                        
+                        # Check for any remaining out-of-vocab tokens
+                        oov_mask = audio_labels >= 1024
+                        oov_mask = oov_mask & (audio_labels != -100)  # Exclude already masked
+                        oov_count = oov_mask.sum().item()
+                        if oov_count > 0:
+                            oov_tokens = audio_labels[oov_mask].unique().tolist()
+                            logger.warning(f"🚨 FOUND OOV TOKENS: {oov_count} tokens with IDs {oov_tokens} - masking to -100")
+                            audio_labels[oov_mask] = -100
                 
                 # 🔍 DEBUGGING: Verify what model outputs
                 if step == 0 or step % 10 == 0:
