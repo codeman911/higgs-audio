@@ -488,29 +488,7 @@ def main():
                 else:
                     actual_model = model
                 
-                # 🔍 CRITICAL DEBUGGING: Verify reference audio conditioning
-                if step == 0 or step % 10 == 0:  # Log every 10 steps for ongoing monitoring
-                    logger.info(f"\n🔍 === DEBUGGING STEP {step} ===")
-                    logger.info(f"📥 MODEL INPUTS:")
-                    for k, v in model_inputs.items():
-                        if torch.is_tensor(v):
-                            logger.info(f"  {k}: {v.shape} dtype={v.dtype}")
-                        else:
-                            logger.info(f"  {k}: {v}")
-                    
-                    # Critical: Verify audio conditioning inputs
-                    if 'audio_in_ids' in model_inputs:
-                        audio_in_ids = model_inputs['audio_in_ids']
-                        logger.info(f"🎤 REFERENCE AUDIO CONDITIONING:")
-                        logger.info(f"  audio_in_ids shape: {audio_in_ids.shape}")
-                        logger.info(f"  audio_in_ids non-zero: {(audio_in_ids != 0).sum().item()}/{audio_in_ids.numel()}")
-                        logger.info(f"  audio_in_ids sample: {audio_in_ids[0, :10] if audio_in_ids.numel() > 10 else audio_in_ids}")
-                    
-                    if 'audio_features' in model_inputs:
-                        audio_features = model_inputs['audio_features']
-                        logger.info(f"  audio_features shape: {audio_features.shape}")
-                        logger.info(f"  audio_features mean: {audio_features.mean().item():.4f}")
-                        logger.info(f"  audio_features std: {audio_features.std().item():.4f}")
+
                 
                 # Forward pass - call model directly WITHOUT labels
                 outputs = actual_model(**model_inputs)
@@ -521,41 +499,7 @@ def main():
                 
                 # 🚨 CRITICAL PAD TOKEN FIX: Map pad tokens to -100 if applicable
                 if audio_labels is not None:
-                    if step == 0 or step % 50 == 0:
-                        # Deep investigation of audio_tokenizer attributes
-                        logger.info(f"🔍 AUDIO TOKENIZER INVESTIGATION:")
-                        logger.info(f"  Type: {type(audio_tokenizer)}")
-                        tokenizer_attrs = [attr for attr in dir(audio_tokenizer) if 'pad' in attr.lower()]
-                        logger.info(f"  Pad-related attributes: {tokenizer_attrs}")
-                        
-                        # Check all possible pad token attributes
-                        pad_candidates = []
-                        for attr in ['pad_id', 'pad_token_id', 'padding_idx', 'pad_index']:
-                            if hasattr(audio_tokenizer, attr):
-                                pad_val = getattr(audio_tokenizer, attr)
-                                pad_candidates.append(f"{attr}={pad_val}")
-                        logger.info(f"  Pad candidates: {pad_candidates}")
-                        
-                        # Manual investigation of token 1025
-                        token_1025_count = (audio_labels == 1025).sum().item()
-                        total_labels = (audio_labels != -100).sum().item()
-                        token_1025_ratio = token_1025_count / max(total_labels, 1) * 100
-                        logger.info(f"🚨 TOKEN 1025 ANALYSIS: {token_1025_count}/{total_labels} ({token_1025_ratio:.1f}%) of non-ignore labels")
-                        
-                        # Check if 1025 appears at sequence ends (typical for pad tokens)
-                        batch_size, seq_len = audio_labels.shape
-                        end_positions = []
-                        for b in range(min(3, batch_size)):  # Check first 3 samples
-                            last_non_ignore = -1
-                            for t in range(seq_len-1, -1, -1):
-                                if audio_labels[b, t] != -100:
-                                    last_non_ignore = t
-                                    break
-                            if last_non_ignore >= 0 and last_non_ignore < seq_len - 1:
-                                # Check tokens after last non-ignore
-                                trailing_tokens = audio_labels[b, last_non_ignore+1:last_non_ignore+6].tolist()
-                                end_positions.append(f"sample_{b}_end: {trailing_tokens}")
-                        logger.info(f"🔍 SEQUENCE END ANALYSIS: {end_positions}")
+
                     
                     # Apply pad token mapping if we find the right attribute
                     pad_id = None
@@ -570,42 +514,24 @@ def main():
                             logger.info(f"🔧 MAPPING PAD TOKENS: {pad_count_before} tokens ({pad_id}) → -100")
                             audio_labels[audio_labels == pad_id] = -100
                     else:
-                        # CRITICAL: The collator ALREADY handles BOS/EOS tokens correctly!
-                        # - BOS (1024) is added at start and masked to -100 in labels
-                        # - EOS (1025) is added at end and preserved for learning
-                        # DO NOT duplicate this logic here - it causes training/inference mismatch
+                        # Safety net: Mask BOS tokens to -100 and invalid tokens
+                        bos_count_before = (audio_labels == 1024).sum().item()
+                        if bos_count_before > 0:
+                            logger.info(f"🔧 MAPPING BOS TOKENS: {bos_count_before} tokens (1024) → -100")
+                            audio_labels[audio_labels == 1024] = -100
                         
-                        # Only check for truly invalid tokens (> 1025)
-                        invalid_mask = audio_labels > 1025
-                        invalid_mask = invalid_mask & (audio_labels != -100)  # Exclude already masked
+                        # Mask truly invalid tokens (> 1025)
+                        invalid_mask = (audio_labels > 1025) & (audio_labels != -100)
                         invalid_count = invalid_mask.sum().item()
                         if invalid_count > 0:
-                            invalid_tokens = audio_labels[invalid_mask].unique().tolist()
-                            logger.warning(f"🚨 FOUND INVALID TOKENS: {invalid_count} tokens with IDs {invalid_tokens} - masking to -100")
+                            logger.info(f"🔧 MAPPING INVALID TOKENS: {invalid_count} tokens → -100")
                             audio_labels[invalid_mask] = -100
-                        
-                        # Log token distribution for debugging (but don't modify!)
-                        token_1024_count = (audio_labels == 1024).sum().item()
-                        token_1025_count = (audio_labels == 1025).sum().item()
-                        masked_count = (audio_labels == -100).sum().item()
-                        
-                        if step == 0 or step % 10 == 0:
-                            logger.info(f"📊 Token Distribution After Collator:")
-                            logger.info(f"   • BOS (1024): {token_1024_count} (should be 0 - already masked by collator)")
-                            logger.info(f"   • EOS (1025): {token_1025_count} (preserved for stopping logic)")
-                            logger.info(f"   • Masked (-100): {masked_count} (includes BOS + any padding)")
-                            logger.info(f"   • Valid audio tokens (0-1023): {((audio_labels >= 0) & (audio_labels <= 1023)).sum().item()}")
                 
-                # 🔍 DEBUGGING: Verify what model outputs
-                if step == 0 or step % 10 == 0:
-                    logger.info(f"📤 MODEL OUTPUTS:")
-                    if hasattr(outputs, 'keys'):
-                        logger.info(f"  Output keys: {list(outputs.keys())}")
-                    else:
-                        logger.info(f"  Output type: {type(outputs)}")
+
                 
                 # PROPER LOSS COMPUTATION FOR ZERO-SHOT VOICE CLONING
                 total_loss = None  # use None sentinel; keep this a Tensor
+
                 loss_components = {}
                 
                 # 1. Audio Loss (PRIMARY for voice cloning)
@@ -803,7 +729,7 @@ def main():
                 running_n     += 1
                 
                 # Validation accuracy every 1000 steps
-                if step % args.val_steps == 0 and step > 0 and val_dataloader:
+                if global_step % args.val_steps == 0 and global_step > 0 and val_dataloader:
                     model.eval()
                     val_audio_correct = 0
                     val_audio_total = 0
@@ -894,12 +820,12 @@ def main():
                     if val_audio_total > 0:
                         val_accuracy = val_audio_correct / val_audio_total
                         avg_val_loss = val_loss_accum / val_steps_count if val_steps_count > 0 else 0
-                        logger.info(f"📊 VALIDATION (Step {step}): Loss={avg_val_loss:.4f}, Audio Accuracy={val_accuracy:.4f} ({val_audio_correct}/{val_audio_total})")
+                        logger.info(f"📊 VALIDATION (Step {global_step}): Loss={avg_val_loss:.4f}, Audio Accuracy={val_accuracy:.4f} ({val_audio_correct}/{val_audio_total})")
                     
                     model.train()  # Return to training mode
         
-                # Training logs every 100 steps
-                if step % args.log_steps == 0 and running_n > 0:
+                # Training logs every 100 steps  
+                if global_step % args.log_steps == 0 and running_n > 0:
                     logger.info(f"[rolling/{args.log_steps}] audio_ce={running_audio/running_n:.4f} "
                                 f"text_w={running_text/running_n:.4f} total={running_total/running_n:.4f}")
                     running_audio = running_text = running_total = 0.0
@@ -934,7 +860,7 @@ def main():
                 accelerator.backward(loss)
                 
                 # Simplified LoRA health check
-                if step % 100 == 0:
+                if global_step % 100 == 0:
                     total_lora_grad_norm = 0.0
                     lora_param_count = 0
                     for n, p in model.named_parameters():
