@@ -539,21 +539,7 @@ def main():
                     audio_logits = outputs.audio_logits
                     
                     # 🔍 DEBUGGING: Verify audio loss computation
-                    if step == 0 or step % 10 == 0:
-                        logger.info(f"🔊 AUDIO LOSS COMPUTATION:")
-                        logger.info(f"  audio_logits shape: {audio_logits.shape}")
-                        logger.info(f"  audio_labels shape: {audio_labels.shape}")
-                        logger.info(f"  audio_labels non-ignore: {(audio_labels != -100).sum().item()}/{audio_labels.numel()}")
-                        logger.info(f"  audio_labels sample: {audio_labels[0, :10] if audio_labels.numel() > 10 else audio_labels[0]}")
-                        
-                        # CRITICAL: Verify loss tensor shapes before flattening
-                        logits_flat = audio_logits.view(-1, audio_logits.size(-1))
-                        labels_flat = audio_labels.view(-1)
-                        logger.info(f"🚨 CRITICAL SHAPE CHECK:")
-                        logger.info(f"  logits_flat: {logits_flat.shape} (should be [N, 1026])")
-                        logger.info(f"  labels_flat: {labels_flat.shape} (should be [N])")
-                        logger.info(f"  labels_flat min/max: {labels_flat[labels_flat != -100].min().item() if (labels_flat != -100).any() else 'N/A'} / {labels_flat[labels_flat != -100].max().item() if (labels_flat != -100).any() else 'N/A'}")
-                        logger.info(f"  Expected range: 0-1025 (vocab size 1026)")
+
                     
                     # 🚨 CRITICAL FIX: Align tensor dimensions before loss computation
                     # Model outputs: [T, 8, V] (time-major)
@@ -563,7 +549,7 @@ def main():
                     if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
                         # Permute to [8, T, V] to match label order (codebook-major)
                         audio_logits = audio_logits.permute(1, 0, 2).contiguous()
-                        if step == 0 or step % 10 == 0:
+                        if global_step % 100 == 0:
                             logger.info(f"🔧 TENSOR ALIGNMENT: Permuted audio_logits from [T,8,V] to [8,T,V]: {audio_logits.shape}")
                     
                     # Compute audio token prediction loss (the CORE of voice cloning)
@@ -588,8 +574,8 @@ def main():
                     loss_components['audio_loss'] = audio_loss.item()
                     
                     # 🔍 CRITICAL: Monitor audio loss trends + SANITY CHECKS FOR MODEL COLLAPSE
-                    if step % 10 == 0:
-                        logger.info(f"🔊 AUDIO LOSS (Step {step}): {audio_loss.item():.4f}")
+                    if global_step % args.log_steps == 0:
+                        logger.info(f"🔊 AUDIO LOSS (Step {global_step}): {audio_loss.item():.4f}")
                         
                         # 🚨 SANITY CHECK 1: Per-codebook CE breakdown
                         with torch.no_grad():
@@ -667,12 +653,7 @@ def main():
                         if audio_loss.item() < 0.3:
                             logger.warning(f"🚨 EXTREMELY LOW AUDIO LOSS: {audio_loss.item():.4f} - INVESTIGATE!")
                         
-                        if step > 50 and loss_components.get('text_loss', 10) < 0.1:
-                            logger.warning(f"🚨 EXTREMELY LOW TEXT LOSS: {loss_components.get('text_loss', 0):.4f} - POSSIBLE COLLAPSE!")
-                        
-                        # 🚨 SANITY CHECK 6: Reference conditioning ablation test (every 200 steps)
-                        if step > 0 and step % 200 == 0:
-                            logger.info(f"🧪 Consider running reference ablation test at step {step} to verify conditioning dependency")
+
                 
                 # 2. Text Loss (SECONDARY - for text understanding)
                 if hasattr(outputs, 'logits') and outputs.logits is not None and text_labels is not None:
@@ -690,12 +671,7 @@ def main():
                         shift_labels = text_labels[..., 1:].contiguous()
                         
                         # 🔍 DEBUGGING: Verify text loss computation
-                        if step == 0 or step % 10 == 0:
-                            logger.info(f"📝 TEXT LOSS COMPUTATION:")
-                            logger.info(f"  text_logits original: {text_logits.shape}")
-                            logger.info(f"  text_labels original: {text_labels.shape}")
-                            logger.info(f"  after shift - logits: {shift_logits.shape}, labels: {shift_labels.shape}")
-                            logger.info(f"  text_labels non-ignore: {(shift_labels != -100).sum().item()}/{shift_labels.numel()}")
+
                         
                         # Compute text loss (weighted lower for voice cloning)
                         text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
@@ -711,8 +687,8 @@ def main():
                         loss_components['weighted_text_loss'] = weighted_text_loss.item()
                         
                         # 🔍 CRITICAL: Monitor text loss trends  
-                        if step % 10 == 0:
-                            logger.info(f"📝 TEXT LOSS (Step {step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f})")
+                        if global_step % args.log_steps == 0:
+                            logger.info(f"📝 TEXT LOSS (Step {global_step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f})")
                 
                 # Final loss for backward pass
                 if total_loss is None:
@@ -849,7 +825,7 @@ def main():
                         logger.info(f"✅ AUDIO LOSS ({audio_loss_val:.4f}) BELOW RANDOM BASELINE ({random_baseline:.4f}) - LEARNING ACTIVE!")
                     
                     # 🚨 CRITICAL: Check for suspicious loss patterns
-                    if loss_components.get('audio_loss', 0) < 2.0:
+                    if loss_components.get('audio_loss', 0) < 1.5:
                         logger.warning(f"⚠️  SUSPICIOUS: Audio loss very low ({loss_components.get('audio_loss', 0):.4f}) - possible model collapse or wrong labels!")
                     
                     if step > 0:
