@@ -1,0 +1,31 @@
+🔬 HIGGS AUDIO MODEL ANALYSIS SUMMARY
+==================================================
+
+📊 MODEL OVERVIEW:
+Total Parameters: 5,771,283,456
+Trainable Parameters: 5,771,283,456
+Top-level Modules: 6
+All Named Modules: 597
+
+🎯 LORA RECOMMENDATIONS:
+Rank: 32
+Alpha: 64
+Primary Targets: 87
+Secondary Targets: 280
+
+🎵 AUDIO PIPELINE MODULES:
+audio_tokenizer_modules: 0 modules
+whisper_modules: 0 modules
+audio_embedding_modules: 1 modules
+audio_decoder_modules: 3 modules
+codebook_modules: 1 modules
+mel_processing_modules: 0 modules
+
+🚨 CRITICAL FINDINGS FOR AUDIO LOSS PLATEAU:
+✅ Found 87 audio generation modules
+
+💡 NEXT STEPS:
+1. Use primary_targets for LoRA configuration
+2. Verify gradient flow to audio generation modules
+3. Test with recommended rank/alpha values
+4. Monitor audio loss specifically during training
