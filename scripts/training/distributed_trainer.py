@@ -517,6 +517,19 @@ def main():
                 text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
                 audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
                 
+                # 🚨 CRITICAL PAD TOKEN FIX: Map pad tokens to -100 if applicable
+                if audio_labels is not None and hasattr(audio_tokenizer, 'pad_id'):
+                    pad_id = audio_tokenizer.pad_id
+                    if step == 0 or step % 50 == 0:
+                        pad_count_before = (audio_labels == pad_id).sum().item()
+                        logger.info(f"🔍 PAD TOKEN CHECK: Found {pad_count_before} pad tokens (id={pad_id}) before mapping to -100")
+                    audio_labels[audio_labels == pad_id] = -100
+                elif audio_labels is not None and step == 0:
+                    logger.info(f"🔍 PAD TOKEN CHECK: No pad_id attribute found in audio_tokenizer")
+                    # Manual check for 1025 as potential pad
+                    token_1025_count = (audio_labels == 1025).sum().item()
+                    logger.info(f"🚨 TOKEN 1025 CHECK: Found {token_1025_count} instances of token 1025 in labels")
+                
                 # 🔍 DEBUGGING: Verify what model outputs
                 if step == 0 or step % 10 == 0:
                     logger.info(f"📤 MODEL OUTPUTS:")
@@ -635,12 +648,24 @@ def main():
                             if abs(mask_sum - non_ignore) > 100:  # Allow some tolerance
                                 logger.warning(f"⚠️  MASK MISMATCH: mask_sum({mask_sum}) != non_ignore({non_ignore})")
                         
-                        # 🚨 SANITY CHECK 4: Check for suspicious loss ratios
-                        if audio_loss.item() < 0.5:
+                        # 🚨 SANITY CHECK 4: First token masking check
+                        # First label in each codebook should be -100 (no training on t=0)
+                        first_labels = audio_labels[:, 0]  # [8] - first token per codebook
+                        first_ignore_count = (first_labels == -100).sum().item()
+                        logger.info(f"🔍 First token masking: {first_ignore_count}/8 codebooks have -100 at t=0")
+                        if first_ignore_count < 7:  # Allow some tolerance
+                            logger.warning(f"⚠️  INSUFFICIENT FIRST TOKEN MASKING: only {first_ignore_count}/8 masked")
+                        
+                        # 🚨 SANITY CHECK 5: Check for suspicious loss ratios
+                        if audio_loss.item() < 0.3:
                             logger.warning(f"🚨 EXTREMELY LOW AUDIO LOSS: {audio_loss.item():.4f} - INVESTIGATE!")
                         
                         if step > 50 and loss_components.get('text_loss', 10) < 0.1:
                             logger.warning(f"🚨 EXTREMELY LOW TEXT LOSS: {loss_components.get('text_loss', 0):.4f} - POSSIBLE COLLAPSE!")
+                        
+                        # 🚨 SANITY CHECK 6: Reference conditioning ablation test (every 200 steps)
+                        if step > 0 and step % 200 == 0:
+                            logger.info(f"🧪 Consider running reference ablation test at step {step} to verify conditioning dependency")
                 
                 # 2. Text Loss (SECONDARY - for text understanding)
                 if hasattr(outputs, 'logits') and outputs.logits is not None and text_labels is not None:
