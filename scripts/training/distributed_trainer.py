@@ -324,9 +324,8 @@ def main():
         pad_token_id=model_config.pad_token_id,
         return_audio_in_tokens=model_config.encode_audio_in_tokens,
         use_delay_pattern=model_config.use_delay_pattern,
-        round_to=8,  # CRITICAL: Documentation recommends round_to=8 for optimal batching
-        audio_num_codebooks=8,
-        return_labels=True  # CRITICAL: Must be True for training to generate label tensors!
+        round_to=8,  # Documentation recommends round_to=8 for optimal batching
+        audio_num_codebooks=8
     )
     
     # Load datasets
