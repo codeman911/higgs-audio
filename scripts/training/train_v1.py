@@ -456,8 +456,47 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
     return collator(chatml_samples)
 
 
+class PEFTModelWrapper(nn.Module):
+    """
+    Wrapper to make PEFT model compatible with HiggsAudio forward signature.
+    Maps 'labels' to 'label_ids' for compatibility.
+    """
+    def __init__(self, peft_model):
+        super().__init__()
+        self.model = peft_model
+    
+    def forward(self, **kwargs):
+        # Map labels to label_ids for HiggsAudio compatibility
+        if 'labels' in kwargs and 'label_ids' not in kwargs:
+            kwargs['label_ids'] = kwargs.pop('labels')
+        return self.model(**kwargs)
+    
+    def __getattr__(self, name):
+        """Delegate all other attributes to the wrapped model"""
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.model, name)
+
+
+def setup_model_and_lora(model_path, lora_config):
+    """Setup model with LoRA configuration"""
+    logger.info("Loading Higgs-Audio model...")
+    model = HiggsAudioModel.from_pretrained(model_path, torch_dtype=torch.bfloat16)
+    
+    # Apply LoRA
+    logger.info("Applying LoRA configuration...")
+    peft_model = get_peft_model(model, lora_config)
+    
+    # Wrap for compatibility
+    wrapped_model = PEFTModelWrapper(peft_model)
+    
+    logger.info(f"Model loaded with LoRA. Trainable parameters: {peft_model.num_parameters(only_trainable=True)}")
+    return wrapped_model
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Higgs-Audio LoRA Training")
+    parser = argparse.ArgumentParser(description="Higgs-Audio Zero-Shot Voice Cloning Trainer V1 - ROBUST NO-LEAK")
     
     # Data arguments
     parser.add_argument("--dataset_path", type=str, required=True,
@@ -467,11 +506,8 @@ def main():
     
     # Model arguments
     parser.add_argument("--model_path", type=str, 
-                        default="bosonai/higgs-audio-v2-generation-3B-base",
-                        help="Path to base model")
-    parser.add_argument("--audio_tokenizer_path", type=str,
-                        default="bosonai/higgs-audio-v2-tokenizer",
-                        help="Path to audio tokenizer")
+                        default="/vs/boson-multimodal-checkpoints/higgs-audio-v2",
+                        help="Path to base Higgs-Audio model")
     
     # Training arguments
     parser.add_argument("--batch_size", type=int, default=1,
