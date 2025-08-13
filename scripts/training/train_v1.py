@@ -115,59 +115,89 @@ def build_text_labels_chatml(input_ids, tokenizer, device, min_tokens_per_sample
     labels[:, :-1] = input_ids[:, 1:]
     labels[:, -1] = IGNORE_INDEX  # last token has no next token
     
-    # Get structural token IDs
+    # Get structural token IDs - handle different ChatML formats
     im_start_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
     im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>") 
     audio_in_id = tokenizer.convert_tokens_to_ids("<|AUDIO|>")
     audio_out_id = tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>")
+    
+    # Handle both standard ChatML and LLaMA-style headers
     system_id = tokenizer.convert_tokens_to_ids("system")
     user_id = tokenizer.convert_tokens_to_ids("user")
     assistant_id = tokenizer.convert_tokens_to_ids("assistant")
     
+    # LLaMA-style header tokens
+    start_header_id = tokenizer.convert_tokens_to_ids("<|start_header_id|>")
+    end_header_id = tokenizer.convert_tokens_to_ids("<|end_header_id|>")
+    eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    
     structural_tokens = {
         im_start_id, im_end_id, audio_in_id, audio_out_id,
         system_id, user_id, assistant_id,
+        start_header_id, end_header_id, eot_id,
         tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id
     }
     structural_tokens = {tid for tid in structural_tokens if tid is not None}
     
-    # Parse ChatML and supervise content spans
+    # CRITICAL FIX: Parse BOTH ChatML and LLaMA-style formats to find Arabic content
     for b in range(B):
         # Start by masking all structural tokens
         for t in range(T-1):  # Skip last position (already -100)
             if input_ids[b, t].item() in structural_tokens:
                 labels[b, t] = IGNORE_INDEX
         
-        # Find content spans between <|im_start|>role\n and <|im_end|>
         ids = input_ids[b].tolist()
         content_positions = []
         
+        # Method 1: Standard ChatML format <|im_start|>assistant\n...<|im_end|>
         i = 0
         while i < len(ids) - 1:
-            # Look for <|im_start|>
             if ids[i] == im_start_id and i+1 < len(ids):
-                # Skip role token (system/user/assistant)
                 role_pos = i + 1
-                if ids[role_pos] in {system_id, user_id, assistant_id}:
-                    # Look for newline or start of content (role_pos + 1)
+                if ids[role_pos] == assistant_id:  # ONLY supervise assistant responses
                     content_start = role_pos + 1
-                    
-                    # Find corresponding <|im_end|>
                     content_end = content_start
                     while content_end < len(ids) and ids[content_end] != im_end_id:
                         content_end += 1
                     
-                    # Supervise content tokens (skip system messages, supervise user/assistant)
-                    if ids[role_pos] in {user_id, assistant_id}:
-                        for pos in range(content_start, min(content_end, T-1)):
-                            if ids[pos] not in structural_tokens:
-                                content_positions.append(pos)
+                    # Add all content tokens in assistant response
+                    for pos in range(content_start, min(content_end, T-1)):
+                        if ids[pos] not in structural_tokens:
+                            content_positions.append(pos)
                     
                     i = content_end + 1
                 else:
                     i += 1
             else:
                 i += 1
+        
+        # Method 2: LLaMA-style format <|start_header_id|>assistant<|end_header_id|>...<|eot_id|>
+        i = 0
+        while i < len(ids) - 1:
+            if ids[i] == start_header_id and i+1 < len(ids):
+                if ids[i+1] == assistant_id and i+2 < len(ids) and ids[i+2] == end_header_id:
+                    # Found assistant header, find content until <|eot_id|>
+                    content_start = i + 3  # After <|start_header_id|>assistant<|end_header_id|>
+                    content_end = content_start
+                    while content_end < len(ids) and ids[content_end] != eot_id:
+                        content_end += 1
+                    
+                    # Add all content tokens in assistant response  
+                    for pos in range(content_start, min(content_end, T-1)):
+                        if ids[pos] not in structural_tokens:
+                            content_positions.append(pos)
+                    
+                    i = content_end + 1
+                else:
+                    i += 1
+            else:
+                i += 1
+        
+        # Method 3: Fallback - if no structured format found, supervise non-structural tokens
+        if len(content_positions) < 10:  # Very few content tokens found
+            for pos in range(T-1):
+                if labels[b, pos] == IGNORE_INDEX and input_ids[b, pos].item() not in structural_tokens:
+                    content_positions.append(pos)
         
         # Ensure all content positions are supervised
         for pos in content_positions:
@@ -305,15 +335,45 @@ def compute_higgs_losses(model_outputs, batch, tokenizer, device, lambda_text=0.
         audio_logits = model_outputs.audio_logits           # [T_out, 8, V]
         audio_labels = getattr(batch, 'audio_out_ids', None)
         
+        def apply_eos_mask(audio_labels, eos_id=1025):
+            """
+            Mask EOS tokens (1025) in audio labels to prevent model from learning to over-predict EOS.
+            
+            Args:
+                audio_labels: Tensor of shape [batch_size, num_codebooks, seq_len] or [batch_size, seq_len]
+                eos_id: EOS token ID to mask (default 1025)
+            
+            Returns:
+                audio_labels with EOS tokens set to IGNORE_INDEX (-100)
+            """
+            if audio_labels is None:
+                return audio_labels
+            
+            # CRITICAL FIX: Mask ALL EOS variants and ensure masking is thorough
+            audio_labels = audio_labels.clone()
+            
+            # EOS token variants to mask
+            eos_tokens = [1025, 1026]  # audio_stream_eos_id and potential variants
+            
+            for eos_token in eos_tokens:
+                mask = (audio_labels == eos_token)
+                if mask.any():
+                    print(f" Masking {mask.sum().item()} instances of EOS token {eos_token}")
+                    audio_labels[mask] = IGNORE_INDEX
+            
+            # Verify masking was successful
+            for eos_token in eos_tokens:
+                remaining = (audio_labels == eos_token).sum().item()
+                if remaining > 0:
+                    print(f" WARNING: {remaining} EOS tokens ({eos_token}) still present after masking!")
+            
+            return audio_labels
+        
+        audio_labels = apply_eos_mask(audio_labels, eos_id=1025)
+        
         if audio_labels is not None:
             audio_labels = audio_labels.to(device)       # [8, T_out]
 
-            # Mask EOS (e.g., 1025) and any padding in the labels
-            # Try to fetch EOS id from model/tokenizer. Fallback to 1025.
-            eos_id = getattr(getattr(model_outputs, "audio_vocab", None), "eos_id", 1025)
-            audio_labels = audio_labels.clone()
-            audio_labels[audio_labels == eos_id] = IGNORE_INDEX
-            
             # 🔧 HIGGS DUAL-FFN ALIGNMENT: Permute to codebook-major so we can flatten (8, T_out, V)
             if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
                 audio_logits = audio_logits.permute(1, 0, 2).contiguous()
