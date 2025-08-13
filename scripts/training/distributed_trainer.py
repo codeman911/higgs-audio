@@ -532,37 +532,12 @@ def main():
                     # Note: expanded_input_ids check moved to after forward pass
                     logger.info(f"  📝 expanded_input_ids check will be performed after forward pass")
                     
-                    # First token masking verification
-                    if audio_labels is not None and audio_labels.dim() >= 2 and audio_labels.shape[0] >= 8:
-                        first_tokens_masked = (audio_labels[:8, 0] == -100).sum().item() if audio_labels.shape[1] > 0 else 0
-                        logger.info(f"  🔒 First token masking: {first_tokens_masked}/8 codebooks (-100)")
-                        if first_tokens_masked == 8:
-                            logger.info(f"  ✅ INVARIANT: All BOS tokens properly masked")
+                    # Note: First token masking check moved to after label extraction
+                    logger.info(f"  📝 First token masking check will be performed after label extraction")
                 
-                # 🚨 CRITICAL: Focus on REAL issues - Arabic text supervision debugging
-                if global_step % 10 == 0 and text_labels is not None:
-                    logger.info(f"🔍 ARABIC TEXT SUPERVISION DEBUG (Step {global_step}):")
-                    
-                    # Check text supervision quantity
-                    total_text_labels = text_labels.numel()
-                    text_non_ignore = (text_labels != -100).sum().item()
-                    text_supervision_ratio = text_non_ignore / total_text_labels if total_text_labels > 0 else 0.0
-                    
-                    logger.info(f"  📊 Text labels: {total_text_labels} total, {text_non_ignore} non-ignore ({text_supervision_ratio:.1%})")
-                    
-                    # CRITICAL: Check if text supervision is too low
-                    if text_non_ignore < 50:
-                        logger.error(f"🚨 INSUFFICIENT TEXT SUPERVISION: Only {text_non_ignore} tokens - need ~100+ for Arabic learning!")
-                    elif text_non_ignore >= 100:
-                        logger.info(f"✅ ADEQUATE TEXT SUPERVISION: {text_non_ignore} tokens for Arabic learning")
-                    else:
-                        logger.warning(f"⚠️  MARGINAL TEXT SUPERVISION: {text_non_ignore} tokens - may need more for robust Arabic learning")
-                    
-                    # Sample text tokens to verify Arabic tokenization
-                    if text_non_ignore > 0:
-                        non_ignore_mask = text_labels != -100
-                        sample_tokens = text_labels[non_ignore_mask][:10].tolist()
-                        logger.info(f"  🔤 Sample text tokens: {sample_tokens} (check Arabic tokenization quality)")
+                # Note: Arabic text supervision debugging moved to after label extraction
+                if global_step % 10 == 0:
+                    logger.info(f"🔍 DEBUGGING: Arabic text supervision check will be performed after label extraction")
 
                 # Forward pass - call model directly WITHOUT labels
                 outputs = actual_model(**model_inputs)
@@ -608,14 +583,51 @@ def main():
                         if invalid_count > 0:
                             logger.info(f"🔧 MAPPING INVALID TOKENS: {invalid_count} tokens → -100")
                             audio_labels[invalid_mask] = -100
-                
 
+                # 🔍 COMPREHENSIVE DEBUGGING: Now that labels are extracted, perform all checks
+                if global_step % 10 == 0:
+                    logger.info(f"🔍 ARABIC TEXT SUPERVISION DEBUG (Step {global_step}):")
+                    
+                    # Check text supervision quantity
+                    if text_labels is not None:
+                        total_text_labels = text_labels.numel()
+                        text_non_ignore = (text_labels != -100).sum().item()
+                        text_supervision_ratio = text_non_ignore / total_text_labels if total_text_labels > 0 else 0.0
+                        
+                        logger.info(f"  📊 Text labels: {total_text_labels} total, {text_non_ignore} non-ignore ({text_supervision_ratio:.1%})")
+                        
+                        # CRITICAL: Check if text supervision is too low
+                        if text_non_ignore < 50:
+                            logger.error(f"🚨 INSUFFICIENT TEXT SUPERVISION: Only {text_non_ignore} tokens - need ~100+ for Arabic learning!")
+                        elif text_non_ignore >= 100:
+                            logger.info(f"✅ ADEQUATE TEXT SUPERVISION: {text_non_ignore} tokens for Arabic learning")
+                        else:
+                            logger.warning(f"⚠️  MARGINAL TEXT SUPERVISION: {text_non_ignore} tokens - may need more for robust Arabic learning")
+                        
+                        # Sample text tokens to verify Arabic tokenization
+                        if text_non_ignore > 0:
+                            non_ignore_mask = text_labels != -100
+                            sample_tokens = text_labels[non_ignore_mask][:10].tolist()
+                            logger.info(f"  🔤 Sample text tokens: {sample_tokens} (check Arabic tokenization quality)")
+                    else:
+                        logger.info(f"  📝 No text labels in batch")
                 
+                # 🔍 ARCHITECTURAL VERIFICATION: First token masking check  
+                if global_step % 50 == 0 and audio_labels is not None:
+                    if audio_labels.dim() >= 2 and audio_labels.shape[0] >= 8:
+                        first_tokens_masked = (audio_labels[:8, 0] == -100).sum().item() if audio_labels.shape[1] > 0 else 0
+                        logger.info(f"  🔒 First token masking: {first_tokens_masked}/8 codebooks (-100)")
+                        if first_tokens_masked == 8:
+                            logger.info(f"  ✅ INVARIANT: All BOS tokens properly masked")
+                        else:
+                            logger.warning(f"⚠️  First token masking incomplete: {first_tokens_masked}/8")
+
                 # PROPER LOSS COMPUTATION FOR ZERO-SHOT VOICE CLONING
                 total_loss = None  # use None sentinel; keep this a Tensor
 
                 loss_components = {}
                 
+{{ ... }}
                 # 1. Audio Loss (PRIMARY for voice cloning)
                 if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
                     audio_logits = outputs.audio_logits
