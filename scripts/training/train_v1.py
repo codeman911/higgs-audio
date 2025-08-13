@@ -99,61 +99,195 @@ def build_no_leak_inputs(batch, tokenizer, device):
     return inputs
 
 
-def build_text_labels(input_ids, tokenizer, device, mask_special=True, min_tokens_per_sample=32):
+def build_text_labels_chatml(input_ids, tokenizer, device, min_tokens_per_sample=64):
     """
-    Create text labels for next-token LM loss on the TEXT segment ONLY.
-    We supervise ALL non-special text tokens (user + assistant) unless masked out;
-    this gives the model strong pressure to encode Arabic content.
+    ChatML-aware text label builder: supervise CONTENT spans, mask STRUCTURAL tokens.
     
-    CRITICAL: This ensures ≥32 supervised Arabic tokens per sample to prevent mumbling.
+    Strategy:
+    1. Parse ChatML structure: <|im_start|>role\ncontent<|im_end|>
+    2. SUPERVISE all content tokens inside user/assistant messages
+    3. MASK structural tokens: <|im_start|>, <|im_end|>, role tokens, audio markers
+    4. Enforce minimum content supervision per sample (≥64 tokens)
     """
     B, T = input_ids.shape
     # Shift like a decoder LM
     labels = input_ids.clone()
     labels[:, :-1] = input_ids[:, 1:]
     labels[:, -1] = IGNORE_INDEX  # last token has no next token
-
-    if mask_special:
-        # FIXED: Manual special token masking to avoid Arabic token misclassification
-        # Only mask actual ChatML special tokens, NOT Arabic text tokens
-        special_token_ids = set([
-            tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id,
-            tokenizer.convert_tokens_to_ids("<|im_start|>"), 
-            tokenizer.convert_tokens_to_ids("<|im_end|>"),
-            tokenizer.convert_tokens_to_ids("<|AUDIO|>"),
-            tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>")
-        ])
-        # Remove None values in case some tokens don't exist
-        special_token_ids = {tid for tid in special_token_ids if tid is not None}
-        
-        # Create mask for actual special tokens only
-        spec = torch.zeros_like(input_ids, dtype=torch.bool)
-        for tid in special_token_ids:
-            spec |= (input_ids == tid)
-        
-        # Mask only actual special tokens, preserve Arabic text tokens
-        labels[spec] = IGNORE_INDEX
-
-    # 🚨 CRITICAL: Ensure >= min_tokens_per_sample supervised tokens (esp. for Arabic)
-    per_sample = (labels != IGNORE_INDEX).sum(dim=1)
+    
+    # Get structural token IDs
+    im_start_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
+    im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>") 
+    audio_in_id = tokenizer.convert_tokens_to_ids("<|AUDIO|>")
+    audio_out_id = tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>")
+    system_id = tokenizer.convert_tokens_to_ids("system")
+    user_id = tokenizer.convert_tokens_to_ids("user")
+    assistant_id = tokenizer.convert_tokens_to_ids("assistant")
+    
+    structural_tokens = {
+        im_start_id, im_end_id, audio_in_id, audio_out_id,
+        system_id, user_id, assistant_id,
+        tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id
+    }
+    structural_tokens = {tid for tid in structural_tokens if tid is not None}
+    
+    # Parse ChatML and supervise content spans
     for b in range(B):
-        if per_sample[b].item() < min_tokens_per_sample:
-            # Unmask earliest non-special tokens until threshold is met
-            ids = input_ids[b]
-            if mask_special:
-                mask_row = spec[b]
+        # Start by masking all structural tokens
+        for t in range(T-1):  # Skip last position (already -100)
+            if input_ids[b, t].item() in structural_tokens:
+                labels[b, t] = IGNORE_INDEX
+        
+        # Find content spans between <|im_start|>role\n and <|im_end|>
+        ids = input_ids[b].tolist()
+        content_positions = []
+        
+        i = 0
+        while i < len(ids) - 1:
+            # Look for <|im_start|>
+            if ids[i] == im_start_id and i+1 < len(ids):
+                # Skip role token (system/user/assistant)
+                role_pos = i + 1
+                if ids[role_pos] in {system_id, user_id, assistant_id}:
+                    # Look for newline or start of content (role_pos + 1)
+                    content_start = role_pos + 1
+                    
+                    # Find corresponding <|im_end|>
+                    content_end = content_start
+                    while content_end < len(ids) and ids[content_end] != im_end_id:
+                        content_end += 1
+                    
+                    # Supervise content tokens (skip system messages, supervise user/assistant)
+                    if ids[role_pos] in {user_id, assistant_id}:
+                        for pos in range(content_start, min(content_end, T-1)):
+                            if ids[pos] not in structural_tokens:
+                                content_positions.append(pos)
+                    
+                    i = content_end + 1
+                else:
+                    i += 1
             else:
-                mask_row = torch.zeros_like(ids, dtype=torch.bool)
-            candidates = (~mask_row).nonzero(as_tuple=False).squeeze(-1)
-            # Always skip the first position (no shifted target for pos 0)
-            candidates = candidates[candidates > 0]
-            need = min_tokens_per_sample - per_sample[b].item()
-            if need > 0 and len(candidates) > 0:
-                take = candidates[:need]
-                labels[b, take] = input_ids[b, take]
-                logger.debug(f"📊 FIXED: Sample {b} text supervision {per_sample[b].item()} → {(labels[b] != IGNORE_INDEX).sum().item()} tokens")
-
+                i += 1
+        
+        # Ensure all content positions are supervised
+        for pos in content_positions:
+            if pos < T-1:  # Don't override last position
+                labels[b, pos] = input_ids[b, pos]
+    
+    # Audit supervision and enforce minimum
+    total_supervised = (labels != IGNORE_INDEX).sum().item()
+    total_possible = B * (T - 1)
+    logger.info(f"📊 CHATML TEXT SUPERVISION: {total_supervised}/{total_possible} tokens ({100*total_supervised/total_possible:.1f}%)")
+    
+    for b in range(B):
+        supervised = (labels[b] != IGNORE_INDEX).sum().item()
+        logger.info(f"📊 Sample {b}: {supervised} content tokens ({'✅' if supervised >= min_tokens_per_sample else '❌'} min {min_tokens_per_sample})")
+        
+        # If below minimum, unmask additional non-structural tokens
+        if supervised < min_tokens_per_sample:
+            need = min_tokens_per_sample - supervised
+            # Find masked non-structural positions
+            candidates = []
+            for t in range(T-1):
+                if labels[b, t] == IGNORE_INDEX and input_ids[b, t].item() not in structural_tokens:
+                    candidates.append(t)
+            
+            if len(candidates) > 0:
+                take = min(need, len(candidates))
+                for i in range(take):
+                    labels[b, candidates[i]] = input_ids[b, candidates[i]]
+                logger.info(f"📊 ENFORCED: Sample {b} {supervised} → {(labels[b] != IGNORE_INDEX).sum().item()} tokens")
+        
+        # Decode first few supervised tokens for audit
+        supervised_tokens = []
+        for t in range(min(40, T)):
+            if labels[b, t] != IGNORE_INDEX:
+                supervised_tokens.append(input_ids[b, t].item())
+        
+        if len(supervised_tokens) > 0:
+            try:
+                decoded = tokenizer.decode(supervised_tokens[:20], skip_special_tokens=False)
+                logger.info(f"📊 Sample {b} supervised preview: {repr(decoded)}")
+            except:
+                logger.info(f"📊 Sample {b} supervised token IDs: {supervised_tokens[:10]}")
+    
     return labels
+
+
+def apply_eos_mask(labels, eos_id):
+    """Helper to mask EOS tokens from labels"""
+    labels_masked = labels.clone()
+    labels_masked[labels_masked == eos_id] = IGNORE_INDEX
+    return labels_masked
+
+
+def audit_lora_gradients(model):
+    """Audit LoRA A and B gradient norms to ensure both are trainable"""
+    lora_a_norms = []
+    lora_b_norms = []
+    
+    for name, param in model.named_parameters():
+        if 'lora_A' in name and param.grad is not None:
+            lora_a_norms.append(param.grad.norm().item())
+        elif 'lora_B' in name and param.grad is not None:
+            lora_b_norms.append(param.grad.norm().item())
+    
+    avg_a = sum(lora_a_norms) / len(lora_a_norms) if lora_a_norms else 0.0
+    avg_b = sum(lora_b_norms) / len(lora_b_norms) if lora_b_norms else 0.0
+    
+    logger.info(f"🔍 LoRA Audit: A avg={avg_a:.4e} ({len(lora_a_norms)} params), B avg={avg_b:.4e} ({len(lora_b_norms)} params)")
+    
+    if avg_a < 1e-8:
+        logger.warning("⚠️  LoRA A gradients are near-zero! Check if A adapters are frozen.")
+    if avg_b < 1e-8:
+        logger.warning("⚠️  LoRA B gradients are near-zero! Check if B adapters are frozen.")
+    
+    return avg_a, avg_b
+
+
+def audit_step_diagnostics(step, model_outputs, batch, tokenizer, device, eos_id=1025):
+    """Comprehensive step-level diagnostics as requested"""
+    diagnostics = {}
+    
+    # 1. Text mask audit
+    input_ids = batch.input_ids.to(device)
+    text_labels = build_text_labels_chatml(input_ids, tokenizer, device, min_tokens_per_sample=64)
+    
+    per_sample_supervised = []
+    for b in range(text_labels.shape[0]):
+        count = (text_labels[b] != IGNORE_INDEX).sum().item()
+        per_sample_supervised.append(count)
+    
+    diagnostics['text_supervised_min'] = min(per_sample_supervised)
+    diagnostics['text_supervised_mean'] = sum(per_sample_supervised) / len(per_sample_supervised)
+    diagnostics['text_supervised_max'] = max(per_sample_supervised)
+    
+    # 2. EOS audit in audio labels  
+    if hasattr(batch, 'audio_out_ids'):
+        audio_labels = batch.audio_out_ids.to(device)
+        eos_count = (audio_labels == eos_id).sum().item()
+        non_ignore_count = (audio_labels != IGNORE_INDEX).sum().item()
+        diagnostics['audio_eos_in_labels'] = eos_count
+        diagnostics['audio_non_ignore'] = non_ignore_count
+        
+        if eos_count > 0:
+            logger.warning(f"⚠️  Step {step}: {eos_count} EOS tokens found in audio labels (should be 0 after masking)")
+    
+    # 3. Content token decoding audit (first sample)
+    if text_labels.shape[0] > 0:
+        supervised_tokens = []
+        for t in range(min(30, text_labels.shape[1])):
+            if text_labels[0, t] != IGNORE_INDEX:
+                supervised_tokens.append(input_ids[0, t].item())
+        
+        if supervised_tokens:
+            try:
+                decoded = tokenizer.decode(supervised_tokens[:15], skip_special_tokens=False)
+                logger.info(f"📊 Step {step} content sample: {repr(decoded)}")
+            except:
+                logger.info(f"📊 Step {step} content token IDs: {supervised_tokens[:10]}")
+    
+    return diagnostics
 
 
 def compute_higgs_losses(model_outputs, batch, tokenizer, device, lambda_text=0.1):
@@ -204,10 +338,9 @@ def compute_higgs_losses(model_outputs, batch, tokenizer, device, lambda_text=0.
 
         # Shift for next-token prediction
         text_logits = text_logits[:, :-1, :].contiguous()
-        text_labels = build_text_labels(
+        text_labels = build_text_labels_chatml(
             input_ids, tokenizer, device,
-            mask_special=True,
-            min_tokens_per_sample=32,   # KEY: ensure Arabic actually gets supervised
+            min_tokens_per_sample=64,   # KEY: ensure Arabic content gets supervised
         )[:, :-1].contiguous()
 
         text_loss = F.cross_entropy(
@@ -1138,8 +1271,23 @@ def main():
                 # Backward pass
                 accelerator.backward(loss)
                 
-                # CRITICAL DIAGNOSTIC: Check LoRA gradient norms every 50 steps
+                # SURGICAL FIX C: LoRA gradient audit (after backward, before optimizer step)
                 if step % 50 == 0:
+                    audit_lora_gradients(model)
+                
+                # SURGICAL FIX F: Comprehensive step diagnostics
+                if step % 20 == 0:  # Every 20 steps for key diagnostics
+                    step_diag = audit_step_diagnostics(step, outputs, batch, tokenizer, device, eos_id=1025)
+                    
+                    # Log key diagnostic results
+                    logger.info(f"🔍 STEP {step} DIAGNOSTICS:")
+                    logger.info(f"  Text supervised: min={step_diag['text_supervised_min']}, mean={step_diag['text_supervised_mean']:.1f}, max={step_diag['text_supervised_max']}")
+                    
+                    if 'audio_eos_in_labels' in step_diag:
+                        logger.info(f"  EOS in audio labels: {step_diag['audio_eos_in_labels']}/{step_diag['audio_non_ignore']} ({'❌ SHOULD BE 0' if step_diag['audio_eos_in_labels'] > 0 else '✅'})")
+                
+                # LEGACY: Detailed LoRA gradient logging for first few steps
+                if step < 5 or step % 100 == 0:  # Detailed logging early + periodic
                     total_lora_grad_norm = 0.0
                     lora_param_count = 0
                     for n, p in model.named_parameters():
@@ -1147,7 +1295,8 @@ def main():
                             grad_norm = p.grad.data.float().norm().item()
                             # Focus on LoRA targets
                             if any(k in n for k in ['self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj', 'self_attn.o_proj', 'audio_lm_head', 'audio_mlp']):
-                                logger.info(f"🔍 Grad ||{n}|| = {grad_norm:.4e}")
+                                if step < 5:  # Detailed early logging
+                                    logger.info(f"🔍 Grad ||{n}|| = {grad_norm:.4e}")
                                 total_lora_grad_norm += grad_norm
                                 lora_param_count += 1
                     
