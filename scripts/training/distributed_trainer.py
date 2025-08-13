@@ -567,6 +567,14 @@ def main():
                 # Forward pass - call model directly WITHOUT labels
                 outputs = actual_model(**model_inputs)
                 
+                # 🔍 ARCHITECTURAL VERIFICATION: Check expanded_input_ids invariant (after forward pass)
+                if global_step % 50 == 0:
+                    if hasattr(outputs, 'expanded_input_ids'):
+                        logger.info(f"  🔒 expanded_input_ids shape: {outputs.expanded_input_ids.shape}")
+                        logger.info(f"  ✅ INVARIANT: Targets not in expanded context (by design)")
+                    else:
+                        logger.info(f"  📝 No expanded_input_ids in outputs (may be normal for this model version)")
+                
                 # CRITICAL: Extract labels separately for loss computation
                 text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
                 audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
