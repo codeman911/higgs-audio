@@ -34,7 +34,7 @@ from peft.utils import get_peft_model_state_dict
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioForCausalLM
+from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioModel
 from boson_multimodal.audio_processing.higgs_audio_tokenizer import HiggsAudioTokenizer
 
 
@@ -82,7 +82,7 @@ def load_base_model(model_path: str, logger: logging.Logger, device: str = "auto
     
     try:
         # Load with automatic device placement
-        model = HiggsAudioForCausalLM.from_pretrained(
+        model = HiggsAudioModel.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
             device_map=device,
@@ -189,11 +189,11 @@ This model was fine-tuned using LoRA (Low-Rank Adaptation) and merged back to th
 
 ```python
 from transformers import AutoTokenizer
-from boson_multimodal.model.higgs_audio import HiggsAudioForCausalLM
+from boson_multimodal.model.higgs_audio import HiggsAudioModel
 from boson_multimodal.audio_processing import HiggsAudioTokenizer
 
 # Load the merged model
-model = HiggsAudioForCausalLM.from_pretrained(
+model = HiggsAudioModel.from_pretrained(
     "{output_dir}",
     torch_dtype=torch.bfloat16,
     device_map="auto"
@@ -247,7 +247,7 @@ def verify_merged_model(output_dir: str, logger: logging.Logger):
     
     try:
         # Load the saved model
-        test_model = HiggsAudioForCausalLM.from_pretrained(
+        test_model = HiggsAudioModel.from_pretrained(
             output_dir,
             torch_dtype=torch.bfloat16,
             device_map="cpu"  # Load on CPU for verification
