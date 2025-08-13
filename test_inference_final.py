@@ -286,22 +286,46 @@ class FinalInferenceTest:
             try:
                 sample_id = f"sample_{i:08d}"
                 
-                # Convert ChatML to proper Message format first
-                messages, audio_ids = self.convert_chatml_to_messages(sample)
-                
-                # Extract text from the messages we just created (no duplication)
-                target_text = ""
-                for msg in messages:
-                    if msg.role == "user" and hasattr(msg.content, '__iter__'):
-                        for content_item in msg.content:
-                            if hasattr(content_item, 'text'):
-                                target_text = content_item.text
-                                break
-                        if target_text:
-                            break
-                
+                # Extract target text from ChatML first (separate from audio processing)
+                target_text = self.extract_target_text_from_chatml(sample)
                 logger.info(f"Sample ID: {sample_id}")
                 logger.info(f"Target text: {target_text[:100]}...")
+                
+                # Create messages with ONLY system + reference audio (NO target text)
+                # This follows the official pipeline pattern: messages = context, chunked_text = target
+                audio_ids = []
+                messages = []
+                
+                # Add system message
+                system_content = "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+                messages.append(Message(role="system", content=system_content))
+                
+                # Extract and process reference audio from ChatML
+                chatml_messages = sample.get('messages', [])
+                for msg in chatml_messages:
+                    if msg.get('role') == 'user':
+                        content = msg.get('content', [])
+                        if isinstance(content, list):
+                            for item in content:
+                                if item.get('type') == 'audio':
+                                    audio_url = item.get('audio_url', '')
+                                    if audio_url and os.path.exists(audio_url):
+                                        try:
+                                            logger.info(f"Loading reference audio: {audio_url}")
+                                            
+                                            # Convert MP3 to WAV if needed
+                                            wav_audio_url = self.convert_mp3_to_wav(audio_url)
+                                            
+                                            # Tokenize reference audio for audio_ids
+                                            ref_audio_tokens = self.audio_tokenizer.encode(wav_audio_url)
+                                            logger.info(f"✅ Reference audio tokenized: {ref_audio_tokens.shape}")
+                                            
+                                            # Add to audio_ids for generation (no messages modification)
+                                            audio_ids.append(ref_audio_tokens)
+                                            
+                                        except Exception as e:
+                                            logger.error(f"❌ Error processing reference audio {audio_url}: {str(e)}")
+                                            continue
                 
                 if not audio_ids:
                     logger.warning("⚠️ No reference audio available, performing text-only generation")
@@ -311,8 +335,8 @@ class FinalInferenceTest:
                     logger.info("🎯 Performing zero-shot voice cloning with reference audio")
                     generation_type = "voice_cloning"
                 
-                # CORRECT FIX: Extract text from messages and chunk it for generation
-                # This avoids duplication while providing required chunked_text
+                # CORRECT ARCHITECTURE: Target text goes ONLY to chunked_text (official pattern)
+                # messages = system + audio context, chunked_text = target text
                 chunked_text = self.chunk_text_for_generation(target_text)
                 logger.info(f"Text chunks: {len(chunked_text)} chunks")
                 for i, chunk in enumerate(chunked_text):
@@ -320,9 +344,9 @@ class FinalInferenceTest:
                 
                 logger.info("🚀 Starting generation...")
                 waveform, sample_rate, generated_text = self.model_client.generate(
-                    messages=messages,
+                    messages=messages,  # System + reference audio context ONLY
                     audio_ids=audio_ids,
-                    chunked_text=chunked_text,  # Proper chunked text from messages
+                    chunked_text=chunked_text,  # Target text ONLY - no duplication!
                     generation_chunk_buffer_size=128,  # Official parameter for long texts
                     temperature=0.6,  # Lower temperature for more faithful text reading
                     top_k=40,  # Official parameter
