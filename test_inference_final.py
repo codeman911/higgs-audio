@@ -85,6 +85,31 @@ class FinalInferenceTest:
         except:
             return audio_path  # Use original on error
 
+    def chunk_text_for_generation(self, text: str) -> List[str]:
+        """Split text into chunks for better pronunciation and pacing."""
+        import re
+        
+        # Split on Arabic and English punctuation
+        # Pattern matches: . ! ? ، (Arabic comma) ؛ (Arabic semicolon) ؟ (Arabic question mark)
+        sentences = re.split(r'([.!?،؛؟]+)', text)
+        
+        # Combine sentence with its punctuation and filter empty chunks
+        chunked_text = []
+        for i in range(0, len(sentences), 2):
+            if i + 1 < len(sentences):
+                chunk = (sentences[i] + sentences[i + 1]).strip()
+            else:
+                chunk = sentences[i].strip()
+            
+            if chunk:
+                chunked_text.append(chunk)
+        
+        # If no chunks or only one very short chunk, return original text
+        if not chunked_text or (len(chunked_text) == 1 and len(chunked_text[0]) < 10):
+            return [text]
+        
+        return chunked_text
+
     def load_chatml_samples(self, json_file: str, max_samples: int = 10, seed: Optional[int] = None) -> List[Dict]:
         """Load ChatML samples from JSON file with robust structure handling and shuffling."""
         logger.info(f"Loading ChatML samples from: {json_file}")
@@ -264,7 +289,11 @@ class FinalInferenceTest:
                 # Extract target text from ChatML structure
                 target_text = self.extract_target_text_from_chatml(sample)
                 logger.info(f"Sample ID: {sample_id}")
-                logger.info(f"Target text: {target_text[:100]}...")
+                logger.info(f"Original text: {target_text[:100]}...")
+                
+                # Normalize Arabic/multilingual text for better TTS
+                normalized_text = self.normalize_arabic_text(target_text)
+                logger.info(f"Normalized text: {normalized_text[:100]}...")
                 
                 # Convert ChatML to proper Message format
                 messages, audio_ids = self.convert_chatml_to_messages(sample)
@@ -272,24 +301,28 @@ class FinalInferenceTest:
                 if not audio_ids:
                     logger.warning("⚠️ No reference audio available, performing text-only generation")
                     generation_type = "text_to_speech"
+                    audio_ids = None  # Use None instead of empty list
                 else:
                     logger.info("🎯 Performing zero-shot voice cloning with reference audio")
                     generation_type = "voice_cloning"
                 
-                # Prepare chunked text
-                chunked_text = [target_text] if target_text else ["Hello, this is a test."]
+                # Prepare chunked text for better pronunciation
+                chunked_text = self.chunk_text_for_generation(normalized_text)
+                logger.info(f"Text chunks: {len(chunked_text)} chunks")
+                for i, chunk in enumerate(chunked_text):
+                    logger.info(f"  Chunk {i+1}: {chunk[:50]}...")
                 
-                # Generate audio
+                # Generate audio using official pipeline parameters
                 logger.info("🚀 Starting generation...")
                 waveform, sample_rate, generated_text = self.model_client.generate(
                     messages=messages,
                     audio_ids=audio_ids,
                     chunked_text=chunked_text,
-                    generation_chunk_buffer_size=None,
-                    temperature=0.7,
-                    top_k=50,
-                    top_p=0.95,
-                    ras_win_len=7,
+                    generation_chunk_buffer_size=128,  # Official parameter for long texts
+                    temperature=0.6,  # Lower temperature for more faithful text reading
+                    top_k=40,  # Official parameter
+                    top_p=0.9,  # Lower top_p for better text fidelity
+                    ras_win_len=7,  # Repetition-aware sampling
                     ras_win_max_num_repeat=2,
                     seed=42
                 )
