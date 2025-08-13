@@ -286,13 +286,22 @@ class FinalInferenceTest:
             try:
                 sample_id = f"sample_{i:08d}"
                 
-                # Extract target text from ChatML structure
-                target_text = self.extract_target_text_from_chatml(sample)
+                # Convert ChatML to proper Message format first
+                messages, audio_ids = self.convert_chatml_to_messages(sample)
+                
+                # Extract text from the messages we just created (no duplication)
+                target_text = ""
+                for msg in messages:
+                    if msg.role == "user" and hasattr(msg.content, '__iter__'):
+                        for content_item in msg.content:
+                            if hasattr(content_item, 'text'):
+                                target_text = content_item.text
+                                break
+                        if target_text:
+                            break
+                
                 logger.info(f"Sample ID: {sample_id}")
                 logger.info(f"Target text: {target_text[:100]}...")
-                
-                # Convert ChatML to proper Message format
-                messages, audio_ids = self.convert_chatml_to_messages(sample)
                 
                 if not audio_ids:
                     logger.warning("⚠️ No reference audio available, performing text-only generation")
@@ -302,13 +311,18 @@ class FinalInferenceTest:
                     logger.info("🎯 Performing zero-shot voice cloning with reference audio")
                     generation_type = "voice_cloning"
                 
-                # CRITICAL FIX: Use empty list for chunked_text to avoid duplication but prevent NoneType error
-                # The original issue was text duplication - messages already contain the text
+                # CORRECT FIX: Extract text from messages and chunk it for generation
+                # This avoids duplication while providing required chunked_text
+                chunked_text = self.chunk_text_for_generation(target_text)
+                logger.info(f"Text chunks: {len(chunked_text)} chunks")
+                for i, chunk in enumerate(chunked_text):
+                    logger.info(f"  Chunk {i+1}: {chunk[:50]}...")
+                
                 logger.info("🚀 Starting generation...")
                 waveform, sample_rate, generated_text = self.model_client.generate(
                     messages=messages,
                     audio_ids=audio_ids,
-                    chunked_text=[],  # Empty list to avoid text duplication but satisfy API
+                    chunked_text=chunked_text,  # Proper chunked text from messages
                     generation_chunk_buffer_size=128,  # Official parameter for long texts
                     temperature=0.6,  # Lower temperature for more faithful text reading
                     top_k=40,  # Official parameter
