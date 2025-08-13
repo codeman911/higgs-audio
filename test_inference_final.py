@@ -54,9 +54,14 @@ class FinalInferenceTest:
         )
         logger.info("Model loaded successfully!")
 
-    def load_chatml_samples(self, json_file: str, max_samples: int = 10) -> List[Dict]:
-        """Load ChatML samples from JSON file with robust structure handling."""
+    def load_chatml_samples(self, json_file: str, max_samples: int = 10, seed: Optional[int] = None) -> List[Dict]:
+        """Load ChatML samples from JSON file with robust structure handling and shuffling."""
         logger.info(f"Loading ChatML samples from: {json_file}")
+        
+        # Set random seed for reproducibility if provided
+        if seed is not None:
+            random.seed(seed)
+            logger.info(f"Using random seed: {seed}")
         
         with open(json_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -81,9 +86,18 @@ class FinalInferenceTest:
         if not samples:
             raise ValueError(f"No samples found in {json_file}")
         
-        # Randomly select samples
-        selected_samples = random.sample(samples, min(max_samples, len(samples)))
-        logger.info(f"Selected {len(selected_samples)} samples for testing")
+        # Explicitly shuffle the entire dataset first
+        samples_copy = samples.copy()  # Don't modify original list
+        random.shuffle(samples_copy)
+        logger.info(f"Shuffled {len(samples_copy)} samples")
+        
+        # Select the first max_samples after shuffling
+        if len(samples_copy) <= max_samples:
+            selected_samples = samples_copy
+        else:
+            selected_samples = samples_copy[:max_samples]
+        
+        logger.info(f"Selected {len(selected_samples)} samples for testing after shuffling")
         
         return selected_samples
 
@@ -336,6 +350,8 @@ def main():
                        help="Output directory for generated audio files")
     parser.add_argument("--num_samples", type=int, default=5,
                        help="Number of samples to test")
+    parser.add_argument("--seed", type=int, default=None,
+                       help="Random seed for reproducible sample selection (optional)")
     
     args = parser.parse_args()
     
@@ -355,7 +371,7 @@ def main():
         return
     
     # Load and test samples
-    samples = inference_test.load_chatml_samples(args.chatml_file, max_samples=args.num_samples)
+    samples = inference_test.load_chatml_samples(args.chatml_file, max_samples=args.num_samples, seed=args.seed)
     results = inference_test.test_final_inference(samples, output_dir=args.output_dir)
     
     logger.info("✅ Final inference test completed!")
