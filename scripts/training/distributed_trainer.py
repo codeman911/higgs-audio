@@ -891,6 +891,16 @@ def main():
                         shift_logits = text_logits[..., :-1, :].contiguous()
                         shift_labels = text_labels[..., 1:].contiguous()
                         
+                        # 🚨 CRITICAL: Compute text loss (was missing!)
+                        text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.1)
+                        text_loss = text_loss_fct(
+                            shift_logits.view(-1, shift_logits.size(-1)),
+                            shift_labels.view(-1)
+                        )
+                        
+                        # Weight text loss for Arabic learning
+                        weighted_text_loss = args.text_loss_weight * text_loss
+                        
                         # 🔍 CRITICAL: Debug text loss computation (like audio debugging)
                         if global_step % args.log_steps == 0:
                             with torch.no_grad():
