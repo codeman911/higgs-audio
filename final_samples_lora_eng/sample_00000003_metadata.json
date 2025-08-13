@@ -1,0 +1,10 @@
+{
+  "sample_id": "sample_00000003",
+  "target_text": "There'll be scattered clouds, with temperatures going between seventeen and negative one.",
+  "reference_audio": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000005_default_053b34e1.wav",
+  "generated_audio": "final_samples_lora_eng/sample_00000003_generated.wav",
+  "sampling_rate": 24000,
+  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nThere'll be scattered clouds, with temperatures going between seventeen and negative one.<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nThere'll be scattered clouds, with temperatures going between seventeen and negative one.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+  "generation_type": "voice_cloning",
+  "success": true
+}

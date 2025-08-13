@@ -1,0 +1,10 @@
+{
+  "sample_id": "sample_00000001",
+  "target_text": "Why is he ordering blueprints and chintz curtains?",
+  "reference_audio": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000007_default_e8ac4b80.wav",
+  "generated_audio": "final_samples_lora_eng/sample_00000001_generated.wav",
+  "sampling_rate": 24000,
+  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWhy is he ordering blueprints and chintz curtains?<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWhy is he ordering blueprints and chintz curtains?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+  "generation_type": "voice_cloning",
+  "success": true
+}
