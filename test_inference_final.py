@@ -302,18 +302,13 @@ class FinalInferenceTest:
                     logger.info("🎯 Performing zero-shot voice cloning with reference audio")
                     generation_type = "voice_cloning"
                 
-                # Prepare chunked text for better pronunciation (following original approach)
-                chunked_text = self.chunk_text_for_generation(target_text)
-                logger.info(f"Text chunks: {len(chunked_text)} chunks")
-                for i, chunk in enumerate(chunked_text):
-                    logger.info(f"  Chunk {i+1}: {chunk[:50]}...")
-                
-                # Generate audio using official pipeline parameters
+                # NOTE: Text is already in messages, no need for separate chunked_text
+                # The chunked_text parameter duplicates the text and causes confusion
                 logger.info("🚀 Starting generation...")
                 waveform, sample_rate, generated_text = self.model_client.generate(
                     messages=messages,
                     audio_ids=audio_ids,
-                    chunked_text=chunked_text,
+                    chunked_text=None,  # Let model use text from messages only
                     generation_chunk_buffer_size=128,  # Official parameter for long texts
                     temperature=0.6,  # Lower temperature for more faithful text reading
                     top_k=40,  # Official parameter
