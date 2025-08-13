@@ -326,6 +326,10 @@ class FinalInferenceTest:
 def main():
     """Main function with command line arguments."""
     parser = argparse.ArgumentParser(description="Final Zero-Shot Voice Cloning Inference Test")
+    parser.add_argument("--model_path", type=str, default="bosonai/higgs-audio-v2-generation-3B-base",
+                       help="Path to model (base model or merged LoRA model)")
+    parser.add_argument("--tokenizer_path", type=str, default="bosonai/higgs-audio-v2-tokenizer",
+                       help="Path to audio tokenizer")
     parser.add_argument("--chatml_file", type=str, default="test_processed/test_chatml_samples.json",
                        help="Path to ChatML samples JSON file")
     parser.add_argument("--output_dir", type=str, default="final_samples",
@@ -336,9 +340,14 @@ def main():
     args = parser.parse_args()
     
     logger.info("Starting Final Zero-Shot Voice Cloning Inference Test")
+    logger.info(f"Using model: {args.model_path}")
+    logger.info(f"Using tokenizer: {args.tokenizer_path}")
     
-    # Initialize inference test
-    inference_test = FinalInferenceTest()
+    # Initialize inference test with specified model
+    inference_test = FinalInferenceTest(
+        model_path=args.model_path,
+        tokenizer_path=args.tokenizer_path
+    )
     
     if not os.path.exists(args.chatml_file):
         logger.error(f"ChatML file not found: {args.chatml_file}")
