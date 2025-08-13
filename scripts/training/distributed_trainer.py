@@ -854,8 +854,8 @@ def main():
                         valid_mask = (labels_for_loss != -100)
                         
 
-                    elif audio_ce > 6.0:
-                        logger.warning(f"🚨 HIGH AUDIO CE ({audio_ce:.4f}) - Model struggling to learn audio")
+                    elif audio_loss.item() > 6.0:
+                        logger.warning(f"🚨 HIGH AUDIO CE ({audio_loss.item():.4f}) - Model struggling to learn audio")
                         
 
                 
