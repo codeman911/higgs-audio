@@ -466,8 +466,8 @@ def main():
                 
                 # Forward pass - map collator output to model input correctly
                 # The collator returns audio_in_wv but model expects audio_features
-                # CRITICAL FIX: Clean separation of model inputs (NO LABELS to model)
-                # This is the proper approach for zero-shot voice cloning training
+                # CRITICAL FIX: Remove TARGET AUDIO leakage - only pass reference audio to model input
+                # Target audio should NEVER be in model input - only in labels for loss computation
                 model_inputs = {
                     'input_ids': to_device(batch.input_ids),
                     'attention_mask': to_device(batch.attention_mask),
@@ -475,9 +475,10 @@ def main():
                     'audio_feature_attention_mask': to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
                     'audio_in_ids': to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
                     'audio_in_ids_start': to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
-                    'audio_out_ids': to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
-                    'audio_out_ids_start': to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
-                    'audio_out_ids_start_group_loc': to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
+                    # 🚨 CRITICAL FIX: REMOVED target audio leakage - these should NOT be in model input:
+                    # 'audio_out_ids': REMOVED - target audio codes leak into model input!
+                    # 'audio_out_ids_start': REMOVED - enables target audio access!  
+                    # 'audio_out_ids_start_group_loc': REMOVED - target audio metadata!
                 }
                 # Remove None values for clean forward pass
                 model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
@@ -789,6 +790,7 @@ def main():
                                         return tensor.to(device)
                                 return tensor
                             
+                            # 🚨 CRITICAL FIX: Remove target audio leakage in validation loop
                             model_inputs = {
                                 'input_ids': to_device(batch.input_ids),
                                 'attention_mask': to_device(batch.attention_mask),
@@ -796,9 +798,10 @@ def main():
                                 'audio_feature_attention_mask': to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
                                 'audio_in_ids': to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
                                 'audio_in_ids_start': to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
-                                'audio_out_ids': to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
-                                'audio_out_ids_start': to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
-                                'audio_out_ids_start_group_loc': to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
+                                # 🚨 CRITICAL FIX: REMOVED target audio leakage in validation:
+                                # 'audio_out_ids': REMOVED - target audio codes leak into model input!
+                                # 'audio_out_ids_start': REMOVED - enables target audio access!  
+                                # 'audio_out_ids_start_group_loc': REMOVED - target audio metadata!
                             }
                             model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                             
@@ -964,7 +967,7 @@ def main():
                                 return tensor.to(device)
                         return tensor
                     
-                    # CRITICAL FIX: Same proper approach for validation
+                    # 🚨 CRITICAL FIX: Remove target audio leakage in validation (final instance)
                     model_inputs = {
                         'input_ids': to_device(batch.input_ids),
                         'attention_mask': to_device(batch.attention_mask),
@@ -972,9 +975,10 @@ def main():
                         'audio_feature_attention_mask': to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
                         'audio_in_ids': to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
                         'audio_in_ids_start': to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
-                        'audio_out_ids': to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
-                        'audio_out_ids_start': to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,
-                        'audio_out_ids_start_group_loc': to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
+                        # 🚨 CRITICAL FIX: REMOVED final target audio leakage:
+                        # 'audio_out_ids': REMOVED - target audio codes leak into model input!
+                        # 'audio_out_ids_start': REMOVED - enables target audio access!  
+                        # 'audio_out_ids_start_group_loc': REMOVED - target audio metadata!
                     }
                     model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                     
