@@ -1,0 +1,882 @@
+[
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "مرحباً بكم في عالم التكنولوجيا الحديثة والذكاء الاصطناعي المتطور"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/aria.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "aria_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000001",
+      "ref_transcript": "",
+      "target_text": "مرحباً بكم في عالم التكنولوجيا الحديثة والذكاء الاصطناعي المتطور",
+      "test_type": "pure_arabic"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Welcome to the future of artificial intelligence and machine learning technologies"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/cartoon_female_arb.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 1,
+    "speaker": "cartoon_female_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000002",
+      "ref_transcript": "",
+      "target_text": "Welcome to the future of artificial intelligence and machine learning technologies",
+      "test_type": "pure_english"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "اليوم سنتحدث عن AI والـ machine learning في الشركات الحديثة"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/cossidy.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 2,
+    "speaker": "cossidy_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000003",
+      "ref_transcript": "",
+      "target_text": "اليوم سنتحدث عن AI والـ machine learning في الشركات الحديثة",
+      "test_type": "arabic_english_mixed"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "إن النجاح في الحياة يتطلب الصبر والمثابرة والعمل الجاد لتحقيق الأحلام"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/kid_Arb.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 3,
+    "speaker": "kid_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000004",
+      "ref_transcript": "",
+      "target_text": "إن النجاح في الحياة يتطلب الصبر والمثابرة والعمل الجاد لتحقيق الأحلام",
+      "test_type": "pure_arabic"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "The revolutionary breakthrough in quantum computing will transform our digital landscape forever"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/mad_sci_arb.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 4,
+    "speaker": "mad_sci_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000005",
+      "ref_transcript": "",
+      "target_text": "The revolutionary breakthrough in quantum computing will transform our digital landscape forever",
+      "test_type": "pure_english"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "نحن نعيش في عصر الـ digital transformation والـ cloud computing المتقدم"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/mona.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 5,
+    "speaker": "mona_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000006",
+      "ref_transcript": "",
+      "target_text": "نحن نعيش في عصر الـ digital transformation والـ cloud computing المتقدم",
+      "test_type": "arabic_english_mixed"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "الطبيعة مليئة بالجمال والأسرار التي تنتظر الاستكشاف والفهم العميق"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/aria.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 6,
+    "speaker": "aria_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000007",
+      "ref_transcript": "",
+      "target_text": "الطبيعة مليئة بالجمال والأسرار التي تنتظر الاستكشاف والفهم العميق",
+      "test_type": "pure_arabic"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Innovation drives progress and creates opportunities for sustainable economic growth worldwide"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/cartoon_female_arb.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 7,
+    "speaker": "cartoon_female_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000008",
+      "ref_transcript": "",
+      "target_text": "Innovation drives progress and creates opportunities for sustainable economic growth worldwide",
+      "test_type": "pure_english"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "في المستقبل سنرى robots متطورة تساعدنا في الـ daily tasks"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/cossidy.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 8,
+    "speaker": "cossidy_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000009",
+      "ref_transcript": "",
+      "target_text": "في المستقبل سنرى robots متطورة تساعدنا في الـ daily tasks",
+      "test_type": "arabic_english_mixed"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "العلم والمعرفة هما الطريق إلى التقدم والازدهار في جميع المجالات"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/kid_Arb.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 9,
+    "speaker": "kid_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000010",
+      "ref_transcript": "",
+      "target_text": "العلم والمعرفة هما الطريق إلى التقدم والازدهار في جميع المجالات",
+      "test_type": "pure_arabic"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Climate change requires immediate global action and innovative sustainable solutions"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/mad_sci_arb.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 10,
+    "speaker": "mad_sci_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000011",
+      "ref_transcript": "",
+      "target_text": "Climate change requires immediate global action and innovative sustainable solutions",
+      "test_type": "pure_english"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "التعليم الإلكتروني والـ online courses غيرت طريقة التعلم في العالم"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/mona.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 11,
+    "speaker": "mona_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000012",
+      "ref_transcript": "",
+      "target_text": "التعليم الإلكتروني والـ online courses غيرت طريقة التعلم في العالم",
+      "test_type": "arabic_english_mixed"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "الفن والثقافة يعكسان روح الشعوب وتاريخها عبر العصور المختلفة"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/aria.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 12,
+    "speaker": "aria_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000013",
+      "ref_transcript": "",
+      "target_text": "الفن والثقافة يعكسان روح الشعوب وتاريخها عبر العصور المختلفة",
+      "test_type": "pure_arabic"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Space exploration opens new frontiers and expands human understanding of the universe"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/cartoon_female_arb.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 13,
+    "speaker": "cartoon_female_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000014",
+      "ref_transcript": "",
+      "target_text": "Space exploration opens new frontiers and expands human understanding of the universe",
+      "test_type": "pure_english"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "الصحة النفسية مهمة جداً والـ mental health awareness ضروري للجميع"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/cossidy.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 14,
+    "speaker": "cossidy_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000015",
+      "ref_transcript": "",
+      "target_text": "الصحة النفسية مهمة جداً والـ mental health awareness ضروري للجميع",
+      "test_type": "arabic_english_mixed"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "الأسرة والمجتمع يشكلان الأساس القوي لبناء جيل واعٍ ومثقف"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/kid_Arb.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 15,
+    "speaker": "kid_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000016",
+      "ref_transcript": "",
+      "target_text": "الأسرة والمجتمع يشكلان الأساس القوي لبناء جيل واعٍ ومثقف",
+      "test_type": "pure_arabic"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Renewable energy technologies are revolutionizing power generation across developing nations"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/mad_sci_arb.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 16,
+    "speaker": "mad_sci_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000017",
+      "ref_transcript": "",
+      "target_text": "Renewable energy technologies are revolutionizing power generation across developing nations",
+      "test_type": "pure_english"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "السفر يوسع الآفاق والـ cultural exchange يثري الخبرات الإنسانية"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/mona.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 17,
+    "speaker": "mona_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000018",
+      "ref_transcript": "",
+      "target_text": "السفر يوسع الآفاق والـ cultural exchange يثري الخبرات الإنسانية",
+      "test_type": "arabic_english_mixed"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "الشباب هم أمل المستقبل وقادة التغيير في عالم سريع التطور"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/aria.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 18,
+    "speaker": "aria_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000019",
+      "ref_transcript": "",
+      "target_text": "الشباب هم أمل المستقبل وقادة التغيير في عالم سريع التطور",
+      "test_type": "pure_arabic"
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Biotechnology breakthroughs are creating unprecedented opportunities for medical advancement"
+          },
+          {
+            "type": "audio",
+            "audio_url": "VC_samples/cartoon_female_arb.mp3",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "audio_url": "",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 19,
+    "speaker": "cartoon_female_speaker",
+    "misc": {
+      "sample_id": "vc_sample_00000020",
+      "ref_transcript": "",
+      "target_text": "Biotechnology breakthroughs are creating unprecedented opportunities for medical advancement",
+      "test_type": "pure_english"
+    }
+  }
+]
