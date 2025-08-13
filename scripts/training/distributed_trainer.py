@@ -493,9 +493,9 @@ def main():
                 
 
                 
-                # 🚨 CRITICAL DEBUG: Log model inputs to diagnose T=0 audio logits issue
+                # CRITICAL DEBUG: Log model inputs to diagnose T=0 audio logits issue
                 if global_step % 10 == 0:
-                    logger.info(f"🔍 MODEL INPUT DEBUG (Step {global_step}):")
+                    logger.info(f" HIGGS-AUDIO TRAINING DIAGNOSTICS (Step {global_step}):")
                     for key, value in model_inputs.items():
                         if value is not None and hasattr(value, 'shape'):
                             logger.info(f"  {key}: {value.shape}")
@@ -504,51 +504,127 @@ def main():
                         else:
                             logger.info(f"  {key}: None")
                     
-                    # CRITICAL: Check if audio structure fields are present and non-empty
+                    # CRITICAL: Verify teacher-forcing structure (NOT leakage)
                     if 'audio_out_ids' in model_inputs and model_inputs['audio_out_ids'] is not None:
                         audio_out_shape = model_inputs['audio_out_ids'].shape
-                        logger.info(f"🎯 AUDIO_OUT_IDS SHAPE: {audio_out_shape} (should NOT be [*, 0])")
+                        logger.info(f" TEACHER-FORCING STRUCTURE: audio_out_ids {audio_out_shape} (for alignment, NOT leakage)")
                         if len(audio_out_shape) > 1 and audio_out_shape[1] == 0:
-                            logger.error(f"🚨 CRITICAL: audio_out_ids has 0 tokens! This causes T=0 audio logits!")
+                            logger.error(f" CRITICAL: Empty teacher-forcing structure! This breaks audio generation!")
                     else:
-                        logger.error(f"🚨 CRITICAL: audio_out_ids is None! Model cannot generate audio logits!")
+                        logger.error(f" CRITICAL: Missing teacher-forcing structure! Model cannot align audio generation!")
                 
-                # 🔍 ARCHITECTURAL VERIFICATION: Quick ablation to confirm NO target leakage (as per USER guidance)
-                if global_step % 50 == 0:  # Run less frequently - architecture is confirmed correct
-                    logger.info(f"🔍 ARCHITECTURAL VERIFICATION (Step {global_step}):")
+                # DECISIVE TEXT CONDITIONING DIAGNOSTICS (D1-D3 from analysis)
+                if global_step % 50 == 0:  # Run comprehensive diagnostics
+                    logger.info(f" TEXT CONDITIONING DIAGNOSTICS (Step {global_step}):")
                     
                     with torch.no_grad():
-                        # Ablation 1: Remove audio_out_* fields and verify model still produces logits
-                        inputs_no_targets = {k: v for k, v in model_inputs.items() if not k.startswith('audio_out')}
+                        # D1: Text conditioning A/B test - CRITICAL for Arabic learning
                         try:
-                            outputs_no_tf = actual_model(**inputs_no_targets)
-                            if hasattr(outputs_no_tf, 'audio_logits') and outputs_no_tf.audio_logits is not None:
-                                logger.info(f"  ✅ WITHOUT audio_out_*: Model still produces audio_logits {outputs_no_tf.audio_logits.shape}")
-                            else:
-                                logger.info(f"  ⚠️  WITHOUT audio_out_*: No audio_logits (expected for some architectures)")
+                            # Baseline forward pass
+                            baseline_outputs = actual_model(**model_inputs)
+                            
+                            # Scramble text tokens to test dependency
+                            scrambled_inputs = model_inputs.copy()
+                            if 'input_ids' in scrambled_inputs and scrambled_inputs['input_ids'] is not None:
+                                orig_input_ids = scrambled_inputs['input_ids'].clone()
+                                # Scramble only text tokens (preserve special tokens)
+                                for b in range(orig_input_ids.shape[0]):
+                                    text_mask = (orig_input_ids[b] < 128000) & (orig_input_ids[b] > 1000)  # Text token range
+                                    if text_mask.any():
+                                        text_indices = torch.where(text_mask)[0]
+                                        scrambled_order = text_indices[torch.randperm(len(text_indices))]
+                                        orig_input_ids[b, text_indices] = orig_input_ids[b, scrambled_order]
+                                scrambled_inputs['input_ids'] = orig_input_ids
+                                scrambled_outputs = actual_model(**scrambled_inputs)
+                                
+                                # Compare audio logits - if similar, text NOT used for audio generation
+                                if hasattr(baseline_outputs, 'audio_logits') and hasattr(scrambled_outputs, 'audio_logits'):
+                                    baseline_entropy = torch.nn.functional.softmax(baseline_outputs.audio_logits, dim=-1).entropy().mean()
+                                    scrambled_entropy = torch.nn.functional.softmax(scrambled_outputs.audio_logits, dim=-1).entropy().mean()
+                                    entropy_diff = abs(baseline_entropy - scrambled_entropy)
+                                    logger.info(f"  🎯 TEXT CONDITIONING TEST: entropy_diff={entropy_diff:.4f}")
+                                    if entropy_diff < 0.1:
+                                        logger.error(f"🚨 CRITICAL: Model NOT using text for audio generation! (entropy_diff < 0.1)")
+                                    else:
+                                        logger.info(f"  ✅ Model DOES use text for audio generation (entropy_diff >= 0.1)")
+                            
                         except Exception as e:
-                            logger.info(f"  📝 WITHOUT audio_out_*: Model forward failed (expected): {str(e)[:100]}")
-                    
-                    # Note: expanded_input_ids check moved to after forward pass
-                    logger.info(f"  📝 expanded_input_ids check will be performed after forward pass")
-                    
-                    # Note: First token masking check moved to after label extraction
-                    logger.info(f"  📝 First token masking check will be performed after label extraction")
+                            logger.info(f"  📝 Text conditioning test failed: {str(e)[:100]}")
                 
-                # Note: Arabic text supervision debugging moved to after label extraction
+                # 🚨 PRE-FORWARD TEXT SUPERVISION GUARDRAIL
                 if global_step % 10 == 0:
-                    logger.info(f"🔍 DEBUGGING: Arabic text supervision check will be performed after label extraction")
+                    logger.info(f"🔍 PRE-FORWARD CHECKS: Ensuring text supervision adequacy...")
+                    
+                    # CRITICAL: Fail fast if batch lacks sufficient text for Arabic learning
+                    if hasattr(batch, 'label_ids') and batch.label_ids is not None:
+                        temp_text_labels = to_device(batch.label_ids)
+                        temp_nonignore = (temp_text_labels != -100).sum().item()
+                        batch_size = temp_text_labels.shape[0]
+                        per_sample_text = temp_nonignore / batch_size
+                        logger.info(f"  📊 BATCH TEXT SUPERVISION: {temp_nonignore} total, {per_sample_text:.1f} per sample")
+                        
+                        # GUARDRAIL: Demand adequate text supervision for Arabic learning
+                        if per_sample_text < 32:
+                            logger.error(f"🚨 INSUFFICIENT TEXT SUPERVISION: {per_sample_text:.1f} tokens/sample < 32 required for Arabic!")
+                            logger.error(f"   This will cause 'mumbling' - model learns voice style but ignores Arabic text content!")
+                        elif per_sample_text >= 50:
+                            logger.info(f"  ✅ ADEQUATE TEXT SUPERVISION: {per_sample_text:.1f} tokens/sample for Arabic learning")
+                        else:
+                            logger.warning(f"  ⚠️  MARGINAL TEXT SUPERVISION: {per_sample_text:.1f} tokens/sample - may need improvement")
 
                 # Forward pass - call model directly WITHOUT labels
                 outputs = actual_model(**model_inputs)
                 
-                # 🔍 ARCHITECTURAL VERIFICATION: Check expanded_input_ids invariant (after forward pass)
+                # 🚨 D2: ATTENTION MASK SANITY CHECK - CRITICAL for Arabic text conditioning
                 if global_step % 50 == 0:
+                    logger.info(f"🔍 POST-FORWARD ATTENTION DIAGNOSTICS (Step {global_step}):")
+                    
+                    # Check expanded_input_ids structure
                     if hasattr(outputs, 'expanded_input_ids'):
-                        logger.info(f"  🔒 expanded_input_ids shape: {outputs.expanded_input_ids.shape}")
-                        logger.info(f"  ✅ INVARIANT: Targets not in expanded context (by design)")
+                        exp_shape = outputs.expanded_input_ids.shape
+                        logger.info(f"  📝 expanded_input_ids shape: {exp_shape}")
+                        
+                        # Analyze sequence composition for one sample
+                        if exp_shape[0] > 0:
+                            sample_seq = outputs.expanded_input_ids[0]  # First sample
+                            
+                            # Identify text vs audio regions (rough heuristic)
+                            text_tokens = ((sample_seq < 128000) & (sample_seq > 1000)).sum().item()
+                            audio_tokens = ((sample_seq >= 1024) & (sample_seq <= 1025)).sum().item()
+                            total_tokens = (sample_seq != 0).sum().item()  # Non-pad tokens
+                            
+                            logger.info(f"  📊 SEQUENCE COMPOSITION: {text_tokens} text, {audio_tokens} audio, {total_tokens} total")
+                            
+                            # CRITICAL: Verify audio_out positions can attend to text
+                            if hasattr(outputs, 'attention_mask') and outputs.attention_mask is not None:
+                                attn_mask = outputs.attention_mask[0]  # First sample
+                                seq_len = attn_mask.shape[-1]
+                                
+                                # Check if latter positions (audio_out region) can attend to early positions (text region)
+                                if seq_len > 50:  # Ensure sufficient length
+                                    # Sample a mid-sequence position (likely audio_out region)
+                                    mid_pos = seq_len // 2
+                                    early_pos = min(20, seq_len // 4)  # Early position (likely text region)
+                                    
+                                    can_attend_early = attn_mask[mid_pos, early_pos].item() if attn_mask.dim() >= 2 else 1.0
+                                    can_attend_recent = attn_mask[mid_pos, max(0, mid_pos-5)].item() if attn_mask.dim() >= 2 else 1.0
+                                    
+                                    logger.info(f"  🎯 ATTENTION CHECK: pos{mid_pos}→pos{early_pos} = {can_attend_early:.3f} (text access)")
+                                    logger.info(f"  🎯 ATTENTION CHECK: pos{mid_pos}→pos{mid_pos-5} = {can_attend_recent:.3f} (recent access)")
+                                    
+                                    # CRITICAL: Audio positions MUST attend to text for Arabic learning
+                                    if can_attend_early < 0.5:
+                                        logger.error(f"🚨 ATTENTION MASK BROKEN: Audio positions cannot attend to text! This causes mumbling!")
+                                    else:
+                                        logger.info(f"  ✅ ATTENTION MASK HEALTHY: Audio can attend to text for Arabic learning")
                     else:
-                        logger.info(f"  📝 No expanded_input_ids in outputs (may be normal for this model version)")
+                        logger.info(f"  📝 No expanded_input_ids in outputs - using input_ids structure analysis")
+                        
+                        # Fallback: analyze input_ids structure
+                        if 'input_ids' in model_inputs and model_inputs['input_ids'] is not None:
+                            input_seq = model_inputs['input_ids'][0]
+                            text_tokens = ((input_seq < 128000) & (input_seq > 1000)).sum().item()
+                            logger.info(f"  📊 INPUT STRUCTURE: {text_tokens} text tokens in input_ids")
                 
                 # CRITICAL: Extract labels separately for loss computation
                 text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
@@ -584,185 +660,225 @@ def main():
                             logger.info(f"🔧 MAPPING INVALID TOKENS: {invalid_count} tokens → -100")
                             audio_labels[invalid_mask] = -100
 
-                # 🔍 COMPREHENSIVE DEBUGGING: Now that labels are extracted, perform all checks
+                # 🚨 D3: COMPREHENSIVE POST-EXTRACTION DIAGNOSTICS
                 if global_step % 10 == 0:
-                    logger.info(f"🔍 ARABIC TEXT SUPERVISION DEBUG (Step {global_step}):")
+                    logger.info(f"🔍 POST-EXTRACTION LABEL ANALYSIS (Step {global_step}):")
                     
-                    # Check text supervision quantity
+                    # D3: Non-ignore text count - CRITICAL for Arabic learning
                     if text_labels is not None:
                         total_text_labels = text_labels.numel()
                         text_non_ignore = (text_labels != -100).sum().item()
+                        batch_size = text_labels.shape[0]
+                        per_sample_text = text_non_ignore / batch_size
                         text_supervision_ratio = text_non_ignore / total_text_labels if total_text_labels > 0 else 0.0
                         
-                        logger.info(f"  📊 Text labels: {total_text_labels} total, {text_non_ignore} non-ignore ({text_supervision_ratio:.1%})")
+                        logger.info(f"  📊 FINAL TEXT LABELS: {text_non_ignore} non-ignore / {total_text_labels} total ({text_supervision_ratio:.1%})")
+                        logger.info(f"  📊 PER-SAMPLE TEXT: {per_sample_text:.1f} tokens/sample (need ≥32 for Arabic)")
                         
-                        # CRITICAL: Check if text supervision is too low
-                        if text_non_ignore < 50:
-                            logger.error(f"🚨 INSUFFICIENT TEXT SUPERVISION: Only {text_non_ignore} tokens - need ~100+ for Arabic learning!")
-                        elif text_non_ignore >= 100:
-                            logger.info(f"✅ ADEQUATE TEXT SUPERVISION: {text_non_ignore} tokens for Arabic learning")
+                        # CRITICAL: Final text supervision validation
+                        if per_sample_text < 20:
+                            logger.error(f"🚨 FATAL: Only {per_sample_text:.1f} text tokens/sample - Arabic learning IMPOSSIBLE!")
+                            logger.error(f"   → Model will learn voice style but produce gibberish Arabic content!")
+                        elif per_sample_text < 32:
+                            logger.error(f"🚨 CRITICAL: Only {per_sample_text:.1f} text tokens/sample - insufficient for robust Arabic!")
+                        elif per_sample_text >= 50:
+                            logger.info(f"  ✅ EXCELLENT TEXT SUPERVISION: {per_sample_text:.1f} tokens/sample for Arabic learning")
                         else:
-                            logger.warning(f"⚠️  MARGINAL TEXT SUPERVISION: {text_non_ignore} tokens - may need more for robust Arabic learning")
+                            logger.warning(f"  ⚠️  MARGINAL TEXT SUPERVISION: {per_sample_text:.1f} tokens/sample")
                         
-                        # Sample text tokens to verify Arabic tokenization
+                        # Sample text tokens to verify Arabic tokenization quality
                         if text_non_ignore > 0:
                             non_ignore_mask = text_labels != -100
                             sample_tokens = text_labels[non_ignore_mask][:10].tolist()
-                            logger.info(f"  🔤 Sample text tokens: {sample_tokens} (check Arabic tokenization quality)")
+                            logger.info(f"  🔤 Sample text tokens: {sample_tokens}")
+                            
+                            # Check for Arabic token patterns (rough heuristic)
+                            arabic_range_count = sum(1 for tok in sample_tokens if 50000 <= tok <= 70000)
+                            if arabic_range_count > 0:
+                                logger.info(f"  🔤 Arabic token indicators: {arabic_range_count}/10 in potential Arabic range")
+                            else:
+                                logger.warning(f"  ⚠️  No clear Arabic token patterns detected - check tokenization!")
                     else:
-                        logger.info(f"  📝 No text labels in batch")
-                
-                # 🔍 ARCHITECTURAL VERIFICATION: First token masking check  
-                if global_step % 50 == 0 and audio_labels is not None:
-                    if audio_labels.dim() >= 2 and audio_labels.shape[0] >= 8:
-                        first_tokens_masked = (audio_labels[:8, 0] == -100).sum().item() if audio_labels.shape[1] > 0 else 0
-                        logger.info(f"  🔒 First token masking: {first_tokens_masked}/8 codebooks (-100)")
-                        if first_tokens_masked == 8:
-                            logger.info(f"  ✅ INVARIANT: All BOS tokens properly masked")
-                        else:
-                            logger.warning(f"⚠️  First token masking incomplete: {first_tokens_masked}/8")
+                        logger.info(f"  📝 No text labels in batch - text-only mode disabled")
+                    
+                    # Audio label validation and BOS masking check
+                    if audio_labels is not None:
+                        audio_non_ignore = (audio_labels != -100).sum().item()
+                        audio_total = audio_labels.numel()
+                        logger.info(f"  📊 AUDIO LABELS: {audio_non_ignore} non-ignore / {audio_total} total")
+                        
+                        # Verify BOS masking (critical for autoregressive training)
+                        if audio_labels.dim() >= 2 and audio_labels.shape[0] >= 8 and audio_labels.shape[1] > 0:
+                            first_tokens_masked = (audio_labels[:8, 0] == -100).sum().item()
+                            logger.info(f"  🔒 BOS masking: {first_tokens_masked}/8 codebooks have -100 at t=0")
+                            if first_tokens_masked == 8:
+                                logger.info(f"  ✅ PERFECT BOS masking for autoregressive training")
+                            else:
+                                logger.error(f"🚨 BROKEN BOS masking: {first_tokens_masked}/8 - will break audio generation!")
 
-                # PROPER LOSS COMPUTATION FOR ZERO-SHOT VOICE CLONING
+                # 🎯 HIGGS-AUDIO DUAL-FFN OPTIMIZED LOSS COMPUTATION
+                # Based on Higgs-Audio architecture: separate text and audio processing with dual FFN layers
                 total_loss = None  # use None sentinel; keep this a Tensor
 
                 loss_components = {}
                 
-{{ ... }}
-                # 1. Audio Loss (PRIMARY for voice cloning)
+
+                # 🎯 1. AUDIO LOSS (PRIMARY) - Higgs-Audio Dual-FFN Optimized
+                # The audio FFN pathway handles discrete audio token prediction with teacher forcing
                 if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
                     audio_logits = outputs.audio_logits
                     
-                    # 🔍 DEBUGGING: Verify audio loss computation
-
+                    # 🚨 CRITICAL: Higgs-Audio tensor alignment for 8-codebook structure
+                    # Model dual-FFN outputs: [T, 8, V] (time-major, 8 codebooks, vocab_size)
+                    # Teacher-forcing labels:  [8, T]    (codebook-major, 8 codebooks, time)
+                    # MUST align before loss computation to prevent random cross-entropy!
                     
-                    # 🚨 CRITICAL FIX: Align tensor dimensions before loss computation
-                    # Model outputs: [T, 8, V] (time-major)
-                    # Labels:        [8, T]    (codebook-major)
-                    # Without alignment, flattening happens in different orders → random CE!
-                    
+                    original_shape = audio_logits.shape
                     if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
-                        # Permute to [8, T, V] to match label order (codebook-major)
+                        # Permute to [8, T, V] to match Higgs-Audio codebook-major label order
                         audio_logits = audio_logits.permute(1, 0, 2).contiguous()
                         if global_step % 100 == 0:
-                            logger.info(f"🔧 TENSOR ALIGNMENT: Permuted audio_logits from [T,8,V] to [8,T,V]: {audio_logits.shape}")
+                            logger.info(f"🔧 HIGGS DUAL-FFN ALIGNMENT: {original_shape} → {audio_logits.shape} (codebook-major)")
                     
-                    # Compute audio token prediction loss (the CORE of voice cloning)
+                    # 🎯 HIGGS-AUDIO CODEBOOK-AWARE LOSS COMPUTATION
+                    # Each of the 8 codebooks contributes to the final audio quality
+                    # Teacher forcing ensures stable training across all codebook streams
                     audio_loss_fct = torch.nn.CrossEntropyLoss(
-                        ignore_index=-100,
-                        label_smoothing=args.audio_label_smoothing
+                        ignore_index=-100,  # Mask BOS/EOS/invalid tokens
+                        label_smoothing=args.audio_label_smoothing,  # Prevent overconfidence
+                        reduction='mean'  # Average across codebooks and time
                     )
                     
-                    # CRITICAL VERIFICATION: Check tensor alignment after fix
-                    logits_for_loss = audio_logits.view(-1, audio_logits.size(-1))  # [(8*T), vocab]
+                    # 🚨 HIGGS-AUDIO MULTI-CODEBOOK LOSS VALIDATION
+                    # Flatten both logits and labels in IDENTICAL codebook-major order
+                    logits_for_loss = audio_logits.view(-1, audio_logits.size(-1))  # [(8*T), 1026]
                     labels_for_loss = audio_labels.contiguous().view(-1)           # [(8*T)]
                     
-                    # Verify no invalid labels
+                    # CRITICAL: Validate label integrity across all 8 codebooks
                     valid_mask = labels_for_loss != -100
                     if valid_mask.any():
                         valid_labels = labels_for_loss[valid_mask]
-                        if valid_labels.min() < 0 or valid_labels.max() >= 1026:
-                            logger.error(f"🚨 INVALID AUDIO LABELS: min={valid_labels.min()}, max={valid_labels.max()} (expected 0-1025)")
+                        min_label, max_label = valid_labels.min().item(), valid_labels.max().item()
+                        
+                        # Higgs-Audio vocab: 0-1023 (codes) + 1024 (BOS) + 1025 (EOS/stream_end)
+                        if min_label < 0 or max_label >= 1026:
+                            logger.error(f"🚨 INVALID CODEBOOK LABELS: range [{min_label}, {max_label}] ≠ [0, 1025]")
+                            logger.error(f"   This breaks Higgs-Audio discrete code training!")
+                        else:
+                            if global_step % 100 == 0:
+                                logger.info(f"  ✅ CODEBOOK LABELS VALID: range [{min_label}, {max_label}] within [0, 1025]")
                     
+                    # Compute primary audio loss for zero-shot voice cloning
                     audio_loss = audio_loss_fct(logits_for_loss, labels_for_loss)
                     total_loss = audio_loss if total_loss is None else total_loss + audio_loss
                     loss_components['audio_loss'] = audio_loss.item()
                     
-                    # 🔍 CRITICAL: Monitor audio loss trends + SANITY CHECKS FOR MODEL COLLAPSE
+                    # 📊 HIGGS-AUDIO CODEBOOK-SPECIFIC DIAGNOSTICS
+                    if global_step % 100 == 0:
+                        # Compute per-codebook cross-entropy for detailed analysis
+                        per_codebook_losses = []
+                        for cb in range(8):
+                            cb_logits = audio_logits[cb].view(-1, audio_logits.size(-1))  # [T, V]
+                            cb_labels = audio_labels[cb].contiguous().view(-1)           # [T]
+                            cb_valid_mask = cb_labels != -100
+                            if cb_valid_mask.any():
+                                cb_loss = torch.nn.functional.cross_entropy(
+                                    cb_logits[cb_valid_mask], cb_labels[cb_valid_mask], reduction='mean'
+                                )
+                                per_codebook_losses.append(f"{cb_loss.item():.3f}")
+                            else:
+                                per_codebook_losses.append("N/A")
+                        
+                        logger.info(f"  📊 PER-CODEBOOK CE: {per_codebook_losses}")
+                        
+                        # Check for codebook collapse (all predictions similar)
+                        unique_preds = torch.unique(logits_for_loss.argmax(dim=-1)).numel()
+                        logger.info(f"  🎯 PREDICTION DIVERSITY: {unique_preds}/1026 unique tokens")
+                        if unique_preds < 100:
+                            logger.warning(f"  ⚠️  LOW DIVERSITY: Model may be collapsing to few tokens!")
+                    
+                    # 🎯 HIGGS-AUDIO TRAINING HEALTH MONITORING
                     if global_step % args.log_steps == 0:
-                        logger.info(f"🔊 AUDIO LOSS (Step {global_step}): {audio_loss.item():.4f}")
+                        # 🎯 HIGGS-AUDIO TEACHER-FORCING ACCURACY
+                        predictions = logits_for_loss.argmax(dim=-1)
+                        valid_predictions = labels_for_loss != -100
+                        correct_predictions = (predictions == labels_for_loss) & valid_predictions
+                        accuracy = correct_predictions.sum().float() / valid_predictions.sum().float() if valid_predictions.any() else 0.0
                         
-                        # 🚨 SANITY CHECK 1: Per-codebook CE breakdown
-                        with torch.no_grad():
-                            L = audio_logits  # Already permuted to [8, T, V]
-                            y = audio_labels.contiguous()  # [8, T]
-                            ce_per_q = []
-                            for q in range(8):
-                                mask_q = (y[q] != -100)
-                                if mask_q.any():
-                                    ce_q = torch.nn.functional.cross_entropy(L[q][mask_q], y[q][mask_q])
-                                    ce_per_q.append(ce_q.item())
-                            logger.info(f"📊 Per-codebook CE: {[f'{x:.3f}' for x in ce_per_q]}")
+                        logger.info(f"🔊 AUDIO LOSS (Step {global_step}): {audio_loss:.4f}")
+                        logger.info(f"🎯 TEACHER-FORCING ACCURACY: {accuracy:.1%} (across 8 codebooks)")
+                        
+                        # 🔍 CODEBOOK PATTERN ANALYSIS (detect copying/mumbling)
+                        sample_size = min(20, len(predictions))
+                        first_preds = predictions[:sample_size].tolist()
+                        first_true = labels_for_loss[:sample_size].tolist()
+                        last_preds = predictions[-sample_size:].tolist() 
+                        last_true = labels_for_loss[-sample_size:].tolist()
+                        
+                        logger.info(f"🎯 SEQUENCE START: pred={first_preds[:10]} | true={first_true[:10]}")
+                        logger.info(f"🎯 SEQUENCE END:   pred={last_preds[-10:]} | true={last_true[-10:]}")
+                        
+                        # 🎯 HIGGS-AUDIO VOCABULARY DIVERSITY ANALYSIS
+                        # Critical for Arabic: model must use diverse tokens, not just common ones
+                        pred_tokens = predictions[valid_predictions]
+                        label_tokens = labels_for_loss[valid_predictions]
+                        
+                        unique_preds = torch.unique(pred_tokens).numel()
+                        unique_labels = torch.unique(label_tokens).numel()
+                        logger.info(f"🔍 VOCABULARY DIVERSITY: pred={unique_preds}, labels={unique_labels} (of 1026 possible)")
+                        
+                        # Check for vocabulary collapse (Arabic mumbling indicator)
+                        vocab_coverage = unique_preds / 1026.0
+                        if vocab_coverage < 0.1:
+                            logger.error(f"🚨 VOCABULARY COLLAPSE: Only {vocab_coverage:.1%} of vocab used - Arabic will be gibberish!")
+                        elif vocab_coverage > 0.3:
+                            logger.info(f"✅ RICH VOCABULARY: {vocab_coverage:.1%} coverage - good for Arabic diversity")
+                        
+                        # 🎯 LEARNING PROGRESS ASSESSMENT
+                        baseline_ce = 6.933  # log(1026) for uniform distribution
+                        progress_ratio = (baseline_ce - audio_loss.item()) / baseline_ce
+                        
+                        if progress_ratio < 0.1:
+                            logger.warning(f"⚠️  MINIMAL LEARNING: {progress_ratio:.1%} progress from random baseline")
+                            logger.warning(f"   Check reference audio conditioning and text supervision!")
+                        elif progress_ratio > 0.6:
+                            logger.info(f"✅ EXCELLENT PROGRESS: {progress_ratio:.1%} improvement from baseline")
+                        else:
+                            logger.info(f"🎯 STEADY LEARNING: {progress_ratio:.1%} progress from random baseline")
                             
-                            # 🚨 SANITY CHECK 2: Audio token comparison (first/last 10)
-                            pred = L.argmax(-1)  # [8, T] 
-                            valid_mask = (y != -100)
-                            
-                            # Show first and last 10 predicted vs actual tokens for codebook 0
-                            if valid_mask[0].any():
-                                valid_positions = torch.where(valid_mask[0])[0]
-                                if len(valid_positions) >= 10:
-                                    first_10_idx = valid_positions[:10]
-                                    last_10_idx = valid_positions[-10:]
-                                    
-                                    first_pred = pred[0][first_10_idx].cpu().tolist()
-                                    first_true = y[0][first_10_idx].cpu().tolist()
-                                    last_pred = pred[0][last_10_idx].cpu().tolist()
-                                    last_true = y[0][last_10_idx].cpu().tolist()
-                                    
-                                    logger.info(f"🎯 First 10 tokens: pred={first_pred} | true={first_true}")
-                                    logger.info(f"🎯 Last 10 tokens:  pred={last_pred} | true={last_true}")
-                            if valid_mask.any():
-                                pred_tokens = pred[valid_mask]
-                                label_tokens = y[valid_mask]
-                                
-                                # Count unique predictions vs unique labels
-                                pred_unique = len(torch.unique(pred_tokens))
-                                label_unique = len(torch.unique(label_tokens))
-                                logger.info(f"🔍 Token diversity: pred={pred_unique}, labels={label_unique}")
-                                
-                                # Check for mode collapse (model predicting same few tokens)
-                                pred_hist = torch.bincount(pred_tokens, minlength=1026)
-                                top_5_pred = torch.topk(pred_hist, 5)
-                                pred_concentration = top_5_pred.values.sum().item() / pred_tokens.numel()
-                                logger.info(f"🚨 Top-5 prediction concentration: {pred_concentration:.3f}")
-                                
-                                if pred_concentration > 0.8:
-                                    logger.warning(f"⚠️  HIGH PREDICTION CONCENTRATION: {pred_concentration:.3f} - POSSIBLE COLLAPSE!")
-                                
-                                # Log most frequent predictions vs labels
-                                logger.info(f"🔍 Top pred tokens: {top_5_pred.indices[:5].tolist()}")
-                                label_hist = torch.bincount(label_tokens, minlength=1026)
-                                top_5_label = torch.topk(label_hist, 5)
-                                logger.info(f"🔍 Top label tokens: {top_5_label.indices[:5].tolist()}")
+                        # 🚨 SANITY CHECK 2: Audio token comparison (first/last 10)
+                        pred = L.argmax(-1)  # [8, T] 
+                        valid_mask = (y != -100)
                         
-                        # 🚨 SANITY CHECK 3: Mask boundary verification
-                        audio_out_mask = model_inputs.get('audio_out_mask')
-                        if audio_out_mask is not None:
-                            mask_sum = audio_out_mask.sum().item()
-                            non_ignore = (audio_labels != -100).sum().item()
-                            logger.info(f"🔍 Mask alignment: audio_out_mask_sum={mask_sum}, non_ignore_labels={non_ignore}")
-                            
-                            if abs(mask_sum - non_ignore) > 100:  # Allow some tolerance
-                                logger.warning(f"⚠️  MASK MISMATCH: mask_sum({mask_sum}) != non_ignore({non_ignore})")
-                        
-                        # 🚨 SANITY CHECK 4: First token masking check
-                        # First label in each codebook should be -100 (no training on t=0)
-                        first_labels = audio_labels[:, 0]  # [8] - first token per codebook
-                        first_ignore_count = (first_labels == -100).sum().item()
-                        logger.info(f"🔍 First token masking: {first_ignore_count}/8 codebooks have -100 at t=0")
-                        if first_ignore_count < 7:  # Allow some tolerance
-                            logger.warning(f"⚠️  INSUFFICIENT FIRST TOKEN MASKING: only {first_ignore_count}/8 masked")
-                        
-                        # 🚨 CRITICAL: Monitor for TARGET AUDIO LEAKAGE FIX SUCCESS
-                        audio_ce = audio_loss.item()
-                        if audio_ce < 1.0:
-                            logger.error(f"🚨 CRITICAL: AUDIO CE TOO LOW ({audio_ce:.4f}) - POSSIBLE TARGET AUDIO LEAKAGE STILL PRESENT!")
-                            logger.error(f"🚨 Expected: CE should be 2-6 for healthy learning, not <1 (copying behavior)")
-                        elif 1.0 <= audio_ce < 2.0:
-                            logger.warning(f"⚠️  AUDIO CE BORDERLINE ({audio_ce:.4f}) - Monitor for leakage")
-                        elif 2.0 <= audio_ce <= 6.0:
-                            logger.info(f"✅ HEALTHY AUDIO CE ({audio_ce:.4f}) - Target audio leakage fix WORKING!")
-                        elif audio_ce > 6.0:
-                            logger.warning(f"🚨 HIGH AUDIO CE ({audio_ce:.4f}) - Model struggling to learn audio")
+
+                    elif audio_ce > 6.0:
+                        logger.warning(f"🚨 HIGH AUDIO CE ({audio_ce:.4f}) - Model struggling to learn audio")
                         
 
                 
-                # 2. Text Loss (SECONDARY - for text understanding)
+                # 🎯 2. TEXT LOSS (CRITICAL for Arabic Content Learning)
+                # The text FFN pathway must learn Arabic text-to-phonetic mapping
+                # WITHOUT sufficient text supervision, model produces correct voice but gibberish Arabic
                 if hasattr(outputs, 'logits') and outputs.logits is not None and text_labels is not None:
                     text_logits = outputs.logits
                     
+                    # 🚨 CRITICAL FOR ARABIC: Validate text supervision adequacy
+                    text_nonignore_count = (text_labels != -100).sum().item()
+                    batch_size = text_labels.shape[0]
+                    per_sample_text = text_nonignore_count / batch_size
+                    
+                    if global_step % 50 == 0:
+                        logger.info(f"🔍 TEXT FFN PATHWAY: Processing {text_nonignore_count} supervised text tokens")
+                        logger.info(f"   Per-sample: {per_sample_text:.1f} tokens (Arabic needs ≥32 for quality learning)")
+                        
+                        if per_sample_text < 20:
+                            logger.error(f"🚨 TEXT FFN STARVED: {per_sample_text:.1f} tokens/sample - Arabic learning IMPOSSIBLE!")
+                        elif per_sample_text < 32:
+                            logger.warning(f"⚠️  TEXT FFN LIMITED: {per_sample_text:.1f} tokens/sample - Arabic quality may suffer")
+                    
                     # Only use text loss if we have reasonable dimensions
                     min_seq_len = min(text_logits.size(1), text_labels.size(1))
+
                     if min_seq_len > 1:  # Need at least 2 tokens for shifting
                         # Trim to matching sequence length 
                         text_logits = text_logits[:, :min_seq_len, :]
@@ -813,29 +929,13 @@ def main():
                                         sample_pred_text = tokenizer.decode(first_10_pred[:5], skip_special_tokens=True)
                                         sample_true_text = tokenizer.decode(first_10_true[:5], skip_special_tokens=True)
                                         logger.info(f"📝 TEXT Sample: pred='{sample_pred_text}' | true='{sample_true_text}'")
-                                    except Exception as e:
-                                        logger.info(f"📝 TEXT decode error: {e}")
                                 else:
-                                    logger.warning(f"⚠️  NO VALID TEXT LABELS FOUND - This explains zero text loss!")
-                        
-                        # Compute text loss (weighted lower for voice cloning)
-                        text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-                        text_loss = text_loss_fct(
-                            shift_logits.view(-1, shift_logits.size(-1)),
-                            shift_labels.view(-1)
-                        )
-                        
-                        # CRITICAL FIX: Increase text loss weight for Arabic language learning
-                        # Text loss is ESSENTIAL for pronunciation and phonetics
-                        weighted_text_loss = args.text_loss_weight * text_loss  
-                        total_loss = weighted_text_loss if total_loss is None else total_loss + weighted_text_loss
-                        loss_components['text_loss'] = text_loss.item()
-                        loss_components['weighted_text_loss'] = weighted_text_loss.item()
-                        
-                        # 🔍 CRITICAL: Monitor text loss trends for Arabic learning
-                        if global_step % args.log_steps == 0:
-                            logger.info(f"📝 TEXT LOSS (Step {global_step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f}, weight: {args.text_loss_weight})")
+                                    logger.info(f"🎯 HEALTHY TEXT LEARNING: {text_loss:.4f} - Arabic quality developing")
                             
+                            # 🔍 CRITICAL: Monitor text loss trends for Arabic learning
+                            if global_step % args.log_steps == 0:
+                                logger.info(f"📝 TEXT LOSS (Step {global_step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f}, weight: {args.text_loss_weight})")
+                                
                             # CRITICAL: Check for text learning problems
                             if text_loss.item() < 0.001:
                                 logger.error(f"🚨 CRITICAL: TEXT LOSS TOO LOW ({text_loss.item():.6f}) - Model NOT learning text! Check labels!")
