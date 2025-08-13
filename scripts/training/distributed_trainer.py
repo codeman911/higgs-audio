@@ -672,8 +672,51 @@ def main():
                         shift_logits = text_logits[..., :-1, :].contiguous()
                         shift_labels = text_labels[..., 1:].contiguous()
                         
-                        # 🔍 DEBUGGING: Verify text loss computation
-
+                        # 🔍 CRITICAL: Debug text loss computation (like audio debugging)
+                        if global_step % args.log_steps == 0:
+                            with torch.no_grad():
+                                # Text token analysis (similar to audio)
+                                text_pred = shift_logits.argmax(-1)  # [B, T-1]
+                                text_true = shift_labels  # [B, T-1]
+                                text_valid_mask = (text_true != -100)
+                                
+                                if text_valid_mask.any():
+                                    # Flatten for analysis
+                                    valid_pred = text_pred[text_valid_mask]
+                                    valid_true = text_true[text_valid_mask]
+                                    
+                                    # Show first 10 predicted vs actual text tokens
+                                    if len(valid_pred) >= 10:
+                                        first_10_pred = valid_pred[:10].cpu().tolist()
+                                        first_10_true = valid_true[:10].cpu().tolist()
+                                        logger.info(f"📝 TEXT First 10 tokens: pred={first_10_pred} | true={first_10_true}")
+                                        
+                                        # Show last 10 as well
+                                        last_10_pred = valid_pred[-10:].cpu().tolist()
+                                        last_10_true = valid_true[-10:].cpu().tolist()
+                                        logger.info(f"📝 TEXT Last 10 tokens:  pred={last_10_pred} | true={last_10_true}")
+                                    
+                                    # Token diversity check
+                                    pred_unique = len(torch.unique(valid_pred))
+                                    true_unique = len(torch.unique(valid_true))
+                                    logger.info(f"📝 TEXT Token diversity: pred={pred_unique}, labels={true_unique}")
+                                    
+                                    # Accuracy calculation
+                                    correct = (valid_pred == valid_true).sum().item()
+                                    total = len(valid_pred)
+                                    accuracy = correct / total if total > 0 else 0.0
+                                    logger.info(f"📝 TEXT Accuracy: {correct}/{total} = {accuracy:.4f} ({accuracy*100:.1f}%)")
+                                    
+                                    # Show actual text tokens if possible (decode a few)
+                                    try:
+                                        # Try to decode first few tokens to see actual text
+                                        sample_pred_text = tokenizer.decode(first_10_pred[:5], skip_special_tokens=True)
+                                        sample_true_text = tokenizer.decode(first_10_true[:5], skip_special_tokens=True)
+                                        logger.info(f"📝 TEXT Sample: pred='{sample_pred_text}' | true='{sample_true_text}'")
+                                    except Exception as e:
+                                        logger.info(f"📝 TEXT decode error: {e}")
+                                else:
+                                    logger.warning(f"⚠️  NO VALID TEXT LABELS FOUND - This explains zero text loss!")
                         
                         # Compute text loss (weighted lower for voice cloning)
                         text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
@@ -693,11 +736,19 @@ def main():
                         if global_step % args.log_steps == 0:
                             logger.info(f"📝 TEXT LOSS (Step {global_step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f}, weight: {args.text_loss_weight})")
                             
-                            # Check for text learning problems
-                            if text_loss.item() > 4.0:
+                            # CRITICAL: Check for text learning problems
+                            if text_loss.item() < 0.001:
+                                logger.error(f"🚨 CRITICAL: TEXT LOSS TOO LOW ({text_loss.item():.6f}) - Model NOT learning text! Check labels!")
+                            elif text_loss.item() > 4.0:
                                 logger.warning(f"🚨 HIGH TEXT LOSS: {text_loss.item():.4f} - Arabic pronunciation may be poor!")
-                            elif text_loss.item() < 1.5:
+                            elif text_loss.item() < 1.5 and text_loss.item() > 0.1:
                                 logger.info(f"✅ GOOD TEXT LOSS: {text_loss.item():.4f} - Language learning active!")
+                    else:
+                        if global_step % args.log_steps == 0:
+                            logger.warning(f"⚠️  NO TEXT LOSS: min_seq_len={min_seq_len} - Check text sequence lengths!")
+                else:
+                    if global_step % args.log_steps == 0:
+                        logger.warning(f"⚠️  NO TEXT LOGITS/LABELS: logits={hasattr(outputs, 'logits')}, labels={text_labels is not None}")
                 
                 # Final loss for backward pass
                 if total_loss is None:
