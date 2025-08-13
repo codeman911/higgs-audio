@@ -929,6 +929,8 @@ def main():
                                         sample_pred_text = tokenizer.decode(first_10_pred[:5], skip_special_tokens=True)
                                         sample_true_text = tokenizer.decode(first_10_true[:5], skip_special_tokens=True)
                                         logger.info(f"📝 TEXT Sample: pred='{sample_pred_text}' | true='{sample_true_text}'")
+                                    except Exception as e:
+                                        logger.info(f"📝 TEXT decode error: {e}")
                                 else:
                                     logger.info(f"🎯 HEALTHY TEXT LEARNING: {text_loss:.4f} - Arabic quality developing")
                             
