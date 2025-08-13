@@ -95,151 +95,143 @@ def build_no_leak_inputs(batch, tokenizer, device):
     # SANITY CHECK: DO NOT concatenate audio_out_ids to the text sequence.
     # expanded_input_ids must come from the model's internal builder,
     # not from us pre-concatenating targets.
-    logger.debug(f"🔒 NO-LEAK INPUTS: input_ids shape {inputs['input_ids'].shape if inputs['input_ids'] is not None else None}")
+    logger.debug(f" NO-LEAK INPUTS: input_ids shape {inputs['input_ids'].shape if inputs['input_ids'] is not None else None}")
     return inputs
 
 
-def build_text_labels_chatml(input_ids, tokenizer, device, min_tokens_per_sample=64):
+def find_assistant_content_spans(input_ids, tokenizer):
     """
-    ChatML-aware text label builder: supervise CONTENT spans, mask STRUCTURAL tokens.
+    SURGICAL FIX: Find the LAST assistant message span - this contains the Arabic response.
     
-    Strategy:
-    1. Parse ChatML structure: <|im_start|>role\ncontent<|im_end|>
-    2. SUPERVISE all content tokens inside user/assistant messages
-    3. MASK structural tokens: <|im_start|>, <|im_end|>, role tokens, audio markers
-    4. Enforce minimum content supervision per sample (≥64 tokens)
+    Returns:
+        List of (start_pos, end_pos) tuples for assistant content (excluding headers)
     """
-    B, T = input_ids.shape
-    # Shift like a decoder LM
-    labels = input_ids.clone()
-    labels[:, :-1] = input_ids[:, 1:]
-    labels[:, -1] = IGNORE_INDEX  # last token has no next token
+    ids = input_ids.tolist()
     
-    # Get structural token IDs - handle different ChatML formats
+    # Token IDs
     im_start_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
     im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>") 
-    audio_in_id = tokenizer.convert_tokens_to_ids("<|AUDIO|>")
-    audio_out_id = tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>")
-    
-    # Handle both standard ChatML and LLaMA-style headers
-    system_id = tokenizer.convert_tokens_to_ids("system")
-    user_id = tokenizer.convert_tokens_to_ids("user")
     assistant_id = tokenizer.convert_tokens_to_ids("assistant")
-    
-    # LLaMA-style header tokens
     start_header_id = tokenizer.convert_tokens_to_ids("<|start_header_id|>")
     end_header_id = tokenizer.convert_tokens_to_ids("<|end_header_id|>")
     eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
     
-    structural_tokens = {
-        im_start_id, im_end_id, audio_in_id, audio_out_id,
-        system_id, user_id, assistant_id,
-        start_header_id, end_header_id, eot_id,
-        tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id
-    }
-    structural_tokens = {tid for tid in structural_tokens if tid is not None}
+    spans = []
     
-    # CRITICAL FIX: Parse BOTH ChatML and LLaMA-style formats to find Arabic content
+    # Method 1: Standard ChatML <|im_start|>assistant\n...<|im_end|>
+    i = 0
+    while i < len(ids) - 1:
+        if ids[i] == im_start_id and i+1 < len(ids) and ids[i+1] == assistant_id:
+            # Found assistant block
+            content_start = i + 2  # Skip <|im_start|>assistant
+            
+            # Skip any whitespace/newlines after role
+            while content_start < len(ids) and ids[content_start] in [tokenizer.convert_tokens_to_ids('\n'), tokenizer.convert_tokens_to_ids(' ')]:
+                content_start += 1
+            
+            # Find end
+            content_end = content_start
+            while content_end < len(ids) and ids[content_end] != im_end_id:
+                content_end += 1
+            
+            if content_end > content_start:
+                spans.append((content_start, content_end))
+            
+            i = content_end + 1
+        else:
+            i += 1
+    
+    # Method 2: LLaMA-style <|start_header_id|>assistant<|end_header_id|>...<|eot_id|>
+    i = 0
+    while i < len(ids) - 2:
+        if (ids[i] == start_header_id and 
+            ids[i+1] == assistant_id and 
+            ids[i+2] == end_header_id):
+            
+            # Found assistant header
+            content_start = i + 3  # Skip header tokens
+            
+            # Skip newlines after header
+            while content_start < len(ids) and ids[content_start] in [tokenizer.convert_tokens_to_ids('\n')]:
+                content_start += 1
+            
+            # Find end
+            content_end = content_start
+            while content_end < len(ids) and ids[content_end] != eot_id:
+                content_end += 1
+            
+            if content_end > content_start:
+                spans.append((content_start, content_end))
+            
+            i = content_end + 1
+        else:
+            i += 1
+    
+    return spans
+
+
+def build_text_labels_arabic_content(input_ids, tokenizer, device):
+    """
+    SURGICAL FIX: Build labels that supervise ONLY Arabic assistant responses.
+    This is the text that should be spoken - not system prompts!
+    
+    Args:
+        input_ids: Tensor [batch_size, seq_len]
+        tokenizer: HuggingFace tokenizer  
+        device: Target device
+    
+    Returns:
+        labels: Tensor [batch_size, seq_len] with Arabic content supervised, rest masked
+    """
+    B, T = input_ids.shape
+    labels = torch.full_like(input_ids, fill_value=IGNORE_INDEX)
+    
+    # Process each sample in batch
     for b in range(B):
-        # Start by masking all structural tokens
-        for t in range(T-1):  # Skip last position (already -100)
-            if input_ids[b, t].item() in structural_tokens:
-                labels[b, t] = IGNORE_INDEX
+        # Find assistant content spans (Arabic responses)
+        content_spans = find_assistant_content_spans(input_ids[b], tokenizer)
         
-        ids = input_ids[b].tolist()
-        content_positions = []
+        if content_spans:
+            # Use the LAST assistant span (the response paired with target audio)
+            start_pos, end_pos = content_spans[-1]
+            
+            # Supervise content tokens as next-token prediction
+            for pos in range(start_pos, min(end_pos, T-1)):
+                labels[b, pos] = input_ids[b, pos + 1]  # Next token prediction
+            
+            # Log what we're actually supervising
+            supervised_tokens = []
+            for pos in range(start_pos, min(end_pos, T-1)):
+                supervised_tokens.append(input_ids[b, pos].item())
+            
+            if supervised_tokens:
+                try:
+                    decoded = tokenizer.decode(supervised_tokens[:30], skip_special_tokens=False)
+                    print(f"🎯 Sample {b} SUPERVISING (Arabic): {repr(decoded[:100])}")
+                except:
+                    print(f"🎯 Sample {b} supervised tokens: {supervised_tokens[:10]}")
         
-        # Method 1: Standard ChatML format <|im_start|>assistant\n...<|im_end|>
-        i = 0
-        while i < len(ids) - 1:
-            if ids[i] == im_start_id and i+1 < len(ids):
-                role_pos = i + 1
-                if ids[role_pos] == assistant_id:  # ONLY supervise assistant responses
-                    content_start = role_pos + 1
-                    content_end = content_start
-                    while content_end < len(ids) and ids[content_end] != im_end_id:
-                        content_end += 1
-                    
-                    # Add all content tokens in assistant response
-                    for pos in range(content_start, min(content_end, T-1)):
-                        if ids[pos] not in structural_tokens:
-                            content_positions.append(pos)
-                    
-                    i = content_end + 1
-                else:
-                    i += 1
-            else:
-                i += 1
-        
-        # Method 2: LLaMA-style format <|start_header_id|>assistant<|end_header_id|>...<|eot_id|>
-        i = 0
-        while i < len(ids) - 1:
-            if ids[i] == start_header_id and i+1 < len(ids):
-                if ids[i+1] == assistant_id and i+2 < len(ids) and ids[i+2] == end_header_id:
-                    # Found assistant header, find content until <|eot_id|>
-                    content_start = i + 3  # After <|start_header_id|>assistant<|end_header_id|>
-                    content_end = content_start
-                    while content_end < len(ids) and ids[content_end] != eot_id:
-                        content_end += 1
-                    
-                    # Add all content tokens in assistant response  
-                    for pos in range(content_start, min(content_end, T-1)):
-                        if ids[pos] not in structural_tokens:
-                            content_positions.append(pos)
-                    
-                    i = content_end + 1
-                else:
-                    i += 1
-            else:
-                i += 1
-        
-        # Method 3: Fallback - if no structured format found, supervise non-structural tokens
-        if len(content_positions) < 10:  # Very few content tokens found
+        # If no assistant spans found, try fallback  
+        elif (labels[b] == IGNORE_INDEX).all():
+            print(f"⚠️ No assistant content found in sample {b}, using fallback")
+            # Simple fallback: supervise non-structural tokens
+            structural_tokens = {
+                tokenizer.convert_tokens_to_ids("<|im_start|>"),
+                tokenizer.convert_tokens_to_ids("<|im_end|>"),
+                tokenizer.convert_tokens_to_ids("<|AUDIO|>"),
+                tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>"),
+                tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id
+            }
+            structural_tokens = {tid for tid in structural_tokens if tid is not None}
+            
             for pos in range(T-1):
-                if labels[b, pos] == IGNORE_INDEX and input_ids[b, pos].item() not in structural_tokens:
-                    content_positions.append(pos)
-        
-        # Ensure all content positions are supervised
-        for pos in content_positions:
-            if pos < T-1:  # Don't override last position
-                labels[b, pos] = input_ids[b, pos]
+                if input_ids[b, pos].item() not in structural_tokens:
+                    labels[b, pos] = input_ids[b, pos + 1]
     
-    # Audit supervision and enforce minimum
+    # Final audit
     total_supervised = (labels != IGNORE_INDEX).sum().item()
     total_possible = B * (T - 1)
-    logger.info(f"📊 CHATML TEXT SUPERVISION: {total_supervised}/{total_possible} tokens ({100*total_supervised/total_possible:.1f}%)")
-    
-    for b in range(B):
-        supervised = (labels[b] != IGNORE_INDEX).sum().item()
-        logger.info(f"📊 Sample {b}: {supervised} content tokens ({'✅' if supervised >= min_tokens_per_sample else '❌'} min {min_tokens_per_sample})")
-        
-        # If below minimum, unmask additional non-structural tokens
-        if supervised < min_tokens_per_sample:
-            need = min_tokens_per_sample - supervised
-            # Find masked non-structural positions
-            candidates = []
-            for t in range(T-1):
-                if labels[b, t] == IGNORE_INDEX and input_ids[b, t].item() not in structural_tokens:
-                    candidates.append(t)
-            
-            if len(candidates) > 0:
-                take = min(need, len(candidates))
-                for i in range(take):
-                    labels[b, candidates[i]] = input_ids[b, candidates[i]]
-                logger.info(f"📊 ENFORCED: Sample {b} {supervised} → {(labels[b] != IGNORE_INDEX).sum().item()} tokens")
-        
-        # Decode first few supervised tokens for audit
-        supervised_tokens = []
-        for t in range(min(40, T)):
-            if labels[b, t] != IGNORE_INDEX:
-                supervised_tokens.append(input_ids[b, t].item())
-        
-        if len(supervised_tokens) > 0:
-            try:
-                decoded = tokenizer.decode(supervised_tokens[:20], skip_special_tokens=False)
-                logger.info(f"📊 Sample {b} supervised preview: {repr(decoded)}")
-            except:
-                logger.info(f"📊 Sample {b} supervised token IDs: {supervised_tokens[:10]}")
+    print(f"🎯 ARABIC TEXT SUPERVISION: {total_supervised}/{total_possible} tokens ({100*total_supervised/total_possible:.1f}%)")
     
     return labels
 
@@ -265,7 +257,8 @@ def audit_lora_gradients(model):
     avg_a = sum(lora_a_norms) / len(lora_a_norms) if lora_a_norms else 0.0
     avg_b = sum(lora_b_norms) / len(lora_b_norms) if lora_b_norms else 0.0
     
-    logger.info(f"🔍 LoRA Audit: A avg={avg_a:.4e} ({len(lora_a_norms)} params), B avg={avg_b:.4e} ({len(lora_b_norms)} params)")
+    # Removed verbose gradient logging
+    # logger.info(f"🔍 LoRA Audit: A avg={avg_a:.4e} ({len(lora_a_norms)} params), B avg={avg_b:.4e} ({len(lora_b_norms)} params)")
     
     if avg_a < 1e-8:
         logger.warning("⚠️  LoRA A gradients are near-zero! Check if A adapters are frozen.")
@@ -353,71 +346,57 @@ def compute_higgs_losses(model_outputs, batch, tokenizer, device, lambda_text=0.
             audio_labels = audio_labels.clone()
             
             # EOS token variants to mask
-            eos_tokens = [1025, 1026]  # audio_stream_eos_id and potential variants
-            
-            for eos_token in eos_tokens:
-                mask = (audio_labels == eos_token)
-                if mask.any():
-                    print(f" Masking {mask.sum().item()} instances of EOS token {eos_token}")
-                    audio_labels[mask] = IGNORE_INDEX
-            
-            # Verify masking was successful
-            for eos_token in eos_tokens:
-                remaining = (audio_labels == eos_token).sum().item()
-                if remaining > 0:
-                    print(f" WARNING: {remaining} EOS tokens ({eos_token}) still present after masking!")
-            
-            return audio_labels
-        
-        audio_labels = apply_eos_mask(audio_labels, eos_id=1025)
-        
         if audio_labels is not None:
             audio_labels = audio_labels.to(device)       # [8, T_out]
-
+            
+            # SURGICAL FIX: Only mask EOS at padding positions, not legitimate stop positions
+            # Don't mask EOS everywhere - model needs to learn when to stop!
+            audio_labels = audio_labels.clone()
+            
+            # Mask first token of each codebook (BOS)
+            audio_labels[:, 0] = IGNORE_INDEX  # Mask BOS position
+            
+            # ONLY mask EOS at padding positions (where all codebooks are EOS)
+            eos_positions = (audio_labels == 1025).all(dim=0)  # Only where ALL codebooks are EOS
+            if eos_positions.any():
+                print(f"🛑 Masking {eos_positions.sum()} EOS positions (padding only)")
+                audio_labels[:, eos_positions] = IGNORE_INDEX
+            
             # 🔧 HIGGS DUAL-FFN ALIGNMENT: Permute to codebook-major so we can flatten (8, T_out, V)
             if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
                 audio_logits = audio_logits.permute(1, 0, 2).contiguous()
-
-            # Flatten: [(8*T_out), V] vs [(8*T_out)]
-            audio_loss = F.cross_entropy(
-                audio_logits.view(-1, audio_logits.size(-1)),
-                audio_labels.contiguous().view(-1),
-                ignore_index=IGNORE_INDEX,
-                reduction="mean",
+            
+            audio_loss = CrossEntropyLoss(ignore_index=IGNORE_INDEX)(
+                audio_logits.view(-1, audio_logits.size(-1)),      # [(8*T_out), V]
+                audio_labels.contiguous().view(-1)                 # [(8*T_out)]
             )
             losses['audio_loss'] = audio_loss
+            
+            # Audit EOS in final labels
+            eos_count = (audio_labels == 1025).sum().item()
+            print(f"🎯 EOS tokens in audio labels: {eos_count} (legitimate stops)")
+            
         else:
-            losses['audio_loss'] = torch.tensor(0.0, device=device)
+            losses['audio_loss'] = torch.tensor(0.0, device=device, requires_grad=True)
     else:
-        losses['audio_loss'] = torch.tensor(0.0, device=device)
-
-    # ----- TEXT LM CE (AUXILIARY FOR ARABIC CONTENT) -----
-    if hasattr(model_outputs, "logits") and model_outputs.logits is not None:
-        text_logits = model_outputs.logits               # [B, T_txt, V_txt]
-        input_ids = batch.input_ids.to(device)
-
-        # Shift for next-token prediction
-        text_logits = text_logits[:, :-1, :].contiguous()
-        text_labels = build_text_labels_chatml(
-            input_ids, tokenizer, device,
-            min_tokens_per_sample=64,   # KEY: ensure Arabic content gets supervised
-        )[:, :-1].contiguous()
-
-        text_loss = F.cross_entropy(
-            text_logits.reshape(-1, text_logits.size(-1)),
-            text_labels.view(-1),
-            ignore_index=IGNORE_INDEX,
-            reduction="mean",
+        losses['audio_loss'] = torch.tensor(0.0, device=device, requires_grad=True)
+    
+    # TEXT LOSS (SURGICAL FIX: Use Arabic content labels)
+    if hasattr(model_outputs, 'logits') and model_outputs.logits is not None:
+        text_logits = model_outputs.logits               # [B, T, V_text]
+        
+        # CRITICAL FIX: Use NEW Arabic content labels, not old ChatML function
+        text_labels = build_text_labels_arabic_content(batch.input_ids, tokenizer, device)
+        text_labels = text_labels.to(device)
+        
+        # Wire these labels into the batch for loss computation
+        batch.labels = text_labels  # ENSURE loss uses the right labels!
+        
+        text_loss = CrossEntropyLoss(ignore_index=IGNORE_INDEX)(
+            text_logits.view(-1, text_logits.size(-1)),  # [(B*T), V_text] 
+            text_labels.view(-1)                         # [(B*T)]
         )
         losses['text_loss'] = text_loss
-        losses['weighted_text_loss'] = lambda_text * text_loss
-    else:
-        losses['text_loss'] = torch.tensor(0.0, device=device)
-        losses['weighted_text_loss'] = torch.tensor(0.0, device=device)
-
-    # Total loss
-    total_loss = losses['audio_loss'] + losses['weighted_text_loss']
-    losses['total_loss'] = total_loss
     
     return total_loss, losses
 
