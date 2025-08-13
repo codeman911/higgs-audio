@@ -506,8 +506,11 @@ def main():
     
     # Model arguments
     parser.add_argument("--model_path", type=str, 
-                        default="/vs/boson-multimodal-checkpoints/higgs-audio-v2",
+                        default="bosonai/higgs-audio-v2-generation-3B-base",
                         help="Path to base Higgs-Audio model")
+    parser.add_argument("--audio_tokenizer_path", type=str,
+                        default="bosonai/higgs-audio-v2-tokenizer",
+                        help="Path to audio tokenizer")
     
     # Training arguments
     parser.add_argument("--batch_size", type=int, default=1,
