@@ -1,10 +1,10 @@
 {
   "sample_id": "sample_00000018",
-  "target_text": "Climate change requires immediate global action and innovative sustainable solutions",
-  "reference_audio": "VC_samples/mad_sci_arb.mp3",
+  "target_text": "مرحباً بكم في عالم التكنولوجيا الحديثة والذكاء الاصطناعي المتطور",
+  "reference_audio": "VC_samples/aria.mp3",
   "generated_audio": "test_v1/sample_00000018_generated.wav",
   "sampling_rate": 24000,
-  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nClimate change requires immediate global action and innovative sustainable solutions<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nClimate change requires immediate global action and innovative sustainable solutions<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nمرحباً بكم في عالم التكنولوجيا الحديثة والذكاء الاصطناعي المتطور<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nمرحباً بكم في عالم التكنولوجيا الحديثة والذكاء الاصطناعي المتطور<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
   "generation_type": "voice_cloning",
   "success": true
 }

@@ -1,10 +1,10 @@
 {
   "sample_id": "sample_00000002",
-  "target_text": "Welcome to the future of artificial intelligence and machine learning technologies",
-  "reference_audio": "VC_samples/cartoon_female_arb.mp3",
+  "target_text": "الفن والثقافة يعكسان روح الشعوب وتاريخها عبر العصور المختلفة",
+  "reference_audio": "VC_samples/aria.mp3",
   "generated_audio": "test_v1/sample_00000002_generated.wav",
   "sampling_rate": 24000,
-  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWelcome to the future of artificial intelligence and machine learning technologies<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWelcome to the future of artificial intelligence and machine learning technologies<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nالفن والثقافة يعكسان روح الشعوب وتاريخها عبر العصور المختلفة<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nالفن والثقافة يعكسان روح الشعوب وتاريخها عبر العصور المختلفة<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
   "generation_type": "voice_cloning",
   "success": true
 }
