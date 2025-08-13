@@ -170,6 +170,178 @@ def find_assistant_content_spans(input_ids, tokenizer):
     return spans
 
 
+def find_subseq(a, b):
+    """Returns start index of subsequence b in a, else -1"""
+    for i in range(len(a) - len(b) + 1):
+        if a[i:i+len(b)] == b:
+            return i
+    return -1
+
+def build_text_labels_from_chatml(input_ids, tokenizer, role="user"):
+    """
+    EXACT USER SPECIFICATION: Build labels that supervise ONLY the span containing actual sentence.
+    input_ids: [B, T] tokenized ChatML (system, user, assistant, audio placeholders)
+    We supervise ONLY the span that contains the actual sentence.
+    Commonly that's the last user span.
+    """
+    B, T = input_ids.shape
+    labels = torch.full_like(input_ids, fill_value=-100)
+
+    # Encode markers once
+    im_start = tokenizer.encode("<|im_start|>", add_special_tokens=False)
+    im_end   = tokenizer.encode("<|im_end|>",   add_special_tokens=False)
+    user_tok = tokenizer.encode("user\n",       add_special_tokens=False)  # Higgs uses "role\n" after <|im_start|>
+    asst_tok = tokenizer.encode("assistant\n",  add_special_tokens=False)
+
+    total_supervised = 0
+    
+    for b in range(B):
+        seq = input_ids[b].tolist()
+
+        # 1) Locate ROLE block to supervise
+        # Prefer USER block (contains sentence). If you put the sentence in assistant (before audio tags),
+        # switch `role` to "assistant" here and additionally truncate at <|audio_out_bos|>.
+        role_hdr = user_tok if role == "user" else asst_tok
+
+        idx = 0
+        # Walk all <|im_start|> blocks and pick the last matching ROLE
+        last_span = None
+        while True:
+            s = find_subseq(seq[idx:], im_start)
+            if s < 0: break
+            s += idx
+            # role header starts after <|im_start|>
+            role_start = s + len(im_start)
+            if seq[role_start:role_start+len(role_hdr)] == role_hdr:
+                # find corresponding <|im_end|>
+                e = find_subseq(seq[role_start+len(role_hdr):], im_end)
+                if e >= 0:
+                    e = role_start + len(role_hdr) + e
+                    last_span = (role_start + len(role_hdr), e)  # [content_start, im_end_start)
+                    idx = e + len(im_end)
+                    continue
+            # advance minimally to avoid infinite loop
+            idx = s + 1
+
+        if last_span is None:
+            print(f"⚠️ Sample {b}: No {role} span found")
+            continue  # nothing supervised for this sample
+
+        span_s, span_e = last_span
+
+        # 2) If supervising ASSISTANT and you have audio placeholders, cut before <|audio_out_bos|>
+        if role == "assistant":
+            aob = tokenizer.encode("<|audio_out_bos|>", add_special_tokens=False)
+            cut = find_subseq(seq[span_s:span_e], aob)
+            if cut >= 0:
+                span_e = span_s + cut  # supervise text BEFORE audio placeholders
+
+        # 4) Write labels (next token prediction)
+        if span_e > span_s:
+            for pos in range(span_s, min(span_e, T-1)):
+                labels[b, pos] = seq[pos + 1]  # next token prediction
+                total_supervised += 1
+            
+            # DEBUG: Show what we're actually supervising
+            try:
+                supervised_text = tokenizer.decode(seq[span_s:span_e], skip_special_tokens=False)
+                print(f"🎯 Sample {b} SUPERVISING ({role}): {repr(supervised_text[:80])}")
+            except:
+                print(f"🎯 Sample {b} SUPERVISING ({role}): {span_e - span_s} tokens")
+
+    # Final audit  
+    total_possible = B * (T - 1)
+    supervision_pct = 100 * total_supervised / total_possible if total_possible > 0 else 0
+    
+    print(f"🎯 CHATML TEXT SUPERVISION: {total_supervised}/{total_possible} tokens ({supervision_pct:.1f}%)")
+    
+    # CRITICAL CHECK: Must have meaningful supervision
+    if supervision_pct < 20:
+        print(f"🚨 CRITICAL: Supervision {supervision_pct:.1f}% < 20% minimum! Check data format.")
+    elif supervision_pct >= 50:
+        print(f"✅ GOOD: Supervision {supervision_pct:.1f}% >= 50% target")
+    
+    return labels
+
+def build_audio_labels(audio_out_ids, audio_eos_id=1025, audio_pad_id=None):
+    """
+    EXACT USER SPECIFICATION: Mask BOS/EOS/PAD in labels just before CE
+    audio_out_ids: [C, T] (C=8 codebooks) 
+    """
+    labels = audio_out_ids.clone()
+    
+    # mask EOS and PAD
+    labels[labels == audio_eos_id] = -100
+    if audio_pad_id is not None:
+        labels[labels == audio_pad_id] = -100
+        
+    # mask first step for teacher forcing per codebook (t=0)
+    labels[:, 0] = -100
+    
+    # CRITICAL AUDIT: EOS count must be ZERO
+    final_eos_count = (labels == audio_eos_id).sum().item()
+    print(f"🎯 EOS in audio labels after masking: {final_eos_count} (MUST BE 0)")
+    
+    if final_eos_count > 0:
+        print(f"🚨 CRITICAL BUG: {final_eos_count} EOS tokens still in CE labels - masking failed!")
+    else:
+        print(f"✅ EOS MASKING SUCCESS: 0 EOS tokens in CE labels")
+    
+    return labels
+
+class TextConditioningController:
+    """EXACT USER SPECIFICATION: Make the model need the text (conditioning pressure)"""
+    def __init__(self, lambda_text=0.2, min_entropy_gap=0.15, max_lambda=0.6):
+        self.lambda_text = lambda_text
+        self.min_gap = min_entropy_gap
+        self.max_lambda = max_lambda
+
+    @torch.no_grad()
+    def entropy_gap(self, model, batch, loss_audio_fn):
+        # quick probe: shuffle the text among samples and compare audio CE
+        orig_input_ids = batch["input_ids"].clone()
+        perm = torch.randperm(orig_input_ids.size(0), device=orig_input_ids.device)
+        batch["input_ids"] = orig_input_ids[perm]
+        out_perm = model(**batch)  # run forward for audio logits
+        ce_perm = loss_audio_fn(out_perm)
+        batch["input_ids"] = orig_input_ids
+        out_real = model(**batch)
+        ce_real = loss_audio_fn(out_real)
+        return (ce_perm - ce_real).item()
+
+    def maybe_boost_text(self, gap):
+        if gap < self.min_gap:
+            self.lambda_text = min(self.max_lambda, self.lambda_text * 1.5)
+            print(f"🔥 Boosting text loss: lambda_text = {self.lambda_text:.3f}")
+        else:
+            self.lambda_text = max(0.05, self.lambda_text * 0.9)
+
+def augment_audio_in(audio_in_ids, drop_prob=0.3, max_tail_crop=0.5):
+    """EXACT USER SPECIFICATION: Style-dropout on reference to force reading text"""
+    if audio_in_ids is None:
+        return None
+        
+    x = audio_in_ids.clone()
+    if x.numel() == 0:
+        return x
+        
+    B, T = x.shape if x.dim() == 2 else (1, x.shape[0])
+    
+    # random tail crop (remove up to 50% tail)
+    if max_tail_crop > 0:
+        crop = (torch.rand(1).item() * max_tail_crop)
+        keep = int(T * (1.0 - crop))
+        x[:, keep:] = 0
+        
+    # random codebook dropout 
+    if torch.rand(1).item() < drop_prob:
+        # drop 1-3 random chunks
+        k = max(1, int(0.1 * T))
+        start = torch.randint(0, T-k, (1,)).item()
+        x[:, start:start+k] = 0
+        
+    return x
+
 def find_arabic_content_spans(input_ids, tokenizer):
     """
     SURGICAL FIX: Find spans containing ACTUAL Arabic text, not audio markers.
@@ -398,9 +570,103 @@ def audit_step_diagnostics(step, model_outputs, batch, tokenizer, device, eos_id
                 decoded = tokenizer.decode(supervised_tokens[:15], skip_special_tokens=False)
                 logger.info(f"📊 Step {step} content sample: {repr(decoded)}")
             except:
-                logger.info(f"📊 Step {step} content token IDs: {supervised_tokens[:10]}")
+                logger.info(f" Step {step} content token IDs: {supervised_tokens[:10]}")
     
     return diagnostics
+
+
+def compute_higgs_losses_exact_user_spec(model_outputs, batch, tokenizer, device, cond_controller, global_step):
+    """
+    EXACT USER SPECIFICATION: Compute losses with proper ChatML supervision and EOS masking
+    """
+    losses = {}
+    
+    # Extract logits - handle both dict and direct tensor outputs
+    if isinstance(model_outputs, dict):
+        if "logits" in model_outputs:
+            text_logits = model_outputs["logits"]
+        else:
+            text_logits = None
+            
+        if "audio_logits" in model_outputs:
+            audio_logits = model_outputs["audio_logits"]
+        else:
+            audio_logits = None
+    else:
+        # Direct tensor output - assume it's text logits
+        text_logits = model_outputs
+        audio_logits = None
+
+    # === TEXT LOSS (USER'S EXACT SPEC) ===
+    if text_logits is not None:
+        # USER'S EXACT FUNCTION: Build correct text labels from ChatML spans
+        text_labels = build_text_labels_from_chatml(batch["input_ids"], tokenizer, role="user")
+        
+        # CRITICAL: Wire the exact labels tensor into the batch for model's CE (if model computes internally)
+        batch["labels"] = text_labels
+        
+        # Compute text CE loss
+        text_logits_flat = text_logits.view(-1, text_logits.size(-1))
+        text_labels_flat = text_labels.view(-1)
+        
+        text_loss = torch.nn.functional.cross_entropy(text_logits_flat, text_labels_flat, ignore_index=-100)
+        losses['text_loss'] = text_loss
+        
+        # USER SPEC: Target non_ignore ≥ 500 per batch
+        non_ignore_text = (text_labels != -100).sum().item()
+        total_text = text_labels.numel()
+        print(f" Text supervision: {non_ignore_text}/{total_text} tokens ({100*non_ignore_text/total_text:.1f}%)")
+        
+    else:
+        losses['text_loss'] = torch.tensor(0.0, device=device, requires_grad=True)
+    
+    # === AUDIO LOSS (USER'S EXACT SPEC) ===
+    if audio_logits is not None and "audio_out_ids" in batch:
+        audio_out_ids = batch["audio_out_ids"]
+        
+        if audio_out_ids is not None:
+            # USER'S EXACT FUNCTION: Build audio labels with proper EOS masking
+            audio_labels = build_audio_labels(audio_out_ids.to(device), audio_eos_id=1025, audio_pad_id=None)
+            
+            # HIGGS DUAL-FFN ALIGNMENT: Permute to codebook-major so we can flatten
+            if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
+                audio_logits = audio_logits.permute(1, 0, 2).contiguous()  # [T,8,V] → [8,T,V]
+            
+            audio_loss = torch.nn.functional.cross_entropy(
+                audio_logits.view(-1, audio_logits.size(-1)),      # [(8*T_out), V]
+                audio_labels.contiguous().view(-1),                # [(8*T_out)]
+                ignore_index=-100
+            )
+            losses['audio_loss'] = audio_loss
+            
+        else:
+            losses['audio_loss'] = torch.tensor(0.0, device=device, requires_grad=True)
+    else:
+        losses['audio_loss'] = torch.tensor(0.0, device=device, requires_grad=True)
+    
+    # === USER SPEC: CONDITIONING PRESSURE ===
+    # occasionally probe text dependence
+    if global_step % 200 == 0 and audio_logits is not None:
+        try:
+            def loss_audio_fn(out):
+                if "audio_logits" in out:
+                    al = out["audio_logits"]
+                    if al.dim() == 3 and al.shape[1] == 8:
+                        al = al.permute(1, 0, 2).contiguous()
+                    labels = build_audio_labels(batch["audio_out_ids"].to(device), audio_eos_id=1025)
+                    return torch.nn.functional.cross_entropy(al.view(-1, al.size(-1)), labels.view(-1), ignore_index=-100)
+                return torch.tensor(0.0, device=device)
+            
+            gap = cond_controller.entropy_gap(model, batch, loss_audio_fn)
+            print(f" text→audio entropy gap = {gap:.3f}")
+            cond_controller.maybe_boost_text(gap)
+        except Exception as e:
+            print(f" Entropy gap check failed: {e}")
+    
+    # === TOTAL LOSS ===
+    total_loss = losses['audio_loss'] + cond_controller.lambda_text * losses['text_loss']
+    
+    return total_loss, losses
 
 
 def compute_higgs_losses(model_outputs, batch, tokenizer, device, lambda_text=0.1):
@@ -453,17 +719,17 @@ def compute_higgs_losses(model_outputs, batch, tokenizer, device, lambda_text=0.
             # Mask EOS completely from CE loss
             eos_mask = (audio_labels == audio_eos_id)
             if eos_mask.any():
-                print(f"🛑 Masking {eos_mask.sum().item()} EOS tokens from audio CE")
+                print(f" Masking {eos_mask.sum().item()} EOS tokens from audio CE")
                 audio_labels[eos_mask] = IGNORE_INDEX
             
             # Also mask padding if exists
             if audio_pad_id is not None:
                 pad_mask = (audio_labels == audio_pad_id)
                 if pad_mask.any():
-                    print(f"🛑 Masking {pad_mask.sum().item()} PAD tokens from audio CE")
+                    print(f" Masking {pad_mask.sum().item()} PAD tokens from audio CE")
                     audio_labels[pad_mask] = IGNORE_INDEX
             
-            # 🔧 HIGGS DUAL-FFN ALIGNMENT: Permute to codebook-major so we can flatten (8, T_out, V)
+            # HIGGS DUAL-FFN ALIGNMENT: Permute to codebook-major so we can flatten (8, T_out, V)
             if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
                 audio_logits = audio_logits.permute(1, 0, 2).contiguous()
             
@@ -475,12 +741,12 @@ def compute_higgs_losses(model_outputs, batch, tokenizer, device, lambda_text=0.
             
             # CRITICAL AUDIT: EOS count must be ZERO in final labels used for CE
             final_eos_count = (audio_labels == audio_eos_id).sum().item()
-            print(f"🎯 EOS in audio labels after masking: {final_eos_count} (MUST BE 0)")
+            print(f" EOS in audio labels after masking: {final_eos_count} (MUST BE 0)")
             
             if final_eos_count > 0:
-                print(f"🚨 CRITICAL BUG: {final_eos_count} EOS tokens still in CE labels - masking failed!")
+                print(f" CRITICAL BUG: {final_eos_count} EOS tokens still in CE labels - masking failed!")
             else:
-                print(f"✅ EOS MASKING SUCCESS: 0 EOS tokens in CE labels")
+                print(f" EOS MASKING SUCCESS: 0 EOS tokens in CE labels")
             
         else:
             losses['audio_loss'] = torch.tensor(0.0, device=device, requires_grad=True)
@@ -1025,13 +1291,19 @@ def main():
     if val_dataloader:
         val_dataloader = accelerator.prepare(val_dataloader)
     
+    # 🧠 PREPARE TRAINING
+    model.train()
+    global_step = 0
+    train_losses = []
+    
+    # USER'S EXACT SPECIFICATION: Initialize conditioning controller
+    cond_controller = TextConditioningController(lambda_text=0.2, min_entropy_gap=0.15, max_lambda=0.6)
+    
     # Training loop
     logger.info("Starting training...")
-    global_step = 0
     
     for epoch in range(args.num_epochs):
         model.train()
-        total_loss = 0
         
         # rolling means for clearer telemetry
         running_audio = running_text = running_total = 0.0
@@ -1200,11 +1472,13 @@ def main():
                     else:
                         logger.info(f"  Output type: {type(outputs)}")
                 
-                # 🚨 CRITICAL FIX: Use compute_higgs_losses for BOTH audio and text losses
-                total_loss, loss_components = compute_higgs_losses(outputs, batch, tokenizer, device, lambda_text=0.1)
-                    
-                    # 🔍 CRITICAL: Monitor audio loss trends + SANITY CHECKS FOR MODEL COLLAPSE
-                    if step % 10 == 0:
+                # 🚨 USER'S EXACT SPECIFICATION: Use proper ChatML supervision and EOS masking
+                total_loss, loss_components = compute_higgs_losses_exact_user_spec(
+                    outputs, batch, tokenizer, device, cond_controller, global_step
+                )
+                
+                # 🔍 CRITICAL: Monitor audio loss trends + SANITY CHECKS FOR MODEL COLLAPSE
+                if step % 10 == 0:
                         logger.info(f"🔊 AUDIO LOSS (Step {step}): {audio_loss.item():.4f}")
                         
                         # 🚨 SANITY CHECK 1: Per-codebook CE breakdown
@@ -1429,6 +1703,13 @@ def main():
                         'audio_out_ids_start_group_loc': to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
                     }
                     model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
+                    
+                    # Move batch to device
+                    batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                    
+                    # USER'S EXACT SPECIFICATION: Style-dropout on reference to force reading text (early steps only)
+                    if global_step < 5000 and "audio_in_ids" in batch and batch["audio_in_ids"] is not None:
+                        batch["audio_in_ids"] = augment_audio_in(batch["audio_in_ids"])
                     
                     # Get underlying model
                     if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
