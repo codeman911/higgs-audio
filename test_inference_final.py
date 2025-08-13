@@ -289,11 +289,7 @@ class FinalInferenceTest:
                 # Extract target text from ChatML structure
                 target_text = self.extract_target_text_from_chatml(sample)
                 logger.info(f"Sample ID: {sample_id}")
-                logger.info(f"Original text: {target_text[:100]}...")
-                
-                # Normalize Arabic/multilingual text for better TTS
-                normalized_text = self.normalize_arabic_text(target_text)
-                logger.info(f"Normalized text: {normalized_text[:100]}...")
+                logger.info(f"Target text: {target_text[:100]}...")
                 
                 # Convert ChatML to proper Message format
                 messages, audio_ids = self.convert_chatml_to_messages(sample)
@@ -306,8 +302,8 @@ class FinalInferenceTest:
                     logger.info("🎯 Performing zero-shot voice cloning with reference audio")
                     generation_type = "voice_cloning"
                 
-                # Prepare chunked text for better pronunciation
-                chunked_text = self.chunk_text_for_generation(normalized_text)
+                # Prepare chunked text for better pronunciation (following original approach)
+                chunked_text = self.chunk_text_for_generation(target_text)
                 logger.info(f"Text chunks: {len(chunked_text)} chunks")
                 for i, chunk in enumerate(chunked_text):
                     logger.info(f"  Chunk {i+1}: {chunk[:50]}...")
