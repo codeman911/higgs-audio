@@ -54,6 +54,37 @@ class FinalInferenceTest:
         )
         logger.info("Model loaded successfully!")
 
+    def convert_mp3_to_wav(self, audio_path: str) -> str:
+        """Convert MP3 to WAV with mono channel and 24kHz sample rate."""
+        if not audio_path.lower().endswith('.mp3'):
+            return audio_path
+        
+        wav_path = audio_path.replace('.mp3', '.wav')
+        
+        if os.path.exists(wav_path):
+            return wav_path  # Use existing WAV
+        
+        try:
+            waveform, sample_rate = torchaudio.load(audio_path)
+            
+            # Convert to mono if stereo
+            if waveform.shape[0] > 1:
+                waveform = torch.mean(waveform, dim=0, keepdim=True)
+                logger.info("Converted stereo to mono")
+            
+            # Resample to 24kHz if needed
+            if sample_rate != 24000:
+                resampler = torchaudio.transforms.Resample(sample_rate, 24000)
+                waveform = resampler(waveform)
+                logger.info(f"Resampled from {sample_rate}Hz to 24kHz")
+                sample_rate = 24000
+            
+            torchaudio.save(wav_path, waveform, sample_rate)
+            logger.info(f"Converted: {audio_path} -> {wav_path} (mono, 24kHz)")
+            return wav_path
+        except:
+            return audio_path  # Use original on error
+
     def load_chatml_samples(self, json_file: str, max_samples: int = 10, seed: Optional[int] = None) -> List[Dict]:
         """Load ChatML samples from JSON file with robust structure handling and shuffling."""
         logger.info(f"Loading ChatML samples from: {json_file}")
@@ -153,8 +184,11 @@ class FinalInferenceTest:
                                 try:
                                     logger.info(f"Loading reference audio: {audio_url}")
                                     
+                                    # Convert MP3 to WAV if needed
+                                    wav_audio_url = self.convert_mp3_to_wav(audio_url)
+                                    
                                     # Check file size
-                                    file_size = os.path.getsize(audio_url)
+                                    file_size = os.path.getsize(wav_audio_url)
                                     logger.info(f"Audio file size: {file_size} bytes")
                                     
                                     if file_size < 1000:
@@ -162,11 +196,11 @@ class FinalInferenceTest:
                                         continue
                                     
                                     # Tokenize reference audio for audio_ids
-                                    ref_audio_tokens = self.audio_tokenizer.encode(audio_url)
+                                    ref_audio_tokens = self.audio_tokenizer.encode(wav_audio_url)
                                     logger.info(f"✅ Reference audio tokenized: {ref_audio_tokens.shape}")
                                     
-                                    # Add to message content using audio_url (not tokens)
-                                    message_content.append(AudioContent(audio_url=audio_url))
+                                    # Add to message content using WAV audio_url (not tokens)
+                                    message_content.append(AudioContent(audio_url=wav_audio_url))
                                     # Add tokens to audio_ids for generation
                                     audio_ids.append(ref_audio_tokens)
                                     
