@@ -299,13 +299,13 @@ class TextConditioningController:
     @torch.no_grad()
     def entropy_gap(self, model, batch, loss_audio_fn):
         # quick probe: shuffle the text among samples and compare audio CE
-        orig_input_ids = batch["input_ids"].clone()
+        orig_input_ids = batch.input_ids.clone()
         perm = torch.randperm(orig_input_ids.size(0), device=orig_input_ids.device)
-        batch["input_ids"] = orig_input_ids[perm]
-        out_perm = model(**batch)  # run forward for audio logits
+        batch.input_ids = orig_input_ids[perm]
+        out_perm = model(batch)  # run forward for audio logits
         ce_perm = loss_audio_fn(out_perm)
-        batch["input_ids"] = orig_input_ids
-        out_real = model(**batch)
+        batch.input_ids = orig_input_ids
+        out_real = model(batch)
         ce_real = loss_audio_fn(out_real)
         return (ce_perm - ce_real).item()
 
@@ -600,10 +600,10 @@ def compute_higgs_losses_exact_user_spec(model_outputs, batch, tokenizer, device
     # === TEXT LOSS (USER'S EXACT SPEC) ===
     if text_logits is not None:
         # USER'S EXACT FUNCTION: Build correct text labels from ChatML spans
-        text_labels = build_text_labels_from_chatml(batch["input_ids"], tokenizer, role="user")
+        text_labels = build_text_labels_from_chatml(batch.input_ids, tokenizer, role="user")
         
         # CRITICAL: Wire the exact labels tensor into the batch for model's CE (if model computes internally)
-        batch["labels"] = text_labels
+        batch.labels = text_labels
         
         # Compute text CE loss
         text_logits_flat = text_logits.view(-1, text_logits.size(-1))
@@ -621,8 +621,8 @@ def compute_higgs_losses_exact_user_spec(model_outputs, batch, tokenizer, device
         losses['text_loss'] = torch.tensor(0.0, device=device, requires_grad=True)
     
     # === AUDIO LOSS (USER'S EXACT SPEC) ===
-    if audio_logits is not None and "audio_out_ids" in batch:
-        audio_out_ids = batch["audio_out_ids"]
+    if audio_logits is not None and hasattr(batch, 'audio_out_ids'):
+        audio_out_ids = batch.audio_out_ids
         
         if audio_out_ids is not None:
             # USER'S EXACT FUNCTION: Build audio labels with proper EOS masking
@@ -653,7 +653,7 @@ def compute_higgs_losses_exact_user_spec(model_outputs, batch, tokenizer, device
                     al = out["audio_logits"]
                     if al.dim() == 3 and al.shape[1] == 8:
                         al = al.permute(1, 0, 2).contiguous()
-                    labels = build_audio_labels(batch["audio_out_ids"].to(device), audio_eos_id=1025)
+                    labels = build_audio_labels(batch.audio_out_ids.to(device), audio_eos_id=1025)
                     return torch.nn.functional.cross_entropy(al.view(-1, al.size(-1)), labels.view(-1), ignore_index=-100)
                 return torch.tensor(0.0, device=device)
             
@@ -1704,12 +1704,21 @@ def main():
                     }
                     model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                     
-                    # Move batch to device
-                    batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                    # Move HiggsAudioBatchInput to device
+                    if hasattr(batch, 'input_ids') and batch.input_ids is not None:
+                        batch.input_ids = batch.input_ids.to(device)
+                    if hasattr(batch, 'attention_mask') and batch.attention_mask is not None:
+                        batch.attention_mask = batch.attention_mask.to(device)
+                    if hasattr(batch, 'audio_in_ids') and batch.audio_in_ids is not None:
+                        batch.audio_in_ids = batch.audio_in_ids.to(device)
+                    if hasattr(batch, 'audio_out_ids') and batch.audio_out_ids is not None:
+                        batch.audio_out_ids = batch.audio_out_ids.to(device)
+                    if hasattr(batch, 'audio_in_wv') and batch.audio_in_wv is not None:
+                        batch.audio_in_wv = batch.audio_in_wv.to(device)
                     
                     # USER'S EXACT SPECIFICATION: Style-dropout on reference to force reading text (early steps only)
-                    if global_step < 5000 and "audio_in_ids" in batch and batch["audio_in_ids"] is not None:
-                        batch["audio_in_ids"] = augment_audio_in(batch["audio_in_ids"])
+                    if global_step < 5000 and hasattr(batch, 'audio_in_ids') and batch.audio_in_ids is not None:
+                        batch.audio_in_ids = augment_audio_in(batch.audio_in_ids)
                     
                     # Get underlying model
                     if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
