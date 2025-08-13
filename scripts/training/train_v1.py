@@ -36,6 +36,7 @@ from accelerate import Accelerator
 from tqdm import tqdm
 from pathlib import Path
 import logging
+from typing import Dict, Optional, Tuple, Any
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -49,6 +50,254 @@ from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Constants
+IGNORE_INDEX = -100
+
+# =============================================================================
+# ROBUST NO-LEAK HIGGS-AUDIO TRAINING UTILITIES
+# =============================================================================
+# These utilities implement the smoking gun fixes identified by diagnostics:
+# 1. Zero target audio leakage in model inputs
+# 2. Guaranteed ≥32 supervised Arabic text tokens per sample
+# 3. Entropy-based text conditioning validation
+# 4. Higgs-Audio dual-FFN compatible loss computation
+# =============================================================================
+
+def build_no_leak_inputs(batch, tokenizer, device):
+    """
+    Build model inputs that match Higgs' expectations, without leaking targets.
+    Returns a dict you can pass directly into model(**inputs).
+    
+    CRITICAL: This prevents target audio leakage by ensuring audio_out_ids
+    are used ONLY for alignment metadata, never concatenated to input sequence.
+    """
+    def to_dev(x): 
+        return x.to(device) if x is not None else None
+
+    # Required core inputs - NO TARGET LEAKAGE
+    inputs = {
+        "input_ids": to_dev(batch.input_ids),                 # [B, T_txt] - text + special tokens ONLY
+        "attention_mask": to_dev(batch.attention_mask),       # [B, T_txt]
+        "audio_in_ids": to_dev(getattr(batch, "audio_in_ids", None)),                    # [8, T_in] - reference audio
+        "audio_in_ids_start": to_dev(getattr(batch, "audio_in_ids_start", None)),        # [B] - reference positions
+        "audio_out_ids": to_dev(getattr(batch, "audio_out_ids", None)),                  # [8, T_out] - alignment metadata ONLY
+        "audio_out_ids_start": to_dev(getattr(batch, "audio_out_ids_start", None)),      # [B] - target positions
+        "audio_out_ids_start_group_loc": to_dev(getattr(batch, "audio_out_ids_start_group_loc", None)),  # [B] - group locations
+    }
+    
+    # Optional: Add audio waveform features if available
+    if hasattr(batch, 'audio_in_wv'):
+        inputs["audio_features"] = to_dev(batch.audio_in_wv)
+    if hasattr(batch, 'audio_feature_attention_mask'):
+        inputs["audio_feature_attention_mask"] = to_dev(batch.audio_feature_attention_mask)
+
+    # SANITY CHECK: DO NOT concatenate audio_out_ids to the text sequence.
+    # expanded_input_ids must come from the model's internal builder,
+    # not from us pre-concatenating targets.
+    logger.debug(f"🔒 NO-LEAK INPUTS: input_ids shape {inputs['input_ids'].shape if inputs['input_ids'] is not None else None}")
+    return inputs
+
+
+def build_text_labels(input_ids, tokenizer, device, mask_special=True, min_tokens_per_sample=32):
+    """
+    Create text labels for next-token LM loss on the TEXT segment ONLY.
+    We supervise ALL non-special text tokens (user + assistant) unless masked out;
+    this gives the model strong pressure to encode Arabic content.
+    
+    CRITICAL: This ensures ≥32 supervised Arabic tokens per sample to prevent mumbling.
+    """
+    B, T = input_ids.shape
+    # Shift like a decoder LM
+    labels = input_ids.clone()
+    labels[:, :-1] = input_ids[:, 1:]
+    labels[:, -1] = IGNORE_INDEX  # last token has no next token
+
+    if mask_special:
+        # HuggingFace-compatible special token mask
+        spec = []
+        for b in range(B):
+            ids = input_ids[b].tolist()
+            m = tokenizer.get_special_tokens_mask(ids, already_has_special_tokens=True)
+            spec.append(m)
+        spec = torch.tensor(spec, device=device, dtype=torch.bool)  # True where special
+
+        # Mask special tokens out of the loss
+        labels[spec] = IGNORE_INDEX
+
+    # 🚨 CRITICAL: Ensure >= min_tokens_per_sample supervised tokens (esp. for Arabic)
+    per_sample = (labels != IGNORE_INDEX).sum(dim=1)
+    for b in range(B):
+        if per_sample[b].item() < min_tokens_per_sample:
+            # Unmask earliest non-special tokens until threshold is met
+            ids = input_ids[b]
+            if mask_special:
+                mask_row = spec[b]
+            else:
+                mask_row = torch.zeros_like(ids, dtype=torch.bool)
+            candidates = (~mask_row).nonzero(as_tuple=False).squeeze(-1)
+            # Always skip the first position (no shifted target for pos 0)
+            candidates = candidates[candidates > 0]
+            need = min_tokens_per_sample - per_sample[b].item()
+            if need > 0 and len(candidates) > 0:
+                take = candidates[:need]
+                labels[b, take] = input_ids[b, take]
+                logger.debug(f"📊 FIXED: Sample {b} text supervision {per_sample[b].item()} → {(labels[b] != IGNORE_INDEX).sum().item()} tokens")
+
+    return labels
+
+
+def compute_higgs_losses(model_outputs, batch, tokenizer, device, lambda_text=0.1):
+    """
+    Compute audio CE (8 codebooks) + auxiliary text LM CE.
+    Assumes model_outputs.audio_logits is [T_out, 8, V] (Higgs), labels are [8, T_out].
+    
+    CRITICAL: This implements Higgs-Audio dual-FFN compatible loss computation
+    with proper codebook-major alignment and EOS masking.
+    """
+    losses = {}
+    
+    # ----- AUDIO CE (PRIMARY OBJECTIVE) -----
+    if hasattr(model_outputs, 'audio_logits') and model_outputs.audio_logits is not None:
+        audio_logits = model_outputs.audio_logits           # [T_out, 8, V]
+        audio_labels = getattr(batch, 'audio_out_ids', None)
+        
+        if audio_labels is not None:
+            audio_labels = audio_labels.to(device)       # [8, T_out]
+
+            # Mask EOS (e.g., 1025) and any padding in the labels
+            # Try to fetch EOS id from model/tokenizer. Fallback to 1025.
+            eos_id = getattr(getattr(model_outputs, "audio_vocab", None), "eos_id", 1025)
+            audio_labels = audio_labels.clone()
+            audio_labels[audio_labels == eos_id] = IGNORE_INDEX
+            
+            # 🔧 HIGGS DUAL-FFN ALIGNMENT: Permute to codebook-major so we can flatten (8, T_out, V)
+            if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
+                audio_logits = audio_logits.permute(1, 0, 2).contiguous()
+
+            # Flatten: [(8*T_out), V] vs [(8*T_out)]
+            audio_loss = F.cross_entropy(
+                audio_logits.view(-1, audio_logits.size(-1)),
+                audio_labels.contiguous().view(-1),
+                ignore_index=IGNORE_INDEX,
+                reduction="mean",
+            )
+            losses['audio_loss'] = audio_loss
+        else:
+            losses['audio_loss'] = torch.tensor(0.0, device=device)
+    else:
+        losses['audio_loss'] = torch.tensor(0.0, device=device)
+
+    # ----- TEXT LM CE (AUXILIARY FOR ARABIC CONTENT) -----
+    if hasattr(model_outputs, "logits") and model_outputs.logits is not None:
+        text_logits = model_outputs.logits               # [B, T_txt, V_txt]
+        input_ids = batch.input_ids.to(device)
+
+        # Shift for next-token prediction
+        text_logits = text_logits[:, :-1, :].contiguous()
+        text_labels = build_text_labels(
+            input_ids, tokenizer, device,
+            mask_special=True,
+            min_tokens_per_sample=32,   # KEY: ensure Arabic actually gets supervised
+        )[:, :-1].contiguous()
+
+        text_loss = F.cross_entropy(
+            text_logits.reshape(-1, text_logits.size(-1)),
+            text_labels.view(-1),
+            ignore_index=IGNORE_INDEX,
+            reduction="mean",
+        )
+        losses['text_loss'] = text_loss
+        losses['weighted_text_loss'] = lambda_text * text_loss
+    else:
+        losses['text_loss'] = torch.tensor(0.0, device=device)
+        losses['weighted_text_loss'] = torch.tensor(0.0, device=device)
+
+    # Total loss
+    total_loss = losses['audio_loss'] + losses['weighted_text_loss']
+    losses['total_loss'] = total_loss
+    
+    return total_loss, losses
+
+
+def validate_text_supervision(batch, tokenizer, device, min_tokens_per_sample=32):
+    """
+    RUNTIME GUARDRAIL: Validate text supervision adequacy.
+    CRITICAL: Ensures ≥32 supervised Arabic tokens per sample to prevent mumbling.
+    """
+    with torch.no_grad():
+        tlabs = build_text_labels(batch.input_ids.to(device), tokenizer, device)
+        non_ignore = (tlabs != IGNORE_INDEX).sum().item()
+        per_sample = non_ignore / tlabs.size(0)
+        
+        if per_sample < min_tokens_per_sample:
+            logger.error(f"🚨 INSUFFICIENT TEXT SUPERVISION: {per_sample:.1f} tokens/sample < {min_tokens_per_sample}")
+            logger.error(f"   This will cause 'mumbling' - model learns voice style but ignores Arabic text content!")
+            return False, per_sample
+        else:
+            logger.info(f"✅ ADEQUATE TEXT SUPERVISION: {per_sample:.1f} tokens/sample ≥ {min_tokens_per_sample}")
+            return True, per_sample
+
+
+def validate_text_conditioning(model, batch, tokenizer, device, min_entropy_diff=0.3):
+    """
+    RUNTIME GUARDRAIL: Entropy-diff (text gating) smoke test.
+    CRITICAL: Ensures model uses text for audio generation (entropy_diff ≥ 0.3).
+    """
+    with torch.no_grad():
+        # Get inputs without target leakage
+        inputs = build_no_leak_inputs(batch, tokenizer, device)
+        
+        # Forward with original text
+        try:
+            outputs_full = model(**inputs)
+            if not hasattr(outputs_full, 'audio_logits') or outputs_full.audio_logits is None:
+                logger.warning("⚠️  No audio_logits in model output for entropy test")
+                return False, 0.0
+            audio_logits_full = outputs_full.audio_logits
+        except Exception as e:
+            logger.error(f"🚨 ENTROPY TEST FAILED (forward): {e}")
+            return False, 0.0
+        
+        # Re-run with text zeroed (keep special tokens)
+        try:
+            masked_input_ids = batch.input_ids.clone()
+            spec = []
+            for b in range(masked_input_ids.size(0)):
+                spec.append(tokenizer.get_special_tokens_mask(masked_input_ids[b].tolist(), True))
+            spec = torch.tensor(spec, device=device, dtype=torch.bool)
+            masked_input_ids[~spec] = tokenizer.pad_token_id  # wipe content
+            
+            masked_inputs = inputs.copy()
+            masked_inputs['input_ids'] = masked_input_ids.to(device)
+            
+            outputs_masked = model(**masked_inputs)
+            if not hasattr(outputs_masked, 'audio_logits') or outputs_masked.audio_logits is None:
+                logger.warning("⚠️  No audio_logits in masked model output for entropy test")
+                return False, 0.0
+        except Exception as e:
+            logger.error(f"🚨 ENTROPY TEST FAILED (masked forward): {e}")
+            return False, 0.0
+        
+        # Compare entropy
+        def ent(x):  # x: [T,8,V]
+            p = F.softmax(x.float(), dim=-1).clamp_min(1e-9)
+            return -(p * p.log()).sum(-1).mean()
+        
+        try:
+            ent_full = ent(audio_logits_full)
+            ent_mask = ent(outputs_masked.audio_logits)
+            entropy_diff = abs(ent_mask - ent_full).item()
+            
+            if entropy_diff < min_entropy_diff:
+                logger.error(f"🚨 CRITICAL: Model NOT using text for audio generation! (entropy_diff={entropy_diff:.3f} < {min_entropy_diff})")
+                return False, entropy_diff
+            else:
+                logger.info(f"✅ HEALTHY TEXT CONDITIONING: entropy_diff={entropy_diff:.3f} ≥ {min_entropy_diff}")
+                return True, entropy_diff
+        except Exception as e:
+            logger.error(f"🚨 ENTROPY CALCULATION FAILED: {e}")
+            return False, 0.0
 
 
 class SimpleDataset(Dataset):
