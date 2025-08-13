@@ -170,68 +170,158 @@ def find_assistant_content_spans(input_ids, tokenizer):
     return spans
 
 
+def find_arabic_content_spans(input_ids, tokenizer):
+    """
+    SURGICAL FIX: Find spans containing ACTUAL Arabic text, not audio markers.
+    
+    Strategy:
+    1. Look for user/assistant roles that contain Arabic content
+    2. Find text BEFORE any audio markers like <|audio_out_bos|>
+    3. Return (start, end) of actual Arabic sentence content
+    """
+    ids = input_ids.tolist()
+    spans = []
+    
+    # Token IDs for ChatML structure
+    im_start_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
+    im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>") 
+    user_id = tokenizer.convert_tokens_to_ids("user")
+    assistant_id = tokenizer.convert_tokens_to_ids("assistant")
+    
+    # Audio marker tokens that END the text content
+    audio_out_bos_id = tokenizer.convert_tokens_to_ids("<|audio_out_bos|>")
+    audio_out_id = tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>")
+    
+    i = 0
+    while i < len(ids) - 1:
+        if ids[i] == im_start_id and i+1 < len(ids):
+            role_id = ids[i+1]
+            
+            # Check both user and assistant roles for Arabic content
+            if role_id in [user_id, assistant_id]:
+                content_start = i + 2  # Skip <|im_start|>role
+                
+                # Find end of role (either <|im_end|> or audio marker)
+                content_end = content_start
+                while content_end < len(ids):
+                    if ids[content_end] in [im_end_id, audio_out_bos_id, audio_out_id]:
+                        break
+                    content_end += 1
+                
+                # Check if this span contains non-ASCII (Arabic) characters
+                if content_end > content_start:
+                    try:
+                        span_text = tokenizer.decode(ids[content_start:content_end], skip_special_tokens=False)
+                        # Look for Arabic/non-ASCII characters
+                        has_arabic = any(ord(c) > 127 for c in span_text)
+                        if has_arabic and len(span_text.strip()) > 5:  # Minimum meaningful content
+                            spans.append((content_start, content_end, span_text[:50]))
+                    except:
+                        pass
+                
+                i = content_end
+            else:
+                i += 1
+        else:
+            i += 1
+    
+    return spans
+
+
 def build_text_labels_arabic_content(input_ids, tokenizer, device):
     """
-    SURGICAL FIX: Build labels that supervise ONLY Arabic assistant responses.
-    This is the text that should be spoken - not system prompts!
-    
-    Args:
-        input_ids: Tensor [batch_size, seq_len]
-        tokenizer: HuggingFace tokenizer  
-        device: Target device
-    
-    Returns:
-        labels: Tensor [batch_size, seq_len] with Arabic content supervised, rest masked
+    SURGICAL FIX A: Build labels that supervise ACTUAL Arabic content, not audio markers.
     """
     B, T = input_ids.shape
     labels = torch.full_like(input_ids, fill_value=IGNORE_INDEX)
     
-    # Process each sample in batch
-    for b in range(B):
-        # Find assistant content spans (Arabic responses)
-        content_spans = find_assistant_content_spans(input_ids[b], tokenizer)
-        
-        if content_spans:
-            # Use the LAST assistant span (the response paired with target audio)
-            start_pos, end_pos = content_spans[-1]
-            
-            # Supervise content tokens as next-token prediction
-            for pos in range(start_pos, min(end_pos, T-1)):
-                labels[b, pos] = input_ids[b, pos + 1]  # Next token prediction
-            
-            # Log what we're actually supervising
-            supervised_tokens = []
-            for pos in range(start_pos, min(end_pos, T-1)):
-                supervised_tokens.append(input_ids[b, pos].item())
-            
-            if supervised_tokens:
-                try:
-                    decoded = tokenizer.decode(supervised_tokens[:30], skip_special_tokens=False)
-                    print(f"🎯 Sample {b} SUPERVISING (Arabic): {repr(decoded[:100])}")
-                except:
-                    print(f"🎯 Sample {b} supervised tokens: {supervised_tokens[:10]}")
-        
-        # If no assistant spans found, try fallback  
-        elif (labels[b] == IGNORE_INDEX).all():
-            print(f"⚠️ No assistant content found in sample {b}, using fallback")
-            # Simple fallback: supervise non-structural tokens
-            structural_tokens = {
-                tokenizer.convert_tokens_to_ids("<|im_start|>"),
-                tokenizer.convert_tokens_to_ids("<|im_end|>"),
-                tokenizer.convert_tokens_to_ids("<|AUDIO|>"),
-                tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>"),
-                tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id
-            }
-            structural_tokens = {tid for tid in structural_tokens if tid is not None}
-            
-            for pos in range(T-1):
-                if input_ids[b, pos].item() not in structural_tokens:
-                    labels[b, pos] = input_ids[b, pos + 1]
+    # ALL special tokens to exclude from supervision
+    special_tokens = {
+        tokenizer.convert_tokens_to_ids("<|im_start|>"),
+        tokenizer.convert_tokens_to_ids("<|im_end|>"),
+        tokenizer.convert_tokens_to_ids("<|start_header_id|>"),
+        tokenizer.convert_tokens_to_ids("<|end_header_id|>"),
+        tokenizer.convert_tokens_to_ids("<|eot_id|>"),
+        tokenizer.convert_tokens_to_ids("system"),
+        tokenizer.convert_tokens_to_ids("user"),
+        tokenizer.convert_tokens_to_ids("assistant"),
+        tokenizer.convert_tokens_to_ids("<|AUDIO|>"),
+        tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>"),
+        tokenizer.convert_tokens_to_ids("<|audio_out_bos|>"),
+        tokenizer.convert_tokens_to_ids("<|audio_in_bos|>"),
+        tokenizer.convert_tokens_to_ids("<|audio_eos|>"),
+        tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id
+    }
+    special_tokens = {tid for tid in special_tokens if tid is not None}
     
-    # Final audit
-    total_supervised = (labels != IGNORE_INDEX).sum().item()
+    total_supervised = 0
+    
+    for b in range(B):
+        # DEBUG: Show what we're working with
+        if b < 3:  # Debug first 3 samples
+            try:
+                full_decoded = tokenizer.decode(input_ids[b], skip_special_tokens=False)
+                print(f"🔍 SAMPLE {b} RAW: {repr(full_decoded[:150])}")
+            except:
+                pass
+        
+        # Find spans with actual Arabic content
+        arabic_spans = find_arabic_content_spans(input_ids[b], tokenizer)
+        
+        supervised_this_sample = 0
+        
+        if arabic_spans:
+            # Use the LAST Arabic span (most likely to be the target content)
+            start_pos, end_pos, preview = arabic_spans[-1]
+            
+            # Supervise as next-token prediction
+            for pos in range(start_pos, min(end_pos, T-1)):
+                if input_ids[b, pos].item() not in special_tokens:
+                    labels[b, pos] = input_ids[b, pos + 1]
+                    supervised_this_sample += 1
+            
+            print(f"🎯 Sample {b} SUPERVISING ARABIC: {repr(preview)} ({supervised_this_sample} tokens)")
+            
+        else:
+            # FALLBACK: If no Arabic spans found, supervise non-special tokens
+            print(f"⚠️ Sample {b} NO ARABIC SPANS - using fallback")
+            for pos in range(T-1):
+                if input_ids[b, pos].item() not in special_tokens:
+                    labels[b, pos] = input_ids[b, pos + 1]  
+                    supervised_this_sample += 1
+            
+            # Show what fallback found
+            if supervised_this_sample > 0:
+                try:
+                    supervised_tokens = []
+                    for pos in range(T-1):
+                        if labels[b, pos] != IGNORE_INDEX:
+                            supervised_tokens.append(input_ids[b, pos].item())
+                        if len(supervised_tokens) >= 15:  # Sample first 15
+                            break
+                    if supervised_tokens:
+                        decoded = tokenizer.decode(supervised_tokens, skip_special_tokens=False)
+                        print(f"🎯 Sample {b} FALLBACK CONTENT: {repr(decoded[:80])}")
+                except:
+                    pass
+        
+        total_supervised += supervised_this_sample
+        
+        # CRITICAL: Ensure minimum supervision per sample
+        if supervised_this_sample < 10:
+            print(f"🚨 Sample {b} INSUFFICIENT SUPERVISION: {supervised_this_sample} tokens < 10 minimum")
+
+    # Final audit  
     total_possible = B * (T - 1)
-    print(f"🎯 ARABIC TEXT SUPERVISION: {total_supervised}/{total_possible} tokens ({100*total_supervised/total_possible:.1f}%)")
+    supervision_pct = 100 * total_supervised / total_possible
+    
+    print(f"🎯 ARABIC TEXT SUPERVISION: {total_supervised}/{total_possible} tokens ({supervision_pct:.1f}%)")
+    
+    # CRITICAL CHECK: Must have meaningful supervision
+    if supervision_pct < 20:
+        print(f"🚨 CRITICAL: Supervision {supervision_pct:.1f}% < 20% minimum! Check data format.")
+    elif supervision_pct >= 50:
+        print(f"✅ GOOD: Supervision {supervision_pct:.1f}% >= 50% target")
     
     return labels
 
@@ -349,18 +439,29 @@ def compute_higgs_losses(model_outputs, batch, tokenizer, device, lambda_text=0.
         if audio_labels is not None:
             audio_labels = audio_labels.to(device)       # [8, T_out]
             
-            # SURGICAL FIX: Only mask EOS at padding positions, not legitimate stop positions
-            # Don't mask EOS everywhere - model needs to learn when to stop!
+            # SURGICAL FIX B: Mask EOS from CE but keep in sequence for stopping
             audio_labels = audio_labels.clone()
             
-            # Mask first token of each codebook (BOS)
+            # Mask first token of each codebook (BOS) 
             audio_labels[:, 0] = IGNORE_INDEX  # Mask BOS position
             
-            # ONLY mask EOS at padding positions (where all codebooks are EOS)
-            eos_positions = (audio_labels == 1025).all(dim=0)  # Only where ALL codebooks are EOS
-            if eos_positions.any():
-                print(f"🛑 Masking {eos_positions.sum()} EOS positions (padding only)")
-                audio_labels[:, eos_positions] = IGNORE_INDEX
+            # CRITICAL: Mask ALL EOS tokens from loss computation (but keep in sequence)
+            # EOS should not be a learning target - model learns to end, not speak content
+            audio_eos_id = 1025
+            audio_pad_id = getattr(tokenizer, 'pad_token_id', None) if hasattr(tokenizer, 'pad_token_id') else None
+            
+            # Mask EOS completely from CE loss
+            eos_mask = (audio_labels == audio_eos_id)
+            if eos_mask.any():
+                print(f"🛑 Masking {eos_mask.sum().item()} EOS tokens from audio CE")
+                audio_labels[eos_mask] = IGNORE_INDEX
+            
+            # Also mask padding if exists
+            if audio_pad_id is not None:
+                pad_mask = (audio_labels == audio_pad_id)
+                if pad_mask.any():
+                    print(f"🛑 Masking {pad_mask.sum().item()} PAD tokens from audio CE")
+                    audio_labels[pad_mask] = IGNORE_INDEX
             
             # 🔧 HIGGS DUAL-FFN ALIGNMENT: Permute to codebook-major so we can flatten (8, T_out, V)
             if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
@@ -372,9 +473,14 @@ def compute_higgs_losses(model_outputs, batch, tokenizer, device, lambda_text=0.
             )
             losses['audio_loss'] = audio_loss
             
-            # Audit EOS in final labels
-            eos_count = (audio_labels == 1025).sum().item()
-            print(f"🎯 EOS tokens in audio labels: {eos_count} (legitimate stops)")
+            # CRITICAL AUDIT: EOS count must be ZERO in final labels used for CE
+            final_eos_count = (audio_labels == audio_eos_id).sum().item()
+            print(f"🎯 EOS in audio labels after masking: {final_eos_count} (MUST BE 0)")
+            
+            if final_eos_count > 0:
+                print(f"🚨 CRITICAL BUG: {final_eos_count} EOS tokens still in CE labels - masking failed!")
+            else:
+                print(f"✅ EOS MASKING SUCCESS: 0 EOS tokens in CE labels")
             
         else:
             losses['audio_loss'] = torch.tensor(0.0, device=device, requires_grad=True)
@@ -1094,62 +1200,8 @@ def main():
                     else:
                         logger.info(f"  Output type: {type(outputs)}")
                 
-                # PROPER LOSS COMPUTATION FOR ZERO-SHOT VOICE CLONING
-                total_loss = None  # use None sentinel; keep this a Tensor
-                loss_components = {}
-                
-                # 1. Audio Loss (PRIMARY for voice cloning)
-                if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
-                    audio_logits = outputs.audio_logits
-                    
-                    # 🔍 DEBUGGING: Verify audio loss computation
-                    if step == 0 or step % 10 == 0:
-                        logger.info(f"🔊 AUDIO LOSS COMPUTATION:")
-                        logger.info(f"  audio_logits shape: {audio_logits.shape}")
-                        logger.info(f"  audio_labels shape: {audio_labels.shape}")
-                        logger.info(f"  audio_labels non-ignore: {(audio_labels != -100).sum().item()}/{audio_labels.numel()}")
-                        logger.info(f"  audio_labels sample: {audio_labels[0, :10] if audio_labels.numel() > 10 else audio_labels[0]}")
-                        
-                        # CRITICAL: Verify loss tensor shapes before flattening
-                        logits_flat = audio_logits.view(-1, audio_logits.size(-1))
-                        labels_flat = audio_labels.view(-1)
-                        logger.info(f"🚨 CRITICAL SHAPE CHECK:")
-                        logger.info(f"  logits_flat: {logits_flat.shape} (should be [N, 1026])")
-                        logger.info(f"  labels_flat: {labels_flat.shape} (should be [N])")
-                        logger.info(f"  labels_flat min/max: {labels_flat[labels_flat != -100].min().item() if (labels_flat != -100).any() else 'N/A'} / {labels_flat[labels_flat != -100].max().item() if (labels_flat != -100).any() else 'N/A'}")
-                        logger.info(f"  Expected range: 0-1025 (vocab size 1026)")
-                    
-                    # 🚨 CRITICAL FIX: Align tensor dimensions before loss computation
-                    # Model outputs: [T, 8, V] (time-major)
-                    # Labels:        [8, T]    (codebook-major)
-                    # Without alignment, flattening happens in different orders → random CE!
-                    
-                    if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
-                        # Permute to [8, T, V] to match label order (codebook-major)
-                        audio_logits = audio_logits.permute(1, 0, 2).contiguous()
-                        if step == 0 or step % 10 == 0:
-                            logger.info(f"🔧 TENSOR ALIGNMENT: Permuted audio_logits from [T,8,V] to [8,T,V]: {audio_logits.shape}")
-                    
-                    # Compute audio token prediction loss (the CORE of voice cloning)
-                    audio_loss_fct = torch.nn.CrossEntropyLoss(
-                        ignore_index=-100,
-                        label_smoothing=args.audio_label_smoothing
-                    )
-                    
-                    # CRITICAL VERIFICATION: Check tensor alignment after fix
-                    logits_for_loss = audio_logits.view(-1, audio_logits.size(-1))  # [(8*T), vocab]
-                    labels_for_loss = audio_labels.contiguous().view(-1)           # [(8*T)]
-                    
-                    # Verify no invalid labels
-                    valid_mask = labels_for_loss != -100
-                    if valid_mask.any():
-                        valid_labels = labels_for_loss[valid_mask]
-                        if valid_labels.min() < 0 or valid_labels.max() >= 1026:
-                            logger.error(f"🚨 INVALID AUDIO LABELS: min={valid_labels.min()}, max={valid_labels.max()} (expected 0-1025)")
-                    
-                    audio_loss = audio_loss_fct(logits_for_loss, labels_for_loss)
-                    total_loss = audio_loss if total_loss is None else total_loss + audio_loss
-                    loss_components['audio_loss'] = audio_loss.item()
+                # 🚨 CRITICAL FIX: Use compute_higgs_losses for BOTH audio and text losses
+                total_loss, loss_components = compute_higgs_losses(outputs, batch, tokenizer, device, lambda_text=0.1)
                     
                     # 🔍 CRITICAL: Monitor audio loss trends + SANITY CHECKS FOR MODEL COLLAPSE
                     if step % 10 == 0:
