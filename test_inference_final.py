@@ -302,13 +302,13 @@ class FinalInferenceTest:
                     logger.info("🎯 Performing zero-shot voice cloning with reference audio")
                     generation_type = "voice_cloning"
                 
-                # NOTE: Text is already in messages, no need for separate chunked_text
-                # The chunked_text parameter duplicates the text and causes confusion
+                # CRITICAL FIX: Use empty list for chunked_text to avoid duplication but prevent NoneType error
+                # The original issue was text duplication - messages already contain the text
                 logger.info("🚀 Starting generation...")
                 waveform, sample_rate, generated_text = self.model_client.generate(
                     messages=messages,
                     audio_ids=audio_ids,
-                    chunked_text=None,  # Let model use text from messages only
+                    chunked_text=[],  # Empty list to avoid text duplication but satisfy API
                     generation_chunk_buffer_size=128,  # Official parameter for long texts
                     temperature=0.6,  # Lower temperature for more faithful text reading
                     top_k=40,  # Official parameter
