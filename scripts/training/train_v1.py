@@ -114,15 +114,24 @@ def build_text_labels(input_ids, tokenizer, device, mask_special=True, min_token
     labels[:, -1] = IGNORE_INDEX  # last token has no next token
 
     if mask_special:
-        # HuggingFace-compatible special token mask
-        spec = []
-        for b in range(B):
-            ids = input_ids[b].tolist()
-            m = tokenizer.get_special_tokens_mask(ids, already_has_special_tokens=True)
-            spec.append(m)
-        spec = torch.tensor(spec, device=device, dtype=torch.bool)  # True where special
-
-        # Mask special tokens out of the loss
+        # FIXED: Manual special token masking to avoid Arabic token misclassification
+        # Only mask actual ChatML special tokens, NOT Arabic text tokens
+        special_token_ids = set([
+            tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id,
+            tokenizer.convert_tokens_to_ids("<|im_start|>"), 
+            tokenizer.convert_tokens_to_ids("<|im_end|>"),
+            tokenizer.convert_tokens_to_ids("<|AUDIO|>"),
+            tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>")
+        ])
+        # Remove None values in case some tokens don't exist
+        special_token_ids = {tid for tid in special_token_ids if tid is not None}
+        
+        # Create mask for actual special tokens only
+        spec = torch.zeros_like(input_ids, dtype=torch.bool)
+        for tid in special_token_ids:
+            spec |= (input_ids == tid)
+        
+        # Mask only actual special tokens, preserve Arabic text tokens
         labels[spec] = IGNORE_INDEX
 
     # 🚨 CRITICAL: Ensure >= min_tokens_per_sample supervised tokens (esp. for Arabic)
