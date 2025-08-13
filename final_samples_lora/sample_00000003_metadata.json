@@ -1,10 +1,10 @@
 {
   "sample_id": "sample_00000003",
-  "target_text": "Some people didn't.",
-  "reference_audio": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000002_default_91990f7b.wav",
+  "target_text": "الشاهد في الموضوع انه المايك هادا لو ما تبي تشبكو في الجوال تقدر تشبكو على اللابتوب عالطول",
+  "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000009_default_6c701fcc.wav",
   "generated_audio": "final_samples_lora/sample_00000003_generated.wav",
   "sampling_rate": 24000,
-  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nSome people didn't.<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nSome people didn't.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nالشاهد في الموضوع انه المايك هادا لو ما تبي تشبكو في الجوال تقدر تشبكو على اللابتوب عالطول<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nالشاهد في الموضوع انه المايك هادا لو ما تبي تشبكو في الجوال تقدر تشبكو على اللابتوب عالطول<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
   "generation_type": "voice_cloning",
   "success": true
 }

@@ -1,10 +1,10 @@
 {
   "sample_id": "sample_00000001",
-  "target_text": "Nice.",
-  "reference_audio": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000003_default_9f23cd90.wav",
+  "target_text": "فَأَعْتَقِدُ إِنَّكَ إِنْت لِمَا تَجِي تَشَوُّف سُبْحَانَ اللَّهْ",
+  "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000008_default_dd883f83.wav",
   "generated_audio": "final_samples_lora/sample_00000001_generated.wav",
   "sampling_rate": 24000,
-  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nNice.<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nNice.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nفَأَعْتَقِدُ إِنَّكَ إِنْت لِمَا تَجِي تَشَوُّف سُبْحَانَ اللَّهْ<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nفَأَعْتَقِدُ إِنَّكَ إِنْت لِمَا تَجِي تَشَوُّف سُبْحَانَ اللَّهْ<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
   "generation_type": "voice_cloning",
   "success": true
 }

@@ -1,10 +1,10 @@
 {
   "sample_id": "sample_00000006",
-  "target_text": "How can it be dangerous for kids' pajamas, but safe for sofas?",
-  "reference_audio": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000006_default_2dd0a964.wav",
+  "target_text": "وَمِنْ ثُمَّ قَالُوا أَنَّهُ لا يُوجَدُ إِلا أَنْ نَأْخُذَ سَيَنْسَتِيلْ.",
+  "reference_audio": "../train-higgs-audio/datasets/part_1/ref_audio_20250804_102703_00000000_default_66b18748.wav",
   "generated_audio": "final_samples_lora/sample_00000006_generated.wav",
   "sampling_rate": 24000,
-  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nHow can it be dangerous for kids' pajamas, but safe for sofas?<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nHow can it be dangerous for kids' pajamas, but safe for sofas?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
+  "generated_text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a voice cloning assistant. Generate speech in the target voice using the provided reference audio.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nوَمِنْ ثُمَّ قَالُوا أَنَّهُ لا يُوجَدُ إِلا أَنْ نَأْخُذَ سَيَنْسَتِيلْ.<|audio_bos|><|AUDIO|><|audio_eos|><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nوَمِنْ ثُمَّ قَالُوا أَنَّهُ لا يُوجَدُ إِلا أَنْ نَأْخُذَ سَيَنْسَتِيلْ.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|><|eot_id|>",
   "generation_type": "voice_cloning",
   "success": true
 }
