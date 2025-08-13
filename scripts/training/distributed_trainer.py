@@ -210,7 +210,7 @@ def main():
                         help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=3,
                         help="Number of epochs")
-    parser.add_argument("--warmup_steps", type=int, default=100,
+    parser.add_argument("--warmup_steps", type=int, default=500,
                         help="Warmup steps")
     parser.add_argument("--max_grad_norm", type=float, default=1.0,
                         help="Max gradient norm")
