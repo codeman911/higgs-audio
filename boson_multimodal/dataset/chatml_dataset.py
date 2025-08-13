@@ -401,6 +401,63 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                 input_tokens.extend(recipient_tokens)
                 label_tokens.extend(recipient_tokens)
 
+            # 🚨 CRITICAL FIX: Add target text supervision for assistant messages
+            # This enables the model to learn Arabic text → audio token mapping
+            if role == "assistant" and (sample.start_index is None or turn_id >= sample.start_index):
+                added_assistant_text = False
+                # Check if we have target text in sample metadata
+                if hasattr(sample, 'misc') and sample.misc and 'target_text' in sample.misc:
+                    target_text = sample.misc['target_text']
+                    if target_text and str(target_text).strip():
+                        # Add target text as labels before processing audio content
+                        # This provides crucial text supervision for text-to-speech learning
+                        target_text_tokens = tokenizer.encode(str(target_text).strip(), add_special_tokens=False)
+                        if len(target_text_tokens) > 0:
+                            input_tokens.extend(target_text_tokens)
+                            label_tokens.extend(target_text_tokens)  # ✅ CRITICAL: Now model learns Arabic text!
+                            # Add separator token between text and audio
+                            sep_token = tokenizer.encode(" ", add_special_tokens=False)
+                            input_tokens.extend(sep_token)
+                            label_tokens.extend(sep_token)
+                            added_assistant_text = True
+                
+                # Fallback: if no misc.target_text, try to extract prior USER text as supervision
+                if not added_assistant_text and turn_id > 0:
+                    try:
+                        prev_msg = sample.messages[turn_id - 1]
+                        if prev_msg.role == "user":
+                            # Normalize previous content into a list of text strings
+                            prev_texts = []
+                            if isinstance(prev_msg.content, str):
+                                prev_texts.append(prev_msg.content)
+                            elif isinstance(prev_msg.content, list):
+                                for ele in prev_msg.content:
+                                    if hasattr(ele, 'type') and getattr(ele, 'type') == 'text' and hasattr(ele, 'text'):
+                                        prev_texts.append(ele.text)
+                                    elif isinstance(ele, str):
+                                        prev_texts.append(ele)
+                            elif hasattr(prev_msg.content, 'type') and getattr(prev_msg.content, 'type') == 'text' and hasattr(prev_msg.content, 'text'):
+                                prev_texts.append(prev_msg.content.text)
+                            
+                            # Join and lightly validate contains letters (incl. Arabic range)
+                            candidate_text = " ".join([t for t in prev_texts if isinstance(t, str) and t.strip()])
+                            if candidate_text:
+                                import re
+                                has_letters = re.search(r"[A-Za-z\u0600-\u06FF]", candidate_text) is not None
+                                if has_letters:
+                                    cand_tokens = tokenizer.encode(candidate_text.strip(), add_special_tokens=False)
+                                    # Avoid supervising only special tokens
+                                    if len(cand_tokens) > 0:
+                                        input_tokens.extend(cand_tokens)
+                                        label_tokens.extend(cand_tokens)
+                                        sep_token = tokenizer.encode(" ", add_special_tokens=False)
+                                        input_tokens.extend(sep_token)
+                                        label_tokens.extend(sep_token)
+                                        added_assistant_text = True
+                    except Exception:
+                        # Silent fallback if structure is unexpected
+                        pass
+            
             for content in content_l:
                 if content.type == "text":
                     text_tokens = tokenizer.encode(content.text, add_special_tokens=False)
