@@ -652,9 +652,17 @@ def main():
                         if first_ignore_count < 7:  # Allow some tolerance
                             logger.warning(f"⚠️  INSUFFICIENT FIRST TOKEN MASKING: only {first_ignore_count}/8 masked")
                         
-                        # 🚨 SANITY CHECK 5: Check for suspicious loss ratios
-                        if audio_loss.item() < 0.3:
-                            logger.warning(f"🚨 EXTREMELY LOW AUDIO LOSS: {audio_loss.item():.4f} - INVESTIGATE!")
+                        # 🚨 CRITICAL: Monitor for TARGET AUDIO LEAKAGE FIX SUCCESS
+                        audio_ce = audio_loss.item()
+                        if audio_ce < 1.0:
+                            logger.error(f"🚨 CRITICAL: AUDIO CE TOO LOW ({audio_ce:.4f}) - POSSIBLE TARGET AUDIO LEAKAGE STILL PRESENT!")
+                            logger.error(f"🚨 Expected: CE should be 2-6 for healthy learning, not <1 (copying behavior)")
+                        elif 1.0 <= audio_ce < 2.0:
+                            logger.warning(f"⚠️  AUDIO CE BORDERLINE ({audio_ce:.4f}) - Monitor for leakage")
+                        elif 2.0 <= audio_ce <= 6.0:
+                            logger.info(f"✅ HEALTHY AUDIO CE ({audio_ce:.4f}) - Target audio leakage fix WORKING!")
+                        elif audio_ce > 6.0:
+                            logger.warning(f"🚨 HIGH AUDIO CE ({audio_ce:.4f}) - Model struggling to learn audio")
                         
 
                 
