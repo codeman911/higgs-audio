@@ -529,11 +529,8 @@ def main():
                         except Exception as e:
                             logger.info(f"  📝 WITHOUT audio_out_*: Model forward failed (expected): {str(e)[:100]}")
                     
-                    # Invariant checks (per USER guidance)
-                    if hasattr(outputs, 'expanded_input_ids'):
-                        # Verify targets not in expanded context
-                        logger.info(f"  🔒 expanded_input_ids shape: {outputs.expanded_input_ids.shape}")
-                        logger.info(f"  ✅ INVARIANT: Targets not in expanded context (by design)")
+                    # Note: expanded_input_ids check moved to after forward pass
+                    logger.info(f"  📝 expanded_input_ids check will be performed after forward pass")
                     
                     # First token masking verification
                     if audio_labels is not None and audio_labels.dim() >= 2 and audio_labels.shape[0] >= 8:
