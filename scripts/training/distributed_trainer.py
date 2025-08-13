@@ -539,8 +539,11 @@ def main():
                                 
                                 # Compare audio logits - if similar, text NOT used for audio generation
                                 if hasattr(baseline_outputs, 'audio_logits') and hasattr(scrambled_outputs, 'audio_logits'):
-                                    baseline_entropy = torch.nn.functional.softmax(baseline_outputs.audio_logits, dim=-1).entropy().mean()
-                                    scrambled_entropy = torch.nn.functional.softmax(scrambled_outputs.audio_logits, dim=-1).entropy().mean()
+                                    # Calculate entropy manually: -sum(p * log(p))
+                                    baseline_probs = torch.nn.functional.softmax(baseline_outputs.audio_logits, dim=-1)
+                                    scrambled_probs = torch.nn.functional.softmax(scrambled_outputs.audio_logits, dim=-1)
+                                    baseline_entropy = -(baseline_probs * torch.log(baseline_probs + 1e-8)).sum(dim=-1).mean()
+                                    scrambled_entropy = -(scrambled_probs * torch.log(scrambled_probs + 1e-8)).sum(dim=-1).mean()
                                     entropy_diff = abs(baseline_entropy - scrambled_entropy)
                                     logger.info(f"  🎯 TEXT CONDITIONING TEST: entropy_diff={entropy_diff:.4f}")
                                     if entropy_diff < 0.1:
@@ -847,8 +850,8 @@ def main():
                             logger.info(f"🎯 STEADY LEARNING: {progress_ratio:.1%} progress from random baseline")
                             
                         # 🚨 SANITY CHECK 2: Audio token comparison (first/last 10)
-                        pred = L.argmax(-1)  # [8, T] 
-                        valid_mask = (y != -100)
+                        pred = logits_for_loss.argmax(-1)  # [8, T] 
+                        valid_mask = (labels_for_loss != -100)
                         
 
                     elif audio_ce > 6.0:
