@@ -272,9 +272,9 @@ def audit_step_diagnostics(step, model_outputs, batch, tokenizer, device, eos_id
     """Comprehensive step-level diagnostics as requested"""
     diagnostics = {}
     
-    # 1. Text mask audit
+    # 1. Text mask audit - FIXED: Use new Arabic content function
     input_ids = batch.input_ids.to(device)
-    text_labels = build_text_labels_chatml(input_ids, tokenizer, device, min_tokens_per_sample=64)
+    text_labels = build_text_labels_arabic_content(input_ids, tokenizer, device)
     
     per_sample_supervised = []
     for b in range(text_labels.shape[0]):
@@ -1223,45 +1223,9 @@ def main():
                         if step > 0 and step % 200 == 0:
                             logger.info(f"🧪 Consider running reference ablation test at step {step} to verify conditioning dependency")
                 
-                # 2. Text Loss (SECONDARY - for text understanding)
-                if hasattr(outputs, 'logits') and outputs.logits is not None and text_labels is not None:
-                    text_logits = outputs.logits
-                    
-                    # Only use text loss if we have reasonable dimensions
-                    min_seq_len = min(text_logits.size(1), text_labels.size(1))
-                    if min_seq_len > 1:  # Need at least 2 tokens for shifting
-                        # Trim to matching sequence length 
-                        text_logits = text_logits[:, :min_seq_len, :]
-                        text_labels = text_labels[:, :min_seq_len]
-                        
-                        # Shift for next-token prediction
-                        shift_logits = text_logits[..., :-1, :].contiguous()
-                        shift_labels = text_labels[..., 1:].contiguous()
-                        
-                        # 🔍 DEBUGGING: Verify text loss computation
-                        if step == 0 or step % 10 == 0:
-                            logger.info(f"📝 TEXT LOSS COMPUTATION:")
-                            logger.info(f"  text_logits original: {text_logits.shape}")
-                            logger.info(f"  text_labels original: {text_labels.shape}")
-                            logger.info(f"  after shift - logits: {shift_logits.shape}, labels: {shift_labels.shape}")
-                            logger.info(f"  text_labels non-ignore: {(shift_labels != -100).sum().item()}/{shift_labels.numel()}")
-                        
-                        # Compute text loss (weighted lower for voice cloning)
-                        text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-                        text_loss = text_loss_fct(
-                            shift_logits.view(-1, shift_logits.size(-1)),
-                            shift_labels.view(-1)
-                        )
-                        
-                        # Weight text loss lower (audio is primary for voice cloning)
-                        weighted_text_loss = 0.1 * text_loss  
-                        total_loss = weighted_text_loss if total_loss is None else total_loss + weighted_text_loss
-                        loss_components['text_loss'] = text_loss.item()
-                        loss_components['weighted_text_loss'] = weighted_text_loss.item()
-                        
-                        # 🔍 CRITICAL: Monitor text loss trends  
-                        if step % 10 == 0:
-                            logger.info(f"📝 TEXT LOSS (Step {step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f})")
+                # 🚨 REMOVED OLD TEXT LOSS COMPUTATION - NOW HANDLED BY compute_higgs_losses()
+                # The old manual text loss computation was interfering with the new Arabic content supervision
+                # All loss computation now handled by compute_higgs_losses() function
                 
                 # Final loss for backward pass
                 if total_loss is None:
