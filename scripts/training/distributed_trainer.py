@@ -216,12 +216,10 @@ def main():
                         help="Max gradient norm")
     
     # LoRA arguments
-    parser.add_argument("--lora_r", type=int, default=16,
-                        help="LoRA rank")
-    parser.add_argument("--lora_alpha", type=int, default=32,
-                        help="LoRA alpha")
-    parser.add_argument("--lora_dropout", type=float, default=0.1,
-                        help="LoRA dropout")
+    parser.add_argument('--lora_r', type=int, default=32, help='LoRA rank (increased for Arabic learning)')
+    parser.add_argument('--lora_alpha', type=int, default=64, help='LoRA alpha (increased for Arabic learning)')
+    parser.add_argument('--lora_dropout', type=float, default=0.05, help='LoRA dropout')
+    parser.add_argument('--text_loss_weight', type=float, default=1.0, help='Text loss weight (critical for language learning)')
     
     # Other arguments
     parser.add_argument("--num_workers", type=int, default=0,
@@ -359,17 +357,21 @@ def main():
             "audio_decoder_proj.audio_lm_head",
             
             # STRATEGY 1: Audio MLP layers for ALL layers (0-27) - audio generation pathway
-            # Based on model analysis: these are the ACTUAL audio generation modules
         ] + [f"layers.{i}.audio_mlp.gate_proj" for i in range(28)] + \
         [f"layers.{i}.audio_mlp.up_proj" for i in range(28)] + \
         [f"layers.{i}.audio_mlp.down_proj" for i in range(28)] + [
             
-            # STRATEGY 2: Standard attention for reference conditioning (q_proj, k_proj, v_proj, o_proj only for efficiency)
-            # These help with understanding reference audio context
+            # STRATEGY 2: Standard attention for reference conditioning
         ] + [f"layers.{i}.self_attn.q_proj" for i in range(28)] + \
         [f"layers.{i}.self_attn.k_proj" for i in range(28)] + \
         [f"layers.{i}.self_attn.v_proj" for i in range(28)] + \
-        [f"layers.{i}.self_attn.o_proj" for i in range(28)],
+        [f"layers.{i}.self_attn.o_proj" for i in range(28)] + [
+            
+            # CRITICAL FIX: TEXT BACKBONE ADAPTATION for Arabic phonetics
+            # Target top LLaMA layers (20-27) for language learning
+        ] + [f"layers.{i}.mlp.gate_proj" for i in range(20, 28)] + \
+        [f"layers.{i}.mlp.up_proj" for i in range(20, 28)] + \
+        [f"layers.{i}.mlp.down_proj" for i in range(20, 28)],
         lora_dropout=args.lora_dropout,
         bias="none",
         task_type=TaskType.CAUSAL_LM,
@@ -680,15 +682,22 @@ def main():
                             shift_labels.view(-1)
                         )
                         
-                        # Weight text loss lower (audio is primary for voice cloning)
-                        weighted_text_loss = 0.1 * text_loss  
+                        # CRITICAL FIX: Increase text loss weight for Arabic language learning
+                        # Text loss is ESSENTIAL for pronunciation and phonetics
+                        weighted_text_loss = args.text_loss_weight * text_loss  
                         total_loss = weighted_text_loss if total_loss is None else total_loss + weighted_text_loss
                         loss_components['text_loss'] = text_loss.item()
                         loss_components['weighted_text_loss'] = weighted_text_loss.item()
                         
-                        # 🔍 CRITICAL: Monitor text loss trends  
+                        # 🔍 CRITICAL: Monitor text loss trends for Arabic learning
                         if global_step % args.log_steps == 0:
-                            logger.info(f"📝 TEXT LOSS (Step {global_step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f})")
+                            logger.info(f"📝 TEXT LOSS (Step {global_step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f}, weight: {args.text_loss_weight})")
+                            
+                            # Check for text learning problems
+                            if text_loss.item() > 4.0:
+                                logger.warning(f"🚨 HIGH TEXT LOSS: {text_loss.item():.4f} - Arabic pronunciation may be poor!")
+                            elif text_loss.item() < 1.5:
+                                logger.info(f"✅ GOOD TEXT LOSS: {text_loss.item():.4f} - Language learning active!")
                 
                 # Final loss for backward pass
                 if total_loss is None:
