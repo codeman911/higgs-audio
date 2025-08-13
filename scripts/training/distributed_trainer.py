@@ -493,6 +493,26 @@ def main():
                 
 
                 
+                # 🚨 CRITICAL DEBUG: Log model inputs to diagnose T=0 audio logits issue
+                if global_step % 10 == 0:
+                    logger.info(f"🔍 MODEL INPUT DEBUG (Step {global_step}):")
+                    for key, value in model_inputs.items():
+                        if value is not None and hasattr(value, 'shape'):
+                            logger.info(f"  {key}: {value.shape}")
+                        elif value is not None:
+                            logger.info(f"  {key}: {type(value)} (non-tensor)")
+                        else:
+                            logger.info(f"  {key}: None")
+                    
+                    # CRITICAL: Check if audio structure fields are present and non-empty
+                    if 'audio_out_ids' in model_inputs and model_inputs['audio_out_ids'] is not None:
+                        audio_out_shape = model_inputs['audio_out_ids'].shape
+                        logger.info(f"🎯 AUDIO_OUT_IDS SHAPE: {audio_out_shape} (should NOT be [*, 0])")
+                        if len(audio_out_shape) > 1 and audio_out_shape[1] == 0:
+                            logger.error(f"🚨 CRITICAL: audio_out_ids has 0 tokens! This causes T=0 audio logits!")
+                    else:
+                        logger.error(f"🚨 CRITICAL: audio_out_ids is None! Model cannot generate audio logits!")
+
                 # Forward pass - call model directly WITHOUT labels
                 outputs = actual_model(**model_inputs)
                 
