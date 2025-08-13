@@ -57,6 +57,22 @@ def merge_lora_weights(base_model_path: str, lora_checkpoint: str, output_dir: s
     merged_model.save_pretrained(output_dir)
     print("✅ Model saved")
     
+    # Copy tokenizer files from base model (CRITICAL: needed for inference)
+    print("🔄 Copying tokenizer files from base model...")
+    try:
+        from transformers import AutoTokenizer
+        
+        # Load tokenizer from base model
+        tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+        
+        # Save tokenizer to merged model directory
+        tokenizer.save_pretrained(output_dir)
+        print("✅ Tokenizer files copied")
+        
+    except Exception as e:
+        print(f"⚠️  Warning: Could not copy tokenizer files: {e}")
+        print("   You may need to manually copy tokenizer files for inference")
+    
     # Verify model can be loaded
     print("🔍 Verifying merged model...")
     try:
