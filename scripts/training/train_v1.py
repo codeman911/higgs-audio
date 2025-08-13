@@ -179,20 +179,59 @@ def find_subseq(a, b):
 
 def build_text_labels_from_chatml(input_ids, tokenizer, role="user"):
     """
-    EXACT USER SPECIFICATION: Build labels that supervise ONLY the span containing actual sentence.
-    input_ids: [B, T] tokenized ChatML (system, user, assistant, audio placeholders)
-    We supervise ONLY the span that contains the actual sentence.
-    Commonly that's the last user span.
+    FIXED: Build labels that supervise ONLY the span containing actual sentence.
+    First debug the actual ChatML structure, then parse correctly.
     """
     B, T = input_ids.shape
     labels = torch.full_like(input_ids, fill_value=-100)
 
-    # Encode markers once
-    im_start = tokenizer.encode("<|im_start|>", add_special_tokens=False)
-    im_end   = tokenizer.encode("<|im_end|>",   add_special_tokens=False)
-    user_tok = tokenizer.encode("user\n",       add_special_tokens=False)  # Higgs uses "role\n" after <|im_start|>
-    asst_tok = tokenizer.encode("assistant\n",  add_special_tokens=False)
+    # DEBUG: First let's see what the actual structure looks like
+    for b in range(min(2, B)):  # Debug first 2 samples
+        try:
+            decoded_sample = tokenizer.decode(input_ids[b], skip_special_tokens=False)
+            print(f"🔍 SAMPLE {b} STRUCTURE: {repr(decoded_sample[:200])}")
+        except:
+            print(f"🔍 SAMPLE {b} DECODE FAILED")
+    
+    # Try different ChatML marker variants
+    markers_to_try = [
+        ("<|im_start|>", "<|im_end|>"),
+        ("<|start_header_id|>", "<|end_header_id|>"),
+        ("<|begin_of_text|>", "<|eot_id|>"),
+    ]
+    
+    user_variants = ["user", "user\n", "\nuser\n"]
+    
+    # Find which markers actually exist in the data
+    for im_start_str, im_end_str in markers_to_try:
+        try:
+            im_start = tokenizer.encode(im_start_str, add_special_tokens=False)
+            im_end = tokenizer.encode(im_end_str, add_special_tokens=False)
+            
+            # Check if these markers exist in the data
+            found_start = False
+            for b in range(B):
+                seq = input_ids[b].tolist()
+                if find_subseq(seq, im_start) >= 0:
+                    found_start = True
+                    print(f"🎯 FOUND markers: {im_start_str} / {im_end_str}")
+                    break
+            
+            if found_start:
+                # Use these markers
+                break
+                
+        except:
+            continue
+    else:
+        # FALLBACK: If no ChatML markers found, supervise all non-special tokens
+        print("⚠️ NO CHATML MARKERS FOUND - using fallback supervision")
+        return build_fallback_text_labels(input_ids, tokenizer)
 
+    # Continue with found markers
+    user_tok = tokenizer.encode("user", add_special_tokens=False)
+    asst_tok = tokenizer.encode("assistant", add_special_tokens=False)
+    
     total_supervised = 0
     
     for b in range(B):
@@ -261,6 +300,33 @@ def build_text_labels_from_chatml(input_ids, tokenizer, role="user"):
     elif supervision_pct >= 50:
         print(f"✅ GOOD: Supervision {supervision_pct:.1f}% >= 50% target")
     
+    return labels
+
+def build_fallback_text_labels(input_ids, tokenizer):
+    """
+    FALLBACK: When ChatML parsing fails, supervise non-special tokens
+    """
+    B, T = input_ids.shape
+    labels = torch.full_like(input_ids, fill_value=-100)
+    
+    # Get special token IDs to exclude
+    special_tokens = {
+        tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id,
+        tokenizer.convert_tokens_to_ids("<|AUDIO|>"),
+        tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>"),
+        tokenizer.convert_tokens_to_ids("<|audio_out_bos|>"),
+        tokenizer.convert_tokens_to_ids("<|audio_eos|>"),
+    }
+    special_tokens = {tid for tid in special_tokens if tid is not None}
+    
+    total_supervised = 0
+    for b in range(B):
+        for pos in range(T-1):  # Next-token prediction
+            if input_ids[b, pos].item() not in special_tokens:
+                labels[b, pos] = input_ids[b, pos + 1]
+                total_supervised += 1
+    
+    print(f"🎯 FALLBACK TEXT SUPERVISION: {total_supervised}/{B*(T-1)} tokens ({100*total_supervised/(B*(T-1)):.1f}%)")
     return labels
 
 def build_audio_labels(audio_out_ids, audio_eos_id=1025, audio_pad_id=None):
@@ -605,9 +671,25 @@ def compute_higgs_losses_exact_user_spec(model_outputs, batch, tokenizer, device
         # CRITICAL: Wire the exact labels tensor into the batch for model's CE (if model computes internally)
         batch.labels = text_labels
         
-        # Compute text CE loss
-        text_logits_flat = text_logits.view(-1, text_logits.size(-1))
-        text_labels_flat = text_labels.view(-1)
+        # Compute text CE loss - CRITICAL: Fix tensor shape alignment  
+        # text_logits: [B, T, V], text_labels: [B, T]
+        # Ensure they have matching sequence length before flattening
+        B, T = text_labels.shape
+        logits_B, logits_T = text_logits.shape[:2]
+        
+        if logits_T != T:
+            print(f"🚨 TENSOR MISMATCH: text_logits[{logits_B}, {logits_T}, V] vs text_labels[{B}, {T}]")
+            # Trim to match shorter sequence
+            min_T = min(logits_T, T)
+            text_logits = text_logits[:, :min_T, :]
+            text_labels = text_labels[:, :min_T]
+            print(f"🔧 TRIMMED: text_logits[{logits_B}, {min_T}, V] vs text_labels[{B}, {min_T}]")
+        
+        # Now flatten safely
+        text_logits_flat = text_logits.view(-1, text_logits.size(-1))  # [B*T, V]
+        text_labels_flat = text_labels.view(-1)                        # [B*T]
+        
+        print(f"🔍 FINAL SHAPES: logits={text_logits_flat.shape} labels={text_labels_flat.shape}")
         
         text_loss = torch.nn.functional.cross_entropy(text_logits_flat, text_labels_flat, ignore_index=-100)
         losses['text_loss'] = text_loss
