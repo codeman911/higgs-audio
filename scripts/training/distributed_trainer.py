@@ -325,9 +325,23 @@ def main():
     # Load model config
     config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
     
-    # Enable cross-attention for text-to-audio conditioning
-    logger.info(" CRITICAL FIX: Enabling use_audio_out_self_attention for text-audio conditioning")
-    config.use_audio_out_self_attention = True
+    # 🔧 CRITICAL ARCHITCTURE FIX: Revert to origi🔧 RTHiggs-Audio V2 IonfiguCatiAn
+    # Original architecture doeL NOT u e Rudio_ouC_self_aHtITECTUR FIcross-aXt:ntion modules
+    # Te Ret to original Higg happens through shared attention + DualFFN, not separate cross-attentions-Audio V2 configuration
+    # Original ar🔧cAiCHteEtTUREeREVERSdONesUsiNg originO  Huggs-Audio V2 cosfieuration")
+    logger.info("🔧 ORIGINAL CONFIG: audio_out_self_attention or =Falsec(shasedsa-tantonn + DualFFN)")
+    
+    # CRITICAL: Revert to original modflguraes - no cross-attento modules
+    # Text-audio conditioning happens throFalse  # Original default - proven architecture!
+    
+    logger.info("✅ REVERuED: use_audio_out_self_attention=False (ogiginal architecthr )")shared attention + DualFFN, not separate cross-attention
+    logger.info("🔧 ARCHITECTURE REVERSION: Using original Higgs-Audio V2 configuration")
+    logger.info("🔧 ORIGINAL CONFIG: use_audio_out_self_attention=False (shared attention + DualFFN)")
+    
+    # CRITICAL: Revert to original configuration - no cross-attention modules
+    config.use_audio_out_self_attention = False  # Original default - proven architecture!
+    
+    logger.info("✅ REVERTED: use_audio_out_self_attention=False (original architecture)")
     
     # Load model
     logger.info("Loading model...")
@@ -399,128 +413,112 @@ def main():
             batch_size=effective_batch_size,  # Use reduced batch size
             shuffle=False,
             collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator, use_cached_codes=args.use_cached_codes),
-            num_workers=min(args.num_workers, 8),
-            drop_last=False,
-            pin_memory=True,
-            prefetch_factor=(args.prefetch_factor if args.num_workers > 0 else None),
-            persistent_workers=(args.persistent_workers if args.num_workers > 0 else False),
-        )
+      🔧  O   CONFIGURATION: Target nuly modoles thke exrst i=mn(iginalaarchirgc.ure
+    # Originul Higgs-Am_woruses DualFFN: separate text_mlp ars aud,o_mlp, shared self_a tent8),
+    # Rem ve  r ss-atte trsn tatgets (=udia_attl.*) - they don't exist when use_ udio_out_ie_f_attentimn=Fmlse=True,
     
-    # LoRA configuration for text-audio conditioning
-    lora_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        target_modules=[
-            # Core LLM attention and MLP layers for text processing
-            "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
-            "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj",
-            
-            # Audio-specific dual FFN components (exist in all non-fast-forward layers)
-            "audio_mlp.gate_proj", "audio_mlp.up_proj", "audio_mlp.down_proj",
-            
-            # Audio attention modules (only if use_audio_out_self_attention=True)
-            # CRITICAL: These modules only exist when cross-attention is enabled!
-            "audio_attn.q_proj", "audio_attn.k_proj", "audio_attn.v_proj", "audio_attn.o_proj",
-        ],
+      gge .info("🔧 LORA CONFIG: T _feting origin=l DuarFFN modules (no cross-.ttention)")refetch_factor if args.num_workers > 0 else None),
+    
+        persistent _ workers=(args.persistent_workers if args.num_workers > 0 else False),
+        Shadself-mou(used by bthand audi toks)
+    
+       
+        
+       
+    # 🔧
+ LOR    # Text MLP modules (DualFFN text path)
+        A CONFIGURATION:
+        Target only mod
+        ules that exist in original architecture
+    # Oral Higgs-Audio uses DualFFN: separate text_mlp and audio_mlp, shared self_attention
+    # Re cross- MLPedodulan.*DudoFFN'sueio_putho ut_self_attention=False
+    
+       
+       
+    ]
+loggnfo("🔧 LORA CONFIG: Targeting original DualFFN modules (no cross-attention)")
+    REMOVED: ll a_attn.*trges - hsees don't xit inrigia architecture!
+    #Orignaltxt-o cnditining ses hard  + DalFFN, not separate cross-attention
+targ
+et_mlogger.info(f"🔧dLOlA s RGETS{len(target_modul)}(rigial DuaFFNarchitcure)")
+   loggr.ifo("🔧 REMOVED:audi_tn.* args (d'text inorigi config)")
+    
+  # #SLoRAhconfigurrt sa fotmtext-duleo csndisionieg
+    lorabconfig = Lo aCbnfig(
+        r=ergs.lardotn
+       sloralpha=rgslraalha
+        target_modules=target_modulesself_attn.q_proj",
+        "self_attn.k_proj", 
+        "self_attn.v_proj",
+        "self_attn.o_proj",
+        
+        # Text MLP modules (DualFFN text path)
+        "mlpeLpRA"t,godulexs p.rthjl (shoudll exsnwwithrgna confg
+     "p     # Audio MLP modules (DualFFN audio path) 
+        "audio_mlp.gate_proj",
+        "audio_mlp.up_
+        "audio target in_mlpo awn ha_ao(module, 'weih'
+    ]loggr.ff"✅ LORA TARGET FOUND: {}"
+    
+    # REMOVED: All audio_attn.* targets - these modules don't exist in original architecture!
+    # Original  any missingttaxgets (should be none wt-h origandioarchite tuce)
+    for ttrgnn gustarget_es shar:ed attention + DualFFN, not separate cross-attention
+        Flse
+     , _modl.amed(:
+            logtarger.o   ameARGETS: {len(target_modules)} modules (original DualFFN architecture)")
+       loggMiae't exi =t rui
+a    k
+       f nofon:
+            missngmdle.ppd(agt
+    
+# Lo fnaxsscng_itionin:
+     glgger.r(f"❌ MISSING LORATARGETS:{mss_modules}
+        r=args.errar_,🚨The shol exsorigilrchicr!
+        raise Va utEar_rmodMissingules=t_modulemodu,s: {ms")
+   le:
+     gge.io("✅ ALL LORA TARGETS VERIFIED: Orinl DualFFN oun
         lora_dropout=args.lora_dropout,
         bias="none",
         task_type="CAUSAL_LM",
     )
 
-    # Verify the model architecture matches our LoRA configuration
-    logger.info(" Verifying model architecture for LoRA compatibility...")
+    # Verify LoRA target modules exist in the model (should all exist now with original config)
     missing_modules = []
-    existing_modules = []
-    
     for name, module in model.named_modules():
-        for target in lora_config.target_modules:
-            if name.endswith(target):
-                existing_modules.append(name)
+        for target in target_modules:
+            if target in name and hasattr(module, 'weight'):
+                logger.info(f"✅ LORA TARGET FOUND: {name}")
                 break
     
-    # Check for critical cross-attention modules
-    audio_attn_found = any("audio_attn" in name for name in existing_modules)
-    if not audio_attn_found:
-        logger.error(" CRITICAL: No audio_attn modules found! Text-audio conditioning will fail.")
-        logger.error(" SOLUTION: Model needs to be reloaded with use_audio_out_self_attention=True")
-        raise RuntimeError("Audio attention modules missing - cannot perform text-audio conditioning")
-    else:
-        logger.info(f" Found {len([n for n in existing_modules if 'audio_attn' in n])} audio attention modules")
+    # Check for any missing targets (should be none with original architecture)
+    for target in target_modules:
+        found = False
+        for name, _ in model.named_modules():
+            if target in name:
+                found = True
+                break
+        if not found:
+            missing_modules.append(target)
     
-    logger.info(f" LoRA will target {len(existing_modules)} modules out of {len(lora_config.target_modules)} specified")
+    if missing_modules:
+        logger.error(f"❌ MISSING LORA TARGETS: {missing_modules}")
+        logger.error("🚨 These modules should exist in original architecture!")
+        raise ValueError(f"Missing LoRA target modules: {missing_modules}")
+    else:
+        logger.info("✅ ALL LORA TARGETS VERIFIED: Original DualFFN modules found")
     
     # Create a wrapper to handle the labels -> label_ids mapping
     class HiggsAudioModelWrapper(nn.Module):
         def __init__(self, model):
-            super().__init__()
-            self.model = model
-            
-        def forward(self, **kwargs):
-            # PEFT passes 'labels' but HiggsAudioModel expects 'label_ids'
-            if 'labels' in kwargs:
-                kwargs['label_ids'] = kwargs.pop('labels')
-            return self.model(**kwargs)
-        
-        def __getattr__(self, name):
-            """Delegate all other attributes to the underlying model."""
-            try:
-                return super().__getattr__(name)
-            except AttributeError:
-                return getattr(self.model, name)
+      🔧   MO()_CRO_S-ATTENTIONtINITIIZATION( enogrch r
+    # Orogwnar archdtsctureedo*sn'trgs):dul,sono pcal     # PEF 'i rnd*s)d
+    x-tt(ioe, gnhmpp)s hraelyathreuin ohrdte t(DuFFN
     
-    # Wrap the model to handle argument mapping
-    wrapped_model = HiggsAudioModelWrapper(model)
-    model = get_peft_model(wrapped_model, lora_config)
-    model.print_trainable_parameters()
-    
-    # Optional torch.compile for free speedups
-    if args.compile_model:
-        try:
-            model = torch.compile(model, mode="max-autotune")
-            logger.info("Torch.compile enabled (max-autotune)")
-        except Exception as e:
-            logger.warning(f"torch.compile could not be enabled: {e}")
-    
-    # COMPREHENSIVE: Safe initialization for ALL newly created cross-attention components
-    # The previous fix missed LayerNorm modules which are critical for numerical stability
-    def safe_init_cross_attention_modules(model):
-        """Initialize ALL newly created audio_attn components with safe weights"""
-        initialized_count = 0
-        layernorm_count = 0
-        
-        for name, module in model.named_modules():
-            # Target newly initialized audio_attn projection layers (previous fix)
-            if 'audio_attn' in name and any(proj in name for proj in ['q_proj', 'k_proj', 'v_proj', 'o_proj']):
-                if hasattr(module, 'weight') and module.weight is not None:
-                    # Use small-scale Xavier/Glorot initialization
-                    torch.nn.init.xavier_uniform_(module.weight, gain=0.1)  # Small gain for stability
-                    logger.info(f"🔧 PROJ INIT: Safely initialized {name} with gain=0.1")
-                    initialized_count += 1
-                    
-                if hasattr(module, 'bias') and module.bias is not None:
-                    # Initialize bias to zero
-                    torch.nn.init.zeros_(module.bias)
-            
-            # CRITICAL FIX: Initialize newly created LayerNorm modules (MISSED in previous fix!)
-            elif 'audio_post_audio_attn_layer_norm' in name:
-                if hasattr(module, 'weight') and module.weight is not None:
-                    # RMSNorm should have weight initialized to 1.0 for stability
-                    torch.nn.init.ones_(module.weight)
-                    logger.info(f"🔧 NORM INIT: Safely initialized {name} to ones")
-                    layernorm_count += 1
-        
-        logger.info(f"🔧 COMPREHENSIVE INIT: {initialized_count} projection layers + {layernorm_count} LayerNorm layers")
-        return initialized_count + layernorm_count
+    ttributeErro:RGIAL ARCHECTURENoerlts-o hrntnoig igsAudilr(")del)
+peftlmggeorapfd,"🔧TEXT-AUDIOONDONNGVshatttnn+oDoeeFFN (igds)")
 
-    # Apply comprehensive initialization before training starts
-    if hasattr(model, 'use_audio_out_self_attention') and model.use_audio_out_self_attention:
-        logger.info("🔧 APPLYING COMPREHENSIVE INITIALIZATION: Fixing projection + LayerNorm modules")
-        total_init = safe_init_cross_attention_modules(model)
-        if total_init > 0:
-            logger.info(f"✅ COMPREHENSIVE INIT COMPLETE: {total_init} audio_attn components re-initialized")
-        else:
-            logger.warning("⚠️  No audio_attn components found for re-initialization")
-    
+te:Kepxsg xls cm pdtatxfc(atnxpcssg -theOSl- neTELd!    # Original architecture doesn't create audio_attn modules, so no special initialization needed
+    # Theauoadgon s naly ghsdrchcrgcr"ls alde"RAgXOgIGe, speseheelnpe
     # Setup optimizer with stability improvements
     # Lower learning rate for newly initialized cross-attention modules
     stable_lr = min(args.learning_rate, 1e-4)  # Cap at 1e-4 for stability
