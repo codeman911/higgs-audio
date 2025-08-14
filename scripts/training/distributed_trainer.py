@@ -436,34 +436,45 @@ def main():
         except Exception as e:
             logger.warning(f"torch.compile could not be enabled: {e}")
     
-    # Safe initialization for newly created cross-attention modules
+    # COMPREHENSIVE: Safe initialization for ALL newly created cross-attention components
+    # The previous fix missed LayerNorm modules which are critical for numerical stability
     def safe_init_cross_attention_modules(model):
-        """Initialize newly created audio_attn modules with safe small-scale weights"""
+        """Initialize ALL newly created audio_attn components with safe weights"""
         initialized_count = 0
+        layernorm_count = 0
+        
         for name, module in model.named_modules():
-            # Target newly initialized audio_attn projection layers
+            # Target newly initialized audio_attn projection layers (previous fix)
             if 'audio_attn' in name and any(proj in name for proj in ['q_proj', 'k_proj', 'v_proj', 'o_proj']):
                 if hasattr(module, 'weight') and module.weight is not None:
                     # Use small-scale Xavier/Glorot initialization
                     torch.nn.init.xavier_uniform_(module.weight, gain=0.1)  # Small gain for stability
-                    logger.info(f"🔧 INIT FIX: Safely initialized {name} with gain=0.1")
+                    logger.info(f"🔧 PROJ INIT: Safely initialized {name} with gain=0.1")
                     initialized_count += 1
                     
                 if hasattr(module, 'bias') and module.bias is not None:
                     # Initialize bias to zero
                     torch.nn.init.zeros_(module.bias)
+            
+            # CRITICAL FIX: Initialize newly created LayerNorm modules (MISSED in previous fix!)
+            elif 'audio_post_audio_attn_layer_norm' in name:
+                if hasattr(module, 'weight') and module.weight is not None:
+                    # RMSNorm should have weight initialized to 1.0 for stability
+                    torch.nn.init.ones_(module.weight)
+                    logger.info(f"🔧 NORM INIT: Safely initialized {name} to ones")
+                    layernorm_count += 1
         
-        logger.info(f"🔧 INITIALIZATION FIX: Safely initialized {initialized_count} cross-attention projection layers")
-        return initialized_count
+        logger.info(f"🔧 COMPREHENSIVE INIT: {initialized_count} projection layers + {layernorm_count} LayerNorm layers")
+        return initialized_count + layernorm_count
 
-    # Apply safe initialization before training starts
+    # Apply comprehensive initialization before training starts
     if hasattr(model, 'use_audio_out_self_attention') and model.use_audio_out_self_attention:
-        logger.info("🔧 APPLYING SAFE INITIALIZATION: Preventing NaN explosion in cross-attention modules")
-        init_count = safe_init_cross_attention_modules(model)
-        if init_count > 0:
-            logger.info(f"✅ SAFE INIT COMPLETE: {init_count} audio_attn modules re-initialized")
+        logger.info("🔧 APPLYING COMPREHENSIVE INITIALIZATION: Fixing projection + LayerNorm modules")
+        total_init = safe_init_cross_attention_modules(model)
+        if total_init > 0:
+            logger.info(f"✅ COMPREHENSIVE INIT COMPLETE: {total_init} audio_attn components re-initialized")
         else:
-            logger.warning("⚠️  No audio_attn modules found for re-initialization")
+            logger.warning("⚠️  No audio_attn components found for re-initialization")
     
     # Setup optimizer with stability improvements
     # Lower learning rate for newly initialized cross-attention modules
@@ -486,13 +497,19 @@ def main():
     # Calculate training steps for proper warmup scheduling
     num_training_steps = len(train_dataloader) * args.num_epochs
     
-    # CRITICAL FIX: Use warmup + cosine scheduler (Point B Fix #2)
-    # Large models with PEFT benefit from warmup to avoid early instability
+    # CRITICAL FIX: Proper warmup configuration to avoid LR=0
+    warmup_steps = max(int(0.05 * num_training_steps), 100)  # At least 100 steps warmup
+    logger.info(f"🔧 SCHEDULER FIX: Using {warmup_steps} warmup steps out of {num_training_steps} total")
+    
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=args.warmup_steps,
+        num_warmup_steps=warmup_steps,
         num_training_steps=num_training_steps
     )
+    
+    # Verify scheduler starts with proper LR
+    initial_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, 'get_last_lr') else stable_lr
+    logger.info(f"🔧 SCHEDULER VERIFICATION: Initial LR = {initial_lr:.2e} (should be > 0)")
     
     # Prepare for training
     model, optimizer, train_dataloader, scheduler = accelerator.prepare(
@@ -1125,6 +1142,7 @@ def main():
                             def to_device(tensor, convert_dtype=False):
                                 if tensor is not None and hasattr(tensor, 'to'):
                                     if convert_dtype and tensor.dtype in [torch.float32, torch.float64]:
+                                        # Convert float tensors to match model dtype (for audio features)
                                         return tensor.to(device=device, dtype=model_dtype)
                                     else:
                                         return tensor.to(device)
