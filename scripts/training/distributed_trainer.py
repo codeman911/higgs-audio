@@ -311,23 +311,29 @@ def main():
         logger.info(f"Loading validation data from {val_path}")
         val_dataset = SimpleDataset(val_path)
     
-    # Create dataloaders using original collator
+    # Create data loaders - OPTIMIZED FOR H200
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+        persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
         collate_fn=lambda batch: collator(collate_fn(batch, tokenizer, audio_tokenizer)),
-        num_workers=4,
-        pin_memory=True
+        pin_memory=True,  # H200 optimization
+        drop_last=True    # Consistent batch sizes for speed
     )
     
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
+        num_workers=args.num_workers // 2,  # Less workers for validation
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+        persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
         collate_fn=lambda batch: collator(collate_fn(batch, tokenizer, audio_tokenizer)),
-        num_workers=4,
-        pin_memory=True
+        pin_memory=True,
+        drop_last=False
     )
     
     # LoRA configuration with systematic target collection
