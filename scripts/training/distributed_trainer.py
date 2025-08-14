@@ -531,32 +531,38 @@ def main():
                     logger.error(f" INSUFFICIENT TEXT SUPERVISION: {per_sample:.1f} tokens/sample < {MIN_ASSISTANT_TOKENS} required for Arabic!")
                     continue  # Skip starved batches
                 
-                # Forward pass with clean inputs - filter out labels and other non-model fields
-                model_inputs = {}
-                if sup["input_ids"] is not None:
-                    model_inputs["input_ids"] = sup["input_ids"]
-                if sup["attention_mask"] is not None:
-                    model_inputs["attention_mask"] = sup["attention_mask"]
+                # Forward pass with clean inputs - COMPLETELY isolate from batch to avoid any 'labels' contamination
+                model_inputs = {
+                    "input_ids": sup["input_ids"],
+                    "attention_mask": sup["attention_mask"]
+                }
+                
+                # Only add audio fields if they exist and are not None
                 if sup["audio_in_ids"] is not None:
                     model_inputs["audio_in_ids"] = sup["audio_in_ids"]
                 if sup["audio_out_ids_shifted_in"] is not None:
                     model_inputs["audio_out_ids"] = sup["audio_out_ids_shifted_in"]
                 
-                # Add any additional fields from batch that the model expects (but not labels)
-                if hasattr(batch, 'audio_in_wv') and batch.audio_in_wv is not None:
-                    model_inputs["audio_features"] = batch.audio_in_wv.to(device)
-                if hasattr(batch, 'audio_feature_attention_mask') and batch.audio_feature_attention_mask is not None:
-                    model_inputs["audio_feature_attention_mask"] = batch.audio_feature_attention_mask.to(device)
-                if hasattr(batch, 'audio_in_ids_start') and batch.audio_in_ids_start is not None:
-                    model_inputs["audio_in_ids_start"] = batch.audio_in_ids_start.to(device)
-                if hasattr(batch, 'audio_out_ids_start') and batch.audio_out_ids_start is not None:
-                    model_inputs["audio_out_ids_start"] = batch.audio_out_ids_start.to(device)
-                if hasattr(batch, 'audio_out_ids_start_group_loc') and batch.audio_out_ids_start_group_loc is not None:
-                    model_inputs["audio_out_ids_start_group_loc"] = batch.audio_out_ids_start_group_loc.to(device)
+                # Add batch fields that model needs, but be very selective
+                batch_fields_for_model = [
+                    ('audio_in_wv', 'audio_features'),
+                    ('audio_feature_attention_mask', 'audio_feature_attention_mask'),
+                    ('audio_in_ids_start', 'audio_in_ids_start'),
+                    ('audio_out_ids_start', 'audio_out_ids_start'),
+                    ('audio_out_ids_start_group_loc', 'audio_out_ids_start_group_loc')
+                ]
+                
+                for batch_attr, model_param in batch_fields_for_model:
+                    if hasattr(batch, batch_attr) and getattr(batch, batch_attr) is not None:
+                        model_inputs[model_param] = getattr(batch, batch_attr).to(device)
                 
                 # DEBUG: Log model inputs to verify no 'labels' field
                 if global_step == 0:
                     logger.info(f"DEBUG: Model input keys: {list(model_inputs.keys())}")
+                    # Verify no labels in any of the input values
+                    for key, value in model_inputs.items():
+                        if hasattr(value, 'shape'):
+                            logger.info(f"DEBUG: {key} shape: {value.shape}")
                 
                 # CRITICAL: HiggsAudioModel.forward() does NOT accept 'labels' parameter
                 # Labels are used separately for loss computation
@@ -683,28 +689,30 @@ def main():
                     if per_sample < MIN_ASSISTANT_TOKENS:
                         continue
                     
-                    # Forward pass with clean inputs - filter out labels and other non-model fields
-                    model_inputs = {}
-                    if sup["input_ids"] is not None:
-                        model_inputs["input_ids"] = sup["input_ids"]
-                    if sup["attention_mask"] is not None:
-                        model_inputs["attention_mask"] = sup["attention_mask"]
+                    # Forward pass with clean inputs - COMPLETELY isolate from batch to avoid any 'labels' contamination
+                    model_inputs = {
+                        "input_ids": sup["input_ids"],
+                        "attention_mask": sup["attention_mask"]
+                    }
+                    
+                    # Only add audio fields if they exist and are not None
                     if sup["audio_in_ids"] is not None:
                         model_inputs["audio_in_ids"] = sup["audio_in_ids"]
                     if sup["audio_out_ids_shifted_in"] is not None:
                         model_inputs["audio_out_ids"] = sup["audio_out_ids_shifted_in"]
                     
-                    # Add any additional fields from batch that the model expects (but not labels)
-                    if hasattr(batch, 'audio_in_wv') and batch.audio_in_wv is not None:
-                        model_inputs["audio_features"] = batch.audio_in_wv.to(device)
-                    if hasattr(batch, 'audio_feature_attention_mask') and batch.audio_feature_attention_mask is not None:
-                        model_inputs["audio_feature_attention_mask"] = batch.audio_feature_attention_mask.to(device)
-                    if hasattr(batch, 'audio_in_ids_start') and batch.audio_in_ids_start is not None:
-                        model_inputs["audio_in_ids_start"] = batch.audio_in_ids_start.to(device)
-                    if hasattr(batch, 'audio_out_ids_start') and batch.audio_out_ids_start is not None:
-                        model_inputs["audio_out_ids_start"] = batch.audio_out_ids_start.to(device)
-                    if hasattr(batch, 'audio_out_ids_start_group_loc') and batch.audio_out_ids_start_group_loc is not None:
-                        model_inputs["audio_out_ids_start_group_loc"] = batch.audio_out_ids_start_group_loc.to(device)
+                    # Add batch fields that model needs, but be very selective
+                    batch_fields_for_model = [
+                        ('audio_in_wv', 'audio_features'),
+                        ('audio_feature_attention_mask', 'audio_feature_attention_mask'),
+                        ('audio_in_ids_start', 'audio_in_ids_start'),
+                        ('audio_out_ids_start', 'audio_out_ids_start'),
+                        ('audio_out_ids_start_group_loc', 'audio_out_ids_start_group_loc')
+                    ]
+                    
+                    for batch_attr, model_param in batch_fields_for_model:
+                        if hasattr(batch, batch_attr) and getattr(batch, batch_attr) is not None:
+                            model_inputs[model_param] = getattr(batch, batch_attr).to(device)
                     
                     # CRITICAL: HiggsAudioModel.forward() does NOT accept 'labels' parameter
                     # Labels are used separately for loss computation
