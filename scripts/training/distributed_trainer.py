@@ -377,7 +377,7 @@ def main():
         bias="none"
     )
     
-    logger.info(f"FULL DEPTH LORA: Targeting {len(target_modules)} module types across ALL {len(model.model.layers)} blocks")
+    logger.info(f"FULL DEPTH LORA: Targeting {len(target_modules)} module types across ALL {len(model.layers)} blocks")
     logger.info("ARABIC LEARNING: All text pathway layers now adaptable for orthography")
     
     # Verify LoRA target modules exist in the model (should all exist now with original config)
