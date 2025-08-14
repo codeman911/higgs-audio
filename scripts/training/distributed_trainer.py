@@ -634,7 +634,7 @@ def main():
                         txt_pred = outputs["logits"][:, :-1, :].argmax(-1)  # [B, T]
                         txt_lbl_shifted = text_labels[:, 1:]  # [B, T]
                         
-                        # Apply same truncation as in loss computation
+                        # Apply same truncation for entropy calculation
                         B_pred, T_pred = txt_pred.shape
                         B_lbl, T_lbl = txt_lbl_shifted.shape
                         if T_pred != T_lbl:
@@ -648,42 +648,18 @@ def main():
                             txt_acc = (txt_pred[txt_valid] == txt_lbl_shifted[txt_valid]).float().mean()
                             txt_vocab = len(torch.unique(txt_lbl_shifted[txt_valid]))
                             logger.info(f"TEXT: Loss={text_loss.item():.3f}, Acc={txt_acc.item():.1%}, Vocab={txt_vocab}")
+                            
+                            # Log first/last 10 predictions and labels for debugging
+                            txt_pred_flat = txt_pred[txt_valid]
+                            txt_lbl_flat = txt_lbl_shifted[txt_valid]
+                            if len(txt_pred_flat) >= 10:
+                                logger.info(f"TEXT PRED (first 10): {txt_pred_flat[:10].tolist()}")
+                                logger.info(f"TEXT LABEL (first 10): {txt_lbl_flat[:10].tolist()}")
+                                if len(txt_pred_flat) >= 20:
+                                    logger.info(f"TEXT PRED (last 10): {txt_pred_flat[-10:].tolist()}")
+                                    logger.info(f"TEXT LABEL (last 10): {txt_lbl_flat[-10:].tolist()}")
                         else:
                             logger.info(f"TEXT: Loss={text_loss.item():.3f}, Acc=0%, Vocab=0 (no valid)")
-                        
-                        # Audio metrics  
-                        if "audio_logits" in outputs and outputs["audio_logits"] is not None:
-                            # Ensure audio_logits are in [C, T, V] format first
-                            audio_logits_for_acc = outputs["audio_logits"]
-                            if audio_logits_for_acc.dim() == 3:
-                                if audio_logits_for_acc.shape[1] == N_CODEBOOKS:
-                                    # [T, C, V] -> [C, T, V]
-                                    audio_logits_for_acc = audio_logits_for_acc.permute(1, 0, 2)
-                            
-                            aud_pred = audio_logits_for_acc.argmax(-1)  # [C, T]
-                            aud_lbl = audio_labels       # [C, T]
-                            aud_valid = (aud_lbl != -100)
-                            if aud_valid.any():
-                                aud_acc = (aud_pred[aud_valid] == aud_lbl[aud_valid]).float().mean()
-                                aud_vocab = len(torch.unique(aud_lbl[aud_valid]))
-                                logger.info(f"AUDIO: Loss={audio_loss.item():.3f}, Acc={aud_acc.item():.1%}, Vocab={aud_vocab}")
-                                
-                                # Per-codebook CE for identity leak detection
-                                cb_losses = []
-                                for c in range(N_CODEBOOKS):
-                                    # Use the same permuted audio_logits for consistency
-                                    if audio_logits_for_acc.dim() == 3:
-                                        cb_logits = audio_logits_for_acc[c]  # [T, V]
-                                    else:
-                                        cb_logits = outputs["audio_logits"][c]  # Fallback
-                                    
-                                    cb_loss = torch.nn.CrossEntropyLoss(ignore_index=-100)(cb_logits, aud_lbl[c])
-                                    cb_losses.append(f"{cb_loss.item():.3f}")
-                                cb_str = "[" + ",".join(cb_losses) + "]"
-                                
-                                logger.info(f"CODEBOOK CE: {cb_str} (detect identity leak if all < 2.0)")
-                            else:
-                                logger.info(f"AUDIO: Loss={audio_loss.item():.3f}, Acc=0%, Vocab=0 (no valid)")
                     
                     logger.info(f"TOTAL: Loss={loss.item():.3f}, LR={scheduler.get_last_lr()[0]:.2e}, Step={global_step}")
                     
