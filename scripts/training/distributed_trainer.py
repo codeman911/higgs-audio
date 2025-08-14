@@ -123,8 +123,11 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
             input_ids=torch.tensor(input_tokens, dtype=torch.long),
             label_ids=torch.tensor(label_tokens, dtype=torch.long), 
             audio_ids_concat=audio_ids_concat,
-            audio_wv=audio_wv,
-            speaker_id=speaker_id or 0
+            audio_ids_start=torch.tensor([0], dtype=torch.long),
+            audio_waveforms_concat=audio_wv,
+            audio_waveforms_start=torch.tensor([0], dtype=torch.long),
+            audio_sample_rate=torch.tensor([sample_rate], dtype=torch.float32),
+            audio_speaker_indices=torch.tensor([speaker_id or 0], dtype=torch.long)
         )
         
         chatml_samples.append(chatml_sample)
@@ -141,8 +144,11 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
             input_ids=dummy_input,
             label_ids=dummy_labels,
             audio_ids_concat=dummy_audio, 
-            audio_wv=dummy_wv,
-            speaker_id=0
+            audio_ids_start=torch.tensor([0], dtype=torch.long),
+            audio_waveforms_concat=dummy_wv,
+            audio_waveforms_start=torch.tensor([0], dtype=torch.long),
+            audio_sample_rate=torch.tensor([sample_rate], dtype=torch.float32),
+            audio_speaker_indices=torch.tensor([0], dtype=torch.long)
         )
         chatml_samples = [dummy_sample]
         logger.warning("EMPTY BATCH: Created dummy sample to prevent collator crash")
