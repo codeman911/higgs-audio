@@ -594,7 +594,18 @@ def main():
                 if "logits" in outputs and outputs["logits"] is not None and text_labels is not None:
                     text_logits = outputs["logits"][:, :-1, :].contiguous()  # Shift for LM
                     shift_labels = text_labels[:, 1:].contiguous()
+                    
+                    # Ensure shapes match before computing loss
                     B, T, V = text_logits.shape
+                    B_lbl, T_lbl = shift_labels.shape
+                    
+                    if T != T_lbl:
+                        # Adjust to minimum sequence length
+                        min_T = min(T, T_lbl)
+                        text_logits = text_logits[:, :min_T, :].contiguous()
+                        shift_labels = shift_labels[:, :min_T].contiguous()
+                        T = min_T
+                    
                     text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
                     text_loss = text_loss_fct(
                         text_logits.view(B * T, V),
@@ -751,7 +762,18 @@ def main():
                     if "logits" in outputs and outputs["logits"] is not None and text_labels is not None:
                         text_logits = outputs["logits"][:, :-1, :].contiguous()  # Shift for LM
                         shift_labels = text_labels[:, 1:].contiguous()
+                        
+                        # Ensure shapes match before computing loss
                         B, T, V = text_logits.shape
+                        B_lbl, T_lbl = shift_labels.shape
+                        
+                        if T != T_lbl:
+                            # Adjust to minimum sequence length
+                            min_T = min(T, T_lbl)
+                            text_logits = text_logits[:, :min_T, :].contiguous()
+                            shift_labels = shift_labels[:, :min_T].contiguous()
+                            T = min_T
+                        
                         text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
                         text_loss = text_loss_fct(
                             text_logits.view(B * T, V),
