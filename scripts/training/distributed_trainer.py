@@ -77,7 +77,23 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
             if len(chatml_samples) == 0:
                 target_token_count = sum(1 for token in label_tokens if token != -100)
                 audio_segment_count = len(audio_contents)
+                
+                # ESSENTIAL ZERO-SHOT VALIDATION: Check if reference and target text are in model input
+                input_text = tokenizer.decode(input_tokens, skip_special_tokens=False)
+                
+                ref_in_model = bool(ref_transcript and ref_transcript.strip() in input_text)
+                target_in_model = bool(target_text and target_text.strip() in input_text)
+                
                 logger.info(f"Training ready: {target_token_count} text tokens, {audio_segment_count} audio segments")
+                logger.info(f"Zero-shot validation: ref_text_in_model={ref_in_model}, target_text_in_model={target_in_model}")
+                
+                if not ref_in_model and ref_transcript:
+                    logger.warning(f"Reference text missing from model input: '{ref_transcript[:30]}...'")
+                if not target_in_model and target_text:
+                    logger.warning(f"Target text missing from model input: '{target_text[:30]}...'")
+                    
+                # Show preview of what's actually fed to model
+                logger.info(f"Model input preview: '{input_text[:100]}...'")
         
         except Exception as e:
             logger.warning(f"Failed to prepare sample: {e}")
