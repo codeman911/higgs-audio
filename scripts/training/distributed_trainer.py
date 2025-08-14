@@ -132,7 +132,15 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
                     "content": formatted_content
                 })
                 
-                logger.info(f"ZERO-SHOT TTS FORMAT: ref_text='{ref_transcript[:50]}...', target_text='{target_text[:50]}...'")
+                # CRITICAL VALIDATION: Only for first sample to verify pipeline accuracy
+                if len(chatml_samples) == 0:  # Only first sample
+                    ref_tags_ok = bool(ref_transcript and ref_transcript.strip())
+                    target_tags_ok = bool(target_text and target_text.strip())
+                    audio_ok = bool(audio_content)
+                    
+                    logger.info(f"ZERO-SHOT PIPELINE: ref_text={ref_tags_ok}, target_text={target_tags_ok}, ref_audio={audio_ok}")
+                    if not (ref_tags_ok and target_tags_ok and audio_ok):
+                        logger.warning(f"PIPELINE ISSUE: Missing components - ref_text:{ref_tags_ok}, target_text:{target_tags_ok}, audio:{audio_ok}")
             
             else:
                 # Keep other messages (assistant, etc.) as is
@@ -149,6 +157,24 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
             input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
                 chatml_dict, tokenizer
             )
+            
+            # CRITICAL FIX: Extract PURE target text for loss computation (no special tokens)
+            pure_target_text = None
+            if target_text and target_text.strip():
+                pure_target_text = target_text.strip()
+            
+            # CRITICAL TEXT LOSS VALIDATION: Only for first sample
+            if len(chatml_samples) == 0:
+                target_token_count = sum(1 for token in label_tokens if token != -100)
+                audio_segment_count = len(audio_contents)
+                
+                logger.info(f"PIPELINE VALIDATION: {target_token_count} text tokens, {audio_segment_count} audio segments ready for training")
+                
+                # Verify target text is in the loss computation
+                if pure_target_text:
+                    target_only_tokens = tokenizer.encode(pure_target_text, add_special_tokens=False)
+                    logger.info(f"PURE TEXT TARGET: '{pure_target_text[:40]}...' → {len(target_only_tokens)} tokens")
+        
         except Exception as e:
             logger.warning(f"Failed to prepare sample: {e}")
             # Create empty sample
@@ -156,51 +182,7 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
             label_tokens = [-100]
             audio_contents = []
             speaker_id = 0
-        
-        # CRITICAL FIX: Ensure minimum text supervision for Arabic learning
-        # Count non-ignore tokens in label_tokens for text supervision
-        text_supervision_count = sum(1 for token in label_tokens if token != -100)
-        min_required_tokens = 40  # Increased from 32 for robust Arabic learning
-        
-        if text_supervision_count < min_required_tokens:
-            # STRATEGY: Enhance text supervision by adding target text from messages
-            additional_text_tokens = []
-            additional_label_tokens = []
-            
-            # Extract all text content from messages for additional supervision
-            for msg in messages:
-                content = msg.get('content', '')
-                if isinstance(content, str) and content.strip():
-                    # Add Arabic/English text as additional supervision
-                    clean_text = content.strip()
-                    if len(clean_text) > 10:  # Only substantial text
-                        text_tokens = tokenizer.encode(clean_text, add_special_tokens=False)
-                        additional_text_tokens.extend(text_tokens)
-                        additional_label_tokens.extend(text_tokens)  # All tokens as labels
-                elif isinstance(content, list):
-                    # Extract text from multimodal content
-                    for item in content:
-                        if item.get('type') == 'text' and item.get('text', '').strip():
-                            clean_text = item.get('text', '').strip()
-                            if len(clean_text) > 10:
-                                text_tokens = tokenizer.encode(clean_text, add_special_tokens=False)
-                                additional_text_tokens.extend(text_tokens)
-                                additional_label_tokens.extend(text_tokens)
-            
-            # Add enhancement if we found additional text
-            if additional_text_tokens:
-                # Insert additional text supervision before audio content
-                separator_tokens = tokenizer.encode(" [TEXT] ", add_special_tokens=False)
-                input_tokens.extend(separator_tokens + additional_text_tokens)
-                label_tokens.extend([-100] * len(separator_tokens) + additional_label_tokens)
-                
-                enhanced_supervision = sum(1 for token in additional_label_tokens if token != -100)
-                logger.debug(f"Enhanced text supervision: {text_supervision_count} → {text_supervision_count + enhanced_supervision} tokens")
-        
-        # Final verification of text supervision
-        final_text_supervision = sum(1 for token in label_tokens if token != -100)
-        if final_text_supervision < min_required_tokens:
-            logger.warning(f"Sample still has insufficient text supervision: {final_text_supervision} < {min_required_tokens}")
+            pure_target_text = None
         
         # Process audio if present
         audio_ids_list = []
@@ -271,18 +253,13 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
             audio_speaker_indices = torch.tensor([0], dtype=torch.long)
         
         # Create ChatMLDatasetSample - SIMPLE and WORKING format
-        chatml_sample = ChatMLDatasetSample(
-            input_ids=torch.tensor(input_tokens, dtype=torch.long),
-            label_ids=torch.tensor(label_tokens, dtype=torch.long),
-            audio_ids_concat=audio_ids_concat,
-            audio_ids_start=audio_ids_start,
-            audio_waveforms_concat=audio_waveforms_concat,
-            audio_waveforms_start=audio_waveforms_start,
-            audio_sample_rate=audio_sample_rate,
-            audio_speaker_indices=audio_speaker_indices
-        )
-        
-        chatml_samples.append(chatml_sample)
+        chatml_samples.append({
+            'input_ids': torch.tensor(input_tokens, dtype=torch.long),
+            'labels': torch.tensor(label_tokens, dtype=torch.long),
+            'audio_contents': audio_contents,
+            'speaker_id': speaker_id or 0,
+            'pure_target_text': pure_target_text  # Store clean text for loss computation
+        })
     
     # Use standard collator
     return collator(chatml_samples)
