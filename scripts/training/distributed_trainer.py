@@ -519,6 +519,14 @@ def main():
                     if hasattr(batch, 'labels'):
                         logger.info(f"DEBUG: Found 'labels' in batch with shape: {batch.labels.shape}")
                 
+                # Get the underlying model (handle PEFT wrapping) - CRITICAL FIX!
+                if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
+                    actual_model = model.base_model.model  # PEFT wrapped
+                elif hasattr(model, 'module'):
+                    actual_model = model.module  # Accelerate wrapped
+                else:
+                    actual_model = model
+                
                 # Step 4: Use prepare_supervision for clean batch processing
                 sup = prepare_supervision(batch, tokenizer, device, logger)
                 
@@ -554,8 +562,8 @@ def main():
                         if hasattr(value, 'shape'):
                             logger.info(f"DEBUG: {key} shape: {value.shape}")
                 
-                # Forward pass - NO LABELS (like working version)
-                outputs = model(**model_inputs)
+                # Forward pass - call underlying model directly to bypass PEFT label injection
+                outputs = actual_model(**model_inputs)
                 
                 # Extract labels separately for manual loss computation
                 text_labels = sup["text_labels"]
@@ -703,8 +711,16 @@ def main():
                     # Remove None values for clean forward pass
                     model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                     
-                    # Forward pass - NO LABELS (like working version)
-                    outputs = model(**model_inputs)
+                    # Get the underlying model (handle PEFT wrapping) - CRITICAL FIX!
+                    if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
+                        actual_model = model.base_model.model  # PEFT wrapped
+                    elif hasattr(model, 'module'):
+                        actual_model = model.module  # Accelerate wrapped
+                    else:
+                        actual_model = model
+                    
+                    # Forward pass - call underlying model directly to bypass PEFT label injection
+                    outputs = actual_model(**model_inputs)
                     
                     # Extract labels separately for manual loss computation
                     text_labels = sup["text_labels"]
