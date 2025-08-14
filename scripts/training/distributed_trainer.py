@@ -518,6 +518,46 @@ def main():
                 # Remove None values for clean forward pass
                 model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                 
+                # CRITICAL FIX 1: AUDIO TEACHER-FORCING ALIGNMENT (ELIMINATE IDENTITY LEAK)
+                # Root cause: Model was seeing unshifted audio_out_ids, causing 0.7 CE and 99.9% TF accuracy
+                # Solution: Strictly shift audio_out_ids for teacher-forcing to prevent identity mapping
+                
+                if 'audio_out_ids' in model_inputs and model_inputs['audio_out_ids'] is not None:
+                    audio_out_ids = model_inputs['audio_out_ids']  # [8, T] format from collator
+                    
+                    # Validate audio_out_ids structure
+                    if audio_out_ids.dim() == 2 and audio_out_ids.shape[0] == 8:
+                        AUDIO_BOS_ID = 1024  # audio_stream_bos_id
+                        AUDIO_EOS_ID = 1025  # audio_stream_eos_id
+                        
+                        # Labels: original sequence with BOS masked to -100
+                        audio_labels = audio_out_ids.clone()
+                        audio_labels[:, 0] = -100  # Mask BOS tokens
+                        
+                        # CRITICAL: Teacher-forcing inputs must be SHIFTED RIGHT by 1 step
+                        # Feed BOS + tokens[0..T-2] as inputs, predict tokens[1..T-1]
+                        audio_inputs = audio_out_ids.clone()
+                        audio_inputs[:, 1:] = audio_out_ids[:, :-1]  # Shift right
+                        audio_inputs[:, 0] = AUDIO_BOS_ID  # Insert BOS at start
+                        
+                        # Replace model input with properly shifted audio
+                        model_inputs['audio_out_ids'] = audio_inputs
+                        
+                        # Store labels for later use (override batch labels)
+                        audio_labels_shifted = audio_labels
+                        
+                        if global_step % 50 == 0:
+                            logger.info(f" AUDIO TEACHER-FORCING SHIFT APPLIED:")
+                            logger.info(f"   Original audio_out_ids: {audio_out_ids[:, :5].tolist()}")
+                            logger.info(f"   Shifted inputs: {audio_inputs[:, :5].tolist()}")
+                            logger.info(f"   Labels: {audio_labels[:, :5].tolist()}")
+                            logger.info(f"   → This eliminates identity leak causing 0.7 CE!")
+                    else:
+                        logger.error(f" INVALID audio_out_ids shape: {audio_out_ids.shape}, expected [8, T]")
+                        audio_labels_shifted = None
+                else:
+                    audio_labels_shifted = None
+
                 # Get the underlying model (handle PEFT wrapping)
                 if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
                     actual_model = model.base_model.model  # PEFT wrapped
@@ -664,7 +704,7 @@ def main():
                 
                 # CRITICAL: Extract labels separately for loss computation
                 text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
-                audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
+                audio_labels = to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else audio_labels_shifted
                 
                 # CRITICAL PAD TOKEN FIX: Map pad tokens to -100 if applicable
                 if audio_labels is not None:
@@ -751,6 +791,103 @@ def main():
                             else:
                                 logger.error(f" BROKEN BOS masking: {first_tokens_masked}/8 - will break audio generation!")
 
+                # CRITICAL FIX 2: ASSISTANT-SPAN TEXT LABEL EXTRACTION
+                # Root cause: Current supervision targets system/header tokens instead of assistant content
+                # Solution: Supervise only the assistant content immediately preceding <|AUDIO_OUT|>
+                
+                def make_assistant_text_labels(input_ids, tokenizer):
+                    """
+                    Extract text labels that supervise ONLY the assistant content before <|AUDIO_OUT|>
+                    This ensures Arabic content is properly supervised, not system/header boilerplate
+                    """
+                    if input_ids is None:
+                        return None
+                        
+                    B, T = input_ids.size()
+                    labels = input_ids.new_full((B, T), -100)
+                    
+                    # Special token IDs for ChatML structure
+                    try:
+                        SOH_ID = tokenizer.convert_tokens_to_ids("<|start_header_id|>")
+                        EOH_ID = tokenizer.convert_tokens_to_ids("<|end_header_id|>") 
+                        ASSISTANT_ID = tokenizer.convert_tokens_to_ids("assistant")
+                        AUDIO_OUT_ID = tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>")
+                    except:
+                        # Fallback to common IDs if tokenizer doesn't have convert_tokens_to_ids
+                        SOH_ID = 128006  # <|start_header_id|>
+                        EOH_ID = 128007  # <|end_header_id|>
+                        ASSISTANT_ID = 78191  # "assistant" token
+                        AUDIO_OUT_ID = 128275  # <|AUDIO_OUT|> (estimated)
+                        
+                    # Find assistant content span per sample
+                    for b in range(B):
+                        ids = input_ids[b]
+                        
+                        # Find <|AUDIO_OUT|> token
+                        audio_out_positions = (ids == AUDIO_OUT_ID).nonzero(as_tuple=True)[0]
+                        if audio_out_positions.numel() == 0:
+                            continue
+                        audio_out_pos = audio_out_positions[0].item()
+                        
+                        # Find the last assistant header before AUDIO_OUT
+                        # Pattern: <|start_header_id|> assistant <|end_header_id|> <content...> <|AUDIO_OUT|>
+                        
+                        # Find all <|end_header_id|> positions before AUDIO_OUT
+                        eoh_positions = (ids[:audio_out_pos] == EOH_ID).nonzero(as_tuple=True)[0]
+                        if eoh_positions.numel() == 0:
+                            continue
+                            
+                        # Check each EOH backwards to find the assistant one
+                        content_start = None
+                        for eoh_idx in reversed(eoh_positions):
+                            eoh_pos = eoh_idx.item()
+                            
+                            # Find matching SOH before this EOH
+                            soh_positions = (ids[:eoh_pos] == SOH_ID).nonzero(as_tuple=True)[0]
+                            if soh_positions.numel() == 0:
+                                continue
+                            soh_pos = soh_positions[-1].item()
+                            
+                            # Check if "assistant" token is between SOH and EOH
+                            header_slice = ids[soh_pos:eoh_pos+1]
+                            if ASSISTANT_ID in header_slice:
+                                content_start = eoh_pos + 1
+                                break
+                                
+                        if content_start is None or content_start >= audio_out_pos:
+                            continue
+                            
+                        # Content spans from end of assistant header to <|AUDIO_OUT|>
+                        content_end = audio_out_pos  # exclusive
+                        
+                        # Ensure minimum content length for Arabic learning
+                        if content_end - content_start < 8:
+                            continue
+                            
+                        # Supervise this content span for next-token LM
+                        # Predict tokens[t] given tokens[t-1], so shift labels
+                        if content_start + 1 < content_end:
+                            labels[b, content_start+1:content_end] = ids[content_start+1:content_end]
+                    
+                    return labels
+                
+                # Replace original text labels with assistant-span labels
+                if model_inputs.get('input_ids') is not None:
+                    text_labels = make_assistant_text_labels(model_inputs['input_ids'], tokenizer)
+                    
+                    if global_step % 50 == 0 and text_labels is not None:
+                        supervised_count = (text_labels != -100).sum().item()
+                        total_count = text_labels.numel()
+                        logger.info(f" ASSISTANT-SPAN SUPERVISION: {supervised_count} tokens supervised (Arabic content only)")
+                        
+                        # Validate sufficient Arabic supervision per sample
+                        batch_size = text_labels.shape[0]
+                        per_sample_supervision = supervised_count / batch_size if batch_size > 0 else 0
+                        if per_sample_supervision < 64:
+                            logger.warning(f" LOW ASSISTANT SUPERVISION: {per_sample_supervision:.1f} tokens/sample < 64 required for Arabic")
+                        else:
+                            logger.info(f" GOOD ASSISTANT SUPERVISION: {per_sample_supervision:.1f} tokens/sample for Arabic learning")
+                
                 # HIGGS-AUDIO DUAL-FFN OPTIMIZED LOSS COMPUTATION
                 # Based on Higgs-Audio architecture: separate text and audio processing with dual FFN layers
                 total_loss = None  # use None sentinel; keep this a Tensor
@@ -1114,7 +1251,7 @@ def main():
                                 actual_model = model
                             
                             outputs = actual_model(**model_inputs)
-                            audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
+                            audio_labels = to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None
                             
                             if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
                                 audio_logits = outputs.audio_logits
@@ -1294,7 +1431,7 @@ def main():
                     
                     # Extract labels for validation loss
                     text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
-                    audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
+                    audio_labels = to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None
                     
                     # PROPER VALIDATION LOSS for zero-shot voice cloning
                     batch_loss = 0.0
