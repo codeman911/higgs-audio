@@ -653,7 +653,14 @@ def main():
                         
                         # Audio metrics  
                         if "audio_logits" in outputs and outputs["audio_logits"] is not None:
-                            aud_pred = outputs["audio_logits"].argmax(-1)  # [C, T]
+                            # Ensure audio_logits are in [C, T, V] format first
+                            audio_logits_for_acc = outputs["audio_logits"]
+                            if audio_logits_for_acc.dim() == 3:
+                                if audio_logits_for_acc.shape[1] == N_CODEBOOKS:
+                                    # [T, C, V] -> [C, T, V]
+                                    audio_logits_for_acc = audio_logits_for_acc.permute(1, 0, 2)
+                            
+                            aud_pred = audio_logits_for_acc.argmax(-1)  # [C, T]
                             aud_lbl = audio_labels       # [C, T]
                             aud_valid = (aud_lbl != -100)
                             if aud_valid.any():
