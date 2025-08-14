@@ -158,11 +158,6 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
                 chatml_dict, tokenizer
             )
             
-            # CRITICAL FIX: Extract PURE target text for loss computation (no special tokens)
-            pure_target_text = None
-            if target_text and target_text.strip():
-                pure_target_text = target_text.strip()
-            
             # CRITICAL TEXT LOSS VALIDATION: Only for first sample
             if len(chatml_samples) == 0:
                 target_token_count = sum(1 for token in label_tokens if token != -100)
@@ -171,9 +166,9 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
                 logger.info(f"PIPELINE VALIDATION: {target_token_count} text tokens, {audio_segment_count} audio segments ready for training")
                 
                 # Verify target text is in the loss computation
-                if pure_target_text:
-                    target_only_tokens = tokenizer.encode(pure_target_text, add_special_tokens=False)
-                    logger.info(f"PURE TEXT TARGET: '{pure_target_text[:40]}...' → {len(target_only_tokens)} tokens")
+                if target_text and target_text.strip():
+                    target_only_tokens = tokenizer.encode(target_text.strip(), add_special_tokens=False)
+                    logger.info(f"TEXT LOSS TARGET: '{target_text[:40]}...' → {len(target_only_tokens)} tokens")
         
         except Exception as e:
             logger.warning(f"Failed to prepare sample: {e}")
@@ -182,7 +177,6 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
             label_tokens = [-100]
             audio_contents = []
             speaker_id = 0
-            pure_target_text = None
         
         # Process audio if present
         audio_ids_list = []
@@ -252,14 +246,19 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
             audio_sample_rate = torch.tensor([sample_rate])
             audio_speaker_indices = torch.tensor([0], dtype=torch.long)
         
-        # Create ChatMLDatasetSample - SIMPLE and WORKING format
-        chatml_samples.append({
-            'input_ids': torch.tensor(input_tokens, dtype=torch.long),
-            'labels': torch.tensor(label_tokens, dtype=torch.long),
-            'audio_contents': audio_contents,
-            'speaker_id': speaker_id or 0,
-            'pure_target_text': pure_target_text  # Store clean text for loss computation
-        })
+        # Create ChatMLDatasetSample - RESTORE ORIGINAL WORKING FORMAT
+        chatml_sample = ChatMLDatasetSample(
+            input_ids=torch.tensor(input_tokens, dtype=torch.long),
+            label_ids=torch.tensor(label_tokens, dtype=torch.long),
+            audio_ids_concat=audio_ids_concat,
+            audio_ids_start=audio_ids_start,
+            audio_waveforms_concat=audio_waveforms_concat,
+            audio_waveforms_start=audio_waveforms_start,
+            audio_sample_rate=audio_sample_rate,
+            audio_speaker_indices=audio_speaker_indices
+        )
+        
+        chatml_samples.append(chatml_sample)
     
     # Use standard collator
     return collator(chatml_samples)
@@ -361,15 +360,15 @@ def main():
     # Load model config
     config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
     
-    # 🔧 CRITICAL ARCHITECTURE FIX: Revert to original Higgs-Audio V2 configuration
+    # CRITICAL ARCHITECTURE FIX: Revert to original Higgs-Audio V2 configuration
     # Original architecture doesn't use cross-attention modules
     # Text-audio conditioning happens through shared attention + DualFFN, not separate cross-attention
-    logger.info("🔧 ORIGINAL CONFIG: audio_out_self_attention=False (shared attention + DualFFN)")
+    logger.info(" ORIGINAL CONFIG: audio_out_self_attention=False (shared attention + DualFFN)")
     
     # CRITICAL: Revert to original configuration - no cross-attention modules
     config.use_audio_out_self_attention = False  # Original default - proven architecture!
     
-    logger.info("✅ REVERTED: use_audio_out_self_attention=False (original architecture)")
+    logger.info(" REVERTED: use_audio_out_self_attention=False (original architecture)")
     
     # Load model
     logger.info("Loading model...")
@@ -419,7 +418,7 @@ def main():
     # The newly initialized audio_attn modules significantly increase memory usage
     effective_batch_size = max(args.batch_size // 2, 4)  # Reduce batch size by half, minimum 4
     if effective_batch_size != args.batch_size:
-        logger.info(f"🔧 MEMORY FIX: Reducing batch size from {args.batch_size} to {effective_batch_size} for cross-attention stability")
+        logger.info(f" MEMORY FIX: Reducing batch size from {args.batch_size} to {effective_batch_size} for cross-attention stability")
     
     # Create dataloaders
     train_dataloader = DataLoader(
@@ -483,7 +482,7 @@ def main():
     for name, module in model.named_modules():
         for target in target_modules:
             if target in name and hasattr(module, 'weight'):
-                logger.info(f"✅ LORA TARGET FOUND: {name}")
+                logger.info(f" LORA TARGET FOUND: {name}")
                 break
     
     # Check for any missing targets (should be none with original architecture)
@@ -497,11 +496,11 @@ def main():
             missing_modules.append(target)
     
     if missing_modules:
-        logger.error(f"❌ MISSING LORA TARGETS: {missing_modules}")
-        logger.error("🚨 These modules should exist in original architecture!")
+        logger.error(f" MISSING LORA TARGETS: {missing_modules}")
+        logger.error(" These modules should exist in original architecture!")
         raise ValueError(f"Missing LoRA target modules: {missing_modules}")
     else:
-        logger.info("✅ ALL LORA TARGETS VERIFIED: Original DualFFN modules found")
+        logger.info(" ALL LORA TARGETS VERIFIED: Original DualFFN modules found")
     
     # Create a wrapper to handle the labels -> label_ids mapping
     class HiggsAudioModelWrapper(nn.Module):
@@ -513,7 +512,7 @@ def main():
     # Lower learning rate for newly initialized cross-attention modules
     stable_lr = min(args.learning_rate, 1e-4)  # Cap at 1e-4 for stability
     if stable_lr != args.learning_rate:
-        logger.info(f"🔧 STABILITY FIX: Reducing learning rate from {args.learning_rate} to {stable_lr} for cross-attention stability")
+        logger.info(f" STABILITY FIX: Reducing learning rate from {args.learning_rate} to {stable_lr} for cross-attention stability")
     
     optimizer = torch.optim.AdamW(
         model.parameters(), 
@@ -525,7 +524,7 @@ def main():
     
     # CRITICAL: Add gradient clipping for newly initialized cross-attention modules
     gradient_clip_norm = 0.5  # Conservative clipping for stability
-    logger.info(f"🔧 STABILITY FIX: Adding gradient clipping (max_norm={gradient_clip_norm}) for cross-attention stability")
+    logger.info(f" STABILITY FIX: Adding gradient clipping (max_norm={gradient_clip_norm}) for cross-attention stability")
     
     # Calculate training steps for proper warmup scheduling
     num_training_steps = len(train_dataloader) * args.num_epochs
@@ -540,7 +539,7 @@ def main():
     # CRITICAL FIX: Immediate learning for cross-attention adaptation
     # Use minimal warmup (50 steps) so learning starts immediately
     warmup_steps = 50  # Very short warmup for immediate learning
-    logger.info(f"🔧 IMMEDIATE LEARNING FIX: Using {warmup_steps} warmup steps (immediate learning for cross-attention)")
+    logger.info(f" IMMEDIATE LEARNING FIX: Using {warmup_steps} warmup steps (immediate learning for cross-attention)")
     
     # Alternative: Use linear scheduler that starts with small non-zero LR
     from transformers import get_linear_schedule_with_warmup
@@ -554,11 +553,11 @@ def main():
     # Verify scheduler starts with meaningful LR after just 1 step
     # Take one scheduler step to see actual LR
     dummy_step_lr = stable_lr / warmup_steps  # Expected LR after 1 step
-    logger.info(f"🔧 LEARNING RATE FIX: After 1 step, LR will be ≈ {dummy_step_lr:.2e} (immediate learning)")
+    logger.info(f" LEARNING RATE FIX: After 1 step, LR will be ≈ {dummy_step_lr:.2e} (immediate learning)")
     
     # Alternative approach: Start with constant LR for first 1000 steps, then decay
     # This ensures immediate learning for cross-attention adaptation
-    logger.info("🔧 CROSS-ATTENTION LEARNING: Enabling immediate gradient updates for newly initialized modules")
+    logger.info(" CROSS-ATTENTION LEARNING: Enabling immediate gradient updates for newly initialized modules")
     
     # Prepare for training
     model, optimizer, train_dataloader, scheduler = accelerator.prepare(
@@ -773,7 +772,6 @@ def main():
                 
                 # CRITICAL PAD TOKEN FIX: Map pad tokens to -100 if applicable
                 if audio_labels is not None:
-
                     
                     # Apply pad token mapping if we find the right attribute
                     pad_id = None
@@ -1044,7 +1042,7 @@ def main():
                         total_loss = total_loss + weighted_text_loss if total_loss is not None else weighted_text_loss
                         loss_components['weighted_text_loss'] = weighted_text_loss.item()
                         
-                        # 🔍 CRITICAL: Debug text loss computation (like audio debugging)
+                        # CRITICAL: Debug text loss computation (like audio debugging)
                         if global_step % args.log_steps == 0:
                             with torch.no_grad():
                                 # Text token analysis (similar to audio)
@@ -1058,47 +1056,47 @@ def main():
                                     valid_true = text_true[text_valid_mask]
                                     
                                     # Enhanced text token logging (like audio tokens)
-                                    logger.info(f"📝 TEXT TOKEN ANALYSIS (Step {global_step}):")
-                                    logger.info(f"📝 Valid text tokens: {len(valid_pred)} (pred) vs {len(valid_true)} (true)")
+                                    logger.info(f" TEXT TOKEN ANALYSIS (Step {global_step}):")
+                                    logger.info(f" Valid text tokens: {len(valid_pred)} (pred) vs {len(valid_true)} (true)")
                                     
                                     # Show first 10 predicted vs actual text tokens
                                     if len(valid_pred) >= 10:
                                         first_10_pred = valid_pred[:10].cpu().tolist()
                                         first_10_true = valid_true[:10].cpu().tolist()
-                                        logger.info(f"📝 TEXT First 10 tokens: pred={first_10_pred} | true={first_10_true}")
+                                        logger.info(f" TEXT First 10 tokens: pred={first_10_pred} | true={first_10_true}")
                                         
                                         # Show last 10 as well for comparison
                                         last_10_pred = valid_pred[-10:].cpu().tolist()
                                         last_10_true = valid_true[-10:].cpu().tolist()
-                                        logger.info(f"📝 TEXT Last 10 tokens:  pred={last_10_pred} | true={last_10_true}")
+                                        logger.info(f" TEXT Last 10 tokens:  pred={last_10_pred} | true={last_10_true}")
                                         
                                         # Token-by-token comparison for first 10
                                         matches = [1 if p == t else 0 for p, t in zip(first_10_pred, first_10_true)]
-                                        logger.info(f"📝 TEXT First 10 matches: {matches} (1=correct, 0=wrong)")
+                                        logger.info(f" TEXT First 10 matches: {matches} (1=correct, 0=wrong)")
                                     
                                     # Token diversity check (like audio)
                                     pred_unique = len(torch.unique(valid_pred))
                                     true_unique = len(torch.unique(valid_true))
                                     vocab_size = tokenizer.vocab_size if hasattr(tokenizer, 'vocab_size') else 128000
                                     pred_coverage = pred_unique / vocab_size
-                                    logger.info(f"📝 TEXT Token diversity: pred={pred_unique}, labels={true_unique} (vocab_size={vocab_size})")
-                                    logger.info(f"📝 TEXT Vocab coverage: {pred_coverage:.1%} of total vocabulary")
+                                    logger.info(f" TEXT Token diversity: pred={pred_unique}, labels={true_unique} (vocab_size={vocab_size})")
+                                    logger.info(f" TEXT Vocab coverage: {pred_coverage:.1%} of total vocabulary")
                                     
                                     # Overall accuracy calculation
                                     correct = (valid_pred == valid_true).sum().item()
                                     total = len(valid_pred)
                                     accuracy = correct / total if total > 0 else 0.0
-                                    logger.info(f"📝 TEXT Accuracy: {correct}/{total} = {accuracy:.4f} ({accuracy*100:.1f}%)")
+                                    logger.info(f" TEXT Accuracy: {correct}/{total} = {accuracy:.4f} ({accuracy*100:.1f}%)")
                                     
                                     # Check for text learning patterns
                                     if accuracy < 0.05:
-                                        logger.error(f"🚨 TEXT LEARNING FAILURE: {accuracy:.1%} accuracy - model not learning Arabic!")
+                                        logger.error(f" TEXT LEARNING FAILURE: {accuracy:.1%} accuracy - model not learning Arabic!")
                                     elif accuracy < 0.15:
-                                        logger.warning(f"⚠️  TEXT LEARNING SLOW: {accuracy:.1%} accuracy - Arabic quality may be poor")
+                                        logger.warning(f"  TEXT LEARNING SLOW: {accuracy:.1%} accuracy - Arabic quality may be poor")
                                     elif accuracy > 0.3:
-                                        logger.info(f"✅ EXCELLENT TEXT LEARNING: {accuracy:.1%} accuracy - Arabic should be high quality")
+                                        logger.info(f" EXCELLENT TEXT LEARNING: {accuracy:.1%} accuracy - Arabic should be high quality")
                                     else:
-                                        logger.info(f"🎯 STEADY TEXT LEARNING: {accuracy:.1%} accuracy - Arabic developing")
+                                        logger.info(f" STEADY TEXT LEARNING: {accuracy:.1%} accuracy - Arabic developing")
                                     
                                     # Enhanced: Decode sample text tokens to see actual predictions vs targets
                                     try:
@@ -1106,40 +1104,40 @@ def main():
                                         if len(first_10_pred) >= 5 and len(first_10_true) >= 5:
                                             sample_pred_text = tokenizer.decode(first_10_pred[:5], skip_special_tokens=True)
                                             sample_true_text = tokenizer.decode(first_10_true[:5], skip_special_tokens=True)
-                                            logger.info(f"📝 TEXT Sample decoded:")
-                                            logger.info(f"📝   Predicted: '{sample_pred_text}'")
-                                            logger.info(f"📝   Target:    '{sample_true_text}'")
+                                            logger.info(f" TEXT Sample decoded:")
+                                            logger.info(f"   Predicted: '{sample_pred_text}'")
+                                            logger.info(f"   Target:    '{sample_true_text}'")
                                             
                                             # Check if predicted text contains Arabic characters
                                             arabic_chars_pred = sum(1 for c in sample_pred_text if '\u0600' <= c <= '\u06FF')
                                             arabic_chars_true = sum(1 for c in sample_true_text if '\u0600' <= c <= '\u06FF')
-                                            logger.info(f"📝 Arabic chars: pred={arabic_chars_pred}, true={arabic_chars_true}")
+                                            logger.info(f" Arabic chars: pred={arabic_chars_pred}, true={arabic_chars_true}")
                                             
                                             if arabic_chars_true > 0 and arabic_chars_pred == 0:
-                                                logger.error(f"🚨 ARABIC FAILURE: Model not generating Arabic characters!")
+                                                logger.error(f" ARABIC FAILURE: Model not generating Arabic characters!")
                                             elif arabic_chars_pred > 0:
-                                                logger.info(f"✅ ARABIC GENERATION: Model producing Arabic characters")
+                                                logger.info(f" ARABIC GENERATION: Model producing Arabic characters")
                                                 
                                         # Also try decoding longer sequences (up to 15 tokens)
                                         if len(valid_pred) >= 15 and len(valid_true) >= 15:
                                             longer_pred_text = tokenizer.decode(valid_pred[:15].cpu().tolist(), skip_special_tokens=True)
                                             longer_true_text = tokenizer.decode(valid_true[:15].cpu().tolist(), skip_special_tokens=True)
-                                            logger.info(f"📝 TEXT Longer sample (15 tokens):")
-                                            logger.info(f"📝   Predicted: '{longer_pred_text}'")
-                                            logger.info(f"📝   Target:    '{longer_true_text}'")
+                                            logger.info(f" TEXT Longer sample (15 tokens):")
+                                            logger.info(f"   Predicted: '{longer_pred_text}'")
+                                            logger.info(f"   Target:    '{longer_true_text}'")
                                             
                                     except Exception as e:
-                                        logger.info(f"📝 TEXT decode error: {e}")
+                                        logger.info(f" TEXT decode error: {e}")
                                         
                                     # Text learning health check (like audio health check)
                                     baseline_text_ce = 9.0  # Rough estimate for text cross-entropy baseline
                                     text_progress = (baseline_text_ce - text_loss.item()) / baseline_text_ce
-                                    logger.info(f"📝 TEXT LEARNING PROGRESS: {text_progress:.1%} improvement from baseline")
+                                    logger.info(f" TEXT LEARNING PROGRESS: {text_progress:.1%} improvement from baseline")
                                     
                                 else:
-                                    logger.warning(f"📝 NO VALID TEXT TOKENS: Check text labels and sequence processing")
+                                    logger.warning(f" NO VALID TEXT TOKENS: Check text labels and sequence processing")
                             
-                            # 🔍 CRITICAL: Monitor text loss trends for Arabic learning
+                            # CRITICAL: Monitor text loss trends for Arabic learning
                             if global_step % args.log_steps == 0:
                                 logger.info(f" TEXT LOSS (Step {global_step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f}, weight: {args.text_loss_weight})")
                                 
@@ -1304,16 +1302,16 @@ def main():
                 
                 # CRITICAL: Add comprehensive numerical stability checks
                 if torch.isnan(total_loss) or torch.isinf(total_loss):
-                    logger.error(f"🚨 NUMERICAL INSTABILITY: total_loss={total_loss} at step {step}")
+                    logger.error(f" NUMERICAL INSTABILITY: total_loss={total_loss} at step {step}")
                     logger.error("Skipping step to prevent NaN propagation in cross-attention modules")
                     optimizer.zero_grad()
                     continue
                 
                 # Check for NaN in individual loss components
                 if torch.isnan(audio_loss):
-                    logger.error(f"🚨 AUDIO LOSS NaN at step {step} - cross-attention instability detected")
+                    logger.error(f" AUDIO LOSS NaN at step {step} - cross-attention instability detected")
                 if torch.isnan(weighted_text_loss):
-                    logger.error(f"🚨 TEXT LOSS NaN at step {step} - cross-attention instability detected")
+                    logger.error(f" TEXT LOSS NaN at step {step} - cross-attention instability detected")
                 
                 # Apply gradient clipping BEFORE optimizer step
                 accelerator.backward(total_loss)
@@ -1322,7 +1320,7 @@ def main():
                 if accelerator.sync_gradients:
                     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip_norm)
                     if step % 100 == 0:
-                        logger.info(f"📊 Gradient norm: {grad_norm:.4f} (clipped at {gradient_clip_norm})")
+                        logger.info(f" Gradient norm: {grad_norm:.4f} (clipped at {gradient_clip_norm})")
                 
                 optimizer.step()
                 scheduler.step()
