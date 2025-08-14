@@ -547,6 +547,12 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
         print(f"DEBUG: Finished processing all {total_m} messages, total input tokens: {len(input_tokens)}, audio_contents: {len(audio_contents)}")
         return input_tokens, label_tokens, audio_contents, speaker_id
 
+    except Exception as e:
+        print(f"Error in prepare_chatml_sample: {str(e)}")
+        print(f"Sample data: {json.dumps(sample, indent=2)}")
+        return None, None, None, None
+
+
 def extract_generation_prompt_from_input_tokens(input_tokens, tokenizer):
     """Extract the generation prompt and reference answer from the input tokens.
 
