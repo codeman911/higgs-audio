@@ -545,50 +545,72 @@ def main():
                     logger.error(f" INSUFFICIENT TEXT SUPERVISION: {per_sample:.1f} tokens/sample < {MIN_ASSISTANT_TOKENS} required for Arabic!")
                     continue  # Skip starved batches
                 
-                # Forward pass with clean inputs - COMPLETELY isolate from batch to avoid any 'labels' contamination
+                # Forward pass with clean inputs - NO LABELS to model (like working version)
                 model_inputs = {
                     "input_ids": sup["input_ids"],
-                    "attention_mask": sup["attention_mask"]
+                    "attention_mask": sup["attention_mask"],
+                    "audio_features": batch.audio_in_wv.to(device) if hasattr(batch, 'audio_in_wv') and batch.audio_in_wv is not None else None,
+                    "audio_feature_attention_mask": batch.audio_feature_attention_mask.to(device) if hasattr(batch, 'audio_feature_attention_mask') and batch.audio_feature_attention_mask is not None else None,
+                    "audio_in_ids": sup["audio_in_ids"],
+                    "audio_out_ids": sup["audio_out_ids_shifted_in"],
+                    "audio_in_ids_start": batch.audio_in_ids_start.to(device) if hasattr(batch, 'audio_in_ids_start') and batch.audio_in_ids_start is not None else None,
+                    "audio_out_ids_start": batch.audio_out_ids_start.to(device) if hasattr(batch, 'audio_out_ids_start') and batch.audio_out_ids_start is not None else None,
+                    "audio_out_ids_start_group_loc": batch.audio_out_ids_start_group_loc.to(device) if hasattr(batch, 'audio_out_ids_start_group_loc') and batch.audio_out_ids_start_group_loc is not None else None,
                 }
                 
-                # Only add audio fields if they exist and are not None
-                if sup["audio_in_ids"] is not None:
-                    model_inputs["audio_in_ids"] = sup["audio_in_ids"]
-                if sup["audio_out_ids_shifted_in"] is not None:
-                    model_inputs["audio_out_ids"] = sup["audio_out_ids_shifted_in"]
+                # Remove None values for clean forward pass
+                model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                 
-                # Add labels with correct parameter names that HiggsAudioModel expects
-                if sup["text_labels"] is not None:
-                    model_inputs["label_ids"] = sup["text_labels"]  # Model expects 'label_ids', not 'labels'
-                if sup["audio_labels"] is not None:
-                    model_inputs["label_audio_ids"] = sup["audio_labels"]  # Model expects 'label_audio_ids'
-                
-                # Add batch fields that model needs, but be very selective
-                batch_fields_for_model = [
-                    ('audio_in_wv', 'audio_features'),
-                    ('audio_feature_attention_mask', 'audio_feature_attention_mask'),
-                    ('audio_in_ids_start', 'audio_in_ids_start'),
-                    ('audio_out_ids_start', 'audio_out_ids_start'),
-                    ('audio_out_ids_start_group_loc', 'audio_out_ids_start_group_loc')
-                ]
-                
-                for batch_attr, model_param in batch_fields_for_model:
-                    if hasattr(batch, batch_attr) and getattr(batch, batch_attr) is not None:
-                        model_inputs[model_param] = getattr(batch, batch_attr).to(device)
-                
-                # DEBUG: Log model inputs to verify correct parameter names
+                # DEBUG: Log model inputs to verify NO labels
                 if global_step == 0:
                     logger.info(f"DEBUG: Model input keys: {list(model_inputs.keys())}")
-                    # Verify no generic 'labels' field, only 'label_ids' and 'label_audio_ids'
                     for key, value in model_inputs.items():
                         if hasattr(value, 'shape'):
                             logger.info(f"DEBUG: {key} shape: {value.shape}")
                 
-                # ROBUST: Handle framework auto-injection of 'labels' parameter
-                outputs = safe_model_forward(model, **model_inputs)
+                # Forward pass - NO LABELS (like working version)
+                outputs = model(**model_inputs)
                 
-                # Model now computes loss internally when labels are provided
-                loss = outputs.loss
+                # Extract labels separately for manual loss computation
+                text_labels = sup["text_labels"]
+                audio_labels = sup["audio_labels"]
+                
+                # Manual loss computation (like working version)
+                total_loss = 0.0
+                
+                # Audio loss computation
+                audio_loss = torch.tensor(0.0, device=device)
+                if "audio_logits" in outputs and outputs["audio_logits"] is not None and audio_labels is not None:
+                    audio_logits = outputs["audio_logits"]
+                    if audio_logits.dim() == 3:
+                        # Ensure [C, T, V] format
+                        if audio_logits.shape[1] == N_CODEBOOKS:
+                            audio_logits = audio_logits.permute(1, 0, 2).contiguous()
+                        
+                        C, T, V = audio_logits.shape
+                        audio_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                        audio_loss = audio_loss_fct(
+                            audio_logits.view(C * T, V),
+                            audio_labels.view(C * T)
+                        )
+                        total_loss += audio_loss
+                
+                # Text loss computation
+                text_loss = torch.tensor(0.0, device=device)
+                if "logits" in outputs and outputs["logits"] is not None and text_labels is not None:
+                    text_logits = outputs["logits"][:, :-1, :].contiguous()  # Shift for LM
+                    shift_labels = text_labels[:, 1:].contiguous()
+                    B, T, V = text_logits.shape
+                    text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                    text_loss = text_loss_fct(
+                        text_logits.view(B * T, V),
+                        shift_labels.view(B * T)
+                    )
+                    # Weight text loss lower for voice cloning
+                    weighted_text_loss = args.text_loss_weight * text_loss
+                    total_loss += weighted_text_loss
+                
+                loss = total_loss
                 
                 # Step 6: Extract individual losses for logging (if available in outputs)
                 text_loss = getattr(outputs, 'text_loss', None)
@@ -679,53 +701,65 @@ def main():
                     if per_sample < MIN_ASSISTANT_TOKENS:
                         continue
                     
-                    # Forward pass with clean inputs - COMPLETELY isolate from batch to avoid any 'labels' contamination
+                    # Forward pass with clean inputs - NO LABELS to model (like working version)
                     model_inputs = {
                         "input_ids": sup["input_ids"],
-                        "attention_mask": sup["attention_mask"]
+                        "attention_mask": sup["attention_mask"],
+                        "audio_features": batch.audio_in_wv.to(device) if hasattr(batch, 'audio_in_wv') and batch.audio_in_wv is not None else None,
+                        "audio_feature_attention_mask": batch.audio_feature_attention_mask.to(device) if hasattr(batch, 'audio_feature_attention_mask') and batch.audio_feature_attention_mask is not None else None,
+                        "audio_in_ids": sup["audio_in_ids"],
+                        "audio_out_ids": sup["audio_out_ids_shifted_in"],
+                        "audio_in_ids_start": batch.audio_in_ids_start.to(device) if hasattr(batch, 'audio_in_ids_start') and batch.audio_in_ids_start is not None else None,
+                        "audio_out_ids_start": batch.audio_out_ids_start.to(device) if hasattr(batch, 'audio_out_ids_start') and batch.audio_out_ids_start is not None else None,
+                        "audio_out_ids_start_group_loc": batch.audio_out_ids_start_group_loc.to(device) if hasattr(batch, 'audio_out_ids_start_group_loc') and batch.audio_out_ids_start_group_loc is not None else None,
                     }
                     
-                    # Only add audio fields if they exist and are not None
-                    if sup["audio_in_ids"] is not None:
-                        model_inputs["audio_in_ids"] = sup["audio_in_ids"]
-                    if sup["audio_out_ids_shifted_in"] is not None:
-                        model_inputs["audio_out_ids"] = sup["audio_out_ids_shifted_in"]
+                    # Remove None values for clean forward pass
+                    model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
                     
-                    # Add labels with correct parameter names that HiggsAudioModel expects
-                    if sup["text_labels"] is not None:
-                        model_inputs["label_ids"] = sup["text_labels"]  # Model expects 'label_ids', not 'labels'
-                    if sup["audio_labels"] is not None:
-                        model_inputs["label_audio_ids"] = sup["audio_labels"]  # Model expects 'label_audio_ids'
+                    # Forward pass - NO LABELS (like working version)
+                    outputs = model(**model_inputs)
                     
-                    # Add batch fields that model needs, but be very selective
-                    batch_fields_for_model = [
-                        ('audio_in_wv', 'audio_features'),
-                        ('audio_feature_attention_mask', 'audio_feature_attention_mask'),
-                        ('audio_in_ids_start', 'audio_in_ids_start'),
-                        ('audio_out_ids_start', 'audio_out_ids_start'),
-                        ('audio_out_ids_start_group_loc', 'audio_out_ids_start_group_loc')
-                    ]
+                    # Extract labels separately for manual loss computation
+                    text_labels = sup["text_labels"]
+                    audio_labels = sup["audio_labels"]
                     
-                    for batch_attr, model_param in batch_fields_for_model:
-                        if hasattr(batch, batch_attr) and getattr(batch, batch_attr) is not None:
-                            model_inputs[model_param] = getattr(batch, batch_attr).to(device)
+                    # Manual loss computation (like working version)
+                    total_loss = 0.0
                     
-                    # CRITICAL: HiggsAudioModel.forward() does NOT accept 'labels' parameter
-                    # Labels are used separately for loss computation
-                    outputs = safe_model_forward(model, **model_inputs)
+                    # Audio loss computation
+                    audio_loss = torch.tensor(0.0, device=device)
+                    if "audio_logits" in outputs and outputs["audio_logits"] is not None and audio_labels is not None:
+                        audio_logits = outputs["audio_logits"]
+                        if audio_logits.dim() == 3:
+                            # Ensure [C, T, V] format
+                            if audio_logits.shape[1] == N_CODEBOOKS:
+                                audio_logits = audio_logits.permute(1, 0, 2).contiguous()
+                            
+                            C, T, V = audio_logits.shape
+                            audio_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                            audio_loss = audio_loss_fct(
+                                audio_logits.view(C * T, V),
+                                audio_labels.view(C * T)
+                            )
+                            total_loss += audio_loss
                     
-                    # Model now computes loss internally when labels are provided
-                    loss = outputs.loss
+                    # Text loss computation
+                    text_loss = torch.tensor(0.0, device=device)
+                    if "logits" in outputs and outputs["logits"] is not None and text_labels is not None:
+                        text_logits = outputs["logits"][:, :-1, :].contiguous()  # Shift for LM
+                        shift_labels = text_labels[:, 1:].contiguous()
+                        B, T, V = text_logits.shape
+                        text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                        text_loss = text_loss_fct(
+                            text_logits.view(B * T, V),
+                            shift_labels.view(B * T)
+                        )
+                        # Weight text loss lower for voice cloning
+                        weighted_text_loss = args.text_loss_weight * text_loss
+                        total_loss += weighted_text_loss
                     
-                    # Step 6: Extract individual losses for logging (if available in outputs)
-                    text_loss = getattr(outputs, 'text_loss', None)
-                    audio_loss = getattr(outputs, 'audio_loss', None)
-                    
-                    # If individual losses not available, use total loss
-                    if text_loss is None or audio_loss is None:
-                        # Fallback: assume equal weighting for logging purposes
-                        text_loss = loss * 0.5
-                        audio_loss = loss * 0.5
+                    loss = total_loss
                     
                     # Combined validation loss
                     batch_val_loss = audio_loss + text_loss
