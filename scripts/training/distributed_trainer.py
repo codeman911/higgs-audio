@@ -67,47 +67,15 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
         ref_transcript = misc.get('ref_transcript', '')
         target_text = misc.get('target_text', '')
         
-        # Use prepare_chatml_sample to get proper tokenization
-        try:
-            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
-                sample, tokenizer
-            )
-            
-            # Simple logging for first sample only
-            if len(chatml_samples) == 0:
-                target_token_count = sum(1 for token in label_tokens if token != -100)
-                audio_segment_count = len(audio_contents)
-                
-                # FIXED ZERO-SHOT VALIDATION: Check for Arabic/text content in actual model input
-                input_text = tokenizer.decode(input_tokens, skip_special_tokens=False)
-                
-                # Check for Arabic text patterns in the actual model input (not just misc fields)
-                import re
-                has_arabic = bool(re.search(r'[\u0600-\u06FF]', input_text))
-                has_meaningful_text = len([token for token in input_tokens if token not in [tokenizer.pad_token_id, tokenizer.eos_token_id, tokenizer.bos_token_id]]) > 30
-                
-                logger.info(f"Training ready: {target_token_count} text tokens, {audio_segment_count} audio segments")
-                logger.info(f"Arabic content validation: arabic_text_present={has_arabic}, sufficient_tokens={has_meaningful_text}")
-                
-                if has_arabic:
-                    logger.info(" SUCCESS: Arabic text detected in model input!")
-                    # Extract and show Arabic content
-                    arabic_content = re.findall(r'[\u0600-\u06FF\s]+', input_text)
-                    if arabic_content:
-                        logger.info(f"Arabic text sample: '{arabic_content[0][:50]}...'")
-                else:
-                    logger.warning(" No Arabic text detected in model input")
-                    
-                # Show meaningful preview of what's actually fed to model (skip system boilerplate)
-                preview_text = input_text.replace('<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant capable of generating speech from text with the voice characteristics inferred from the provided audio samples.<|eot_id|>', '[SYSTEM]')
-                logger.info(f"Model input preview: '{preview_text[:150]}...'")
+        # Process sample and get inputs/labels
+        input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
         
-        except Exception as e:
-            logger.warning(f"Failed to prepare sample: {e}")
-            input_tokens = [tokenizer.pad_token_id]
-            label_tokens = [-100]
-            audio_contents = []
-            speaker_id = 0
+        # Skip if insufficient tokens
+        target_token_count = len([t for t in label_tokens if t != -100])
+        audio_segment_count = len(audio_contents)
+        
+        if target_token_count < 64:
+            continue
         
         # Process audio using audio_tokenizer if present
         audio_ids_list = []
@@ -601,7 +569,6 @@ def main():
                         if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
                             audio_logits = audio_logits.permute(1, 0, 2).contiguous()
                         
-                        # Compute loss
                         audio_loss = torch.nn.functional.cross_entropy(
                             audio_logits.view(-1, audio_logits.size(-1)),
                             audio_labels.view(-1),
@@ -633,26 +600,63 @@ def main():
                 # CORE FIX 5: ESSENTIAL LOGGING ONLY
                 if global_step % args.log_steps == 0:
                     with torch.no_grad():
-                        # Text metrics
+                        # Text metrics with detailed predictions
                         if 'text_loss' in loss_components:
                             text_pred = shift_logits.argmax(-1)
                             text_valid = (shift_labels != -100)
                             if text_valid.any():
                                 text_acc = (text_pred[text_valid] == shift_labels[text_valid]).float().mean()
                                 text_vocab = torch.unique(text_pred[text_valid]).numel()
+                                
+                                # Log top 10 predicted tokens
+                                top_pred_tokens = text_pred[text_valid][:10].tolist()
+                                top_label_tokens = shift_labels[text_valid][:10].tolist()
+                                
+                                # Decode input and predicted text samples
+                                input_sample = tokenizer.decode(batch.input_ids[0], skip_special_tokens=True)[:200]
+                                pred_sample = tokenizer.decode(top_pred_tokens, skip_special_tokens=True)
+                                label_sample = tokenizer.decode(top_label_tokens, skip_special_tokens=True)
+                                
+                                logger.info(f"Step {global_step}: TEXT Loss={loss_components['text_loss']:.4f}, "
+                                          f"Acc={text_acc:.1%}, Vocab={text_vocab}")
+                                logger.info(f"INPUT TEXT: {input_sample}")
+                                logger.info(f"PRED TEXT: {pred_sample}")
+                                logger.info(f"LABEL TEXT: {label_sample}")
+                                logger.info(f"TOP-10 PRED TOKENS: {top_pred_tokens}")
+                                logger.info(f"TOP-10 LABEL TOKENS: {top_label_tokens}")
                             else:
                                 text_acc = text_vocab = 0
-                            
-                            logger.info(f"Step {global_step}: TEXT Loss={loss_components['text_loss']:.3f}, "
-                                      f"Acc={text_acc:.1%}, Vocab={text_vocab}, Ref={ref_status}")
+                                logger.info(f"Step {global_step}: TEXT Loss={loss_components['text_loss']:.4f}, "
+                                          f"Acc={text_acc:.1%}, Vocab={text_vocab} (NO VALID TOKENS)")
                         
-                        # Audio metrics  
+                        # Audio metrics with detailed predictions
                         if 'audio_loss' in loss_components:
-                            logger.info(f"Step {global_step}: AUDIO Loss={loss_components['audio_loss']:.3f}")
+                            # Get audio predictions and show top 10
+                            if hasattr(locals(), 'audio_logits') and audio_logits is not None:
+                                audio_pred = audio_logits.argmax(-1)
+                                if audio_pred.numel() > 0:
+                                    audio_pred_flat = audio_pred.flatten()
+                                    audio_labels_flat = audio_labels.flatten()
+                                    
+                                    # Show top 10 audio predictions
+                                    top_audio_pred = audio_pred_flat[:10].tolist()
+                                    top_audio_labels = audio_labels_flat[:10].tolist()
+                                    
+                                    audio_vocab = torch.unique(audio_pred_flat[audio_labels_flat != -100]).numel()
+                                    
+                                    logger.info(f"Step {global_step}: AUDIO Loss={loss_components['audio_loss']:.4f}, "
+                                              f"Vocab={audio_vocab}")
+                                    logger.info(f"TOP-10 AUDIO PRED: {top_audio_pred}")
+                                    logger.info(f"TOP-10 AUDIO LABELS: {top_audio_labels}")
+                                else:
+                                    logger.info(f"Step {global_step}: AUDIO Loss={loss_components['audio_loss']:.4f} (EMPTY PRED)")
+                            else:
+                                logger.info(f"Step {global_step}: AUDIO Loss={loss_components['audio_loss']:.4f} (NO LOGITS)")
                         
-                        # Supervised tokens
-                        logger.info(f"Step {global_step}: SUPERVISED {min_supervised} tokens/sample")
-
+                        # Supervised tokens and ref status
+                        logger.info(f"Step {global_step}: SUPERVISED {min_supervised} tokens/sample, Ref={ref_status}")
+                        logger.info(f"Step {global_step}: LR={scheduler.get_last_lr()[0]:.2e}")
+                
                 # Backward pass
                 if total_loss is not None:
                     total_loss.backward()
