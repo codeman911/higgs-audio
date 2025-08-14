@@ -543,6 +543,12 @@ def main():
                 if sup["audio_out_ids_shifted_in"] is not None:
                     model_inputs["audio_out_ids"] = sup["audio_out_ids_shifted_in"]
                 
+                # Add labels with correct parameter names that HiggsAudioModel expects
+                if sup["text_labels"] is not None:
+                    model_inputs["label_ids"] = sup["text_labels"]  # Model expects 'label_ids', not 'labels'
+                if sup["audio_labels"] is not None:
+                    model_inputs["label_audio_ids"] = sup["audio_labels"]  # Model expects 'label_audio_ids'
+                
                 # Add batch fields that model needs, but be very selective
                 batch_fields_for_model = [
                     ('audio_in_wv', 'audio_features'),
@@ -556,16 +562,15 @@ def main():
                     if hasattr(batch, batch_attr) and getattr(batch, batch_attr) is not None:
                         model_inputs[model_param] = getattr(batch, batch_attr).to(device)
                 
-                # DEBUG: Log model inputs to verify no 'labels' field
+                # DEBUG: Log model inputs to verify correct parameter names
                 if global_step == 0:
                     logger.info(f"DEBUG: Model input keys: {list(model_inputs.keys())}")
-                    # Verify no labels in any of the input values
+                    # Verify no generic 'labels' field, only 'label_ids' and 'label_audio_ids'
                     for key, value in model_inputs.items():
                         if hasattr(value, 'shape'):
                             logger.info(f"DEBUG: {key} shape: {value.shape}")
                 
-                # CRITICAL: HiggsAudioModel.forward() does NOT accept 'labels' parameter
-                # Labels are used separately for loss computation
+                # HiggsAudioModel.forward() accepts 'label_ids' and 'label_audio_ids', not 'labels'
                 outputs = model(**model_inputs)
                 
                 # Step 5: Normalize audio logits to [C, T, V]
@@ -700,6 +705,12 @@ def main():
                         model_inputs["audio_in_ids"] = sup["audio_in_ids"]
                     if sup["audio_out_ids_shifted_in"] is not None:
                         model_inputs["audio_out_ids"] = sup["audio_out_ids_shifted_in"]
+                    
+                    # Add labels with correct parameter names that HiggsAudioModel expects
+                    if sup["text_labels"] is not None:
+                        model_inputs["label_ids"] = sup["text_labels"]  # Model expects 'label_ids', not 'labels'
+                    if sup["audio_labels"] is not None:
+                        model_inputs["label_audio_ids"] = sup["audio_labels"]  # Model expects 'label_audio_ids'
                     
                     # Add batch fields that model needs, but be very selective
                     batch_fields_for_model = [
