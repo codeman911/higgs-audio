@@ -223,9 +223,9 @@ class ZeroShotVoiceCloningProcessor:
             # Create system message for zero-shot voice cloning
             system_message = self._create_system_message(sample.language)
             
-            # Create user message with reference audio
+            # Create user message with reference audio AND reference transcript
             user_content = [
-                TextContent(text=f"Please generate speech for the following text using the voice from the reference audio: {target_text}"),
+                TextContent(text=f"<ref_text>{ref_transcript}</ref_text>\n\n<text>{target_text}</text>"),
                 AudioContent(
                     audio_url=sample.ref_audio_file,
                     raw_audio=self._encode_audio_to_base64(ref_audio, ref_sr),
