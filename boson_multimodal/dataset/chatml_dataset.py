@@ -366,7 +366,6 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                 speaker_id = sample.misc["speaker"]
 
         total_m = len(sample.messages)
-        print(f"DEBUG: Processing {total_m} messages in sample")
         
         for turn_id, message in enumerate(sample.messages):
             role = message.role
@@ -374,34 +373,20 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
             content = message.content
             content_l = []
 
-            print(f"DEBUG: Processing message {turn_id+1}/{total_m}, role={role}")
-
             if isinstance(content, str):
                 content_l.append(TextContent(text=content))
-                print(f"DEBUG: Added string content: '{content[:50]}...'")
             elif isinstance(content, TextContent):
                 content_l.append(content)
-                print(f"DEBUG: Added TextContent: '{content.text[:50]}...'")
             elif isinstance(content, AudioContent):
                 content_l.append(content)
-                print(f"DEBUG: Added AudioContent: {content.audio_url}")
             elif isinstance(content, list):
-                print(f"DEBUG: Processing list content with {len(content)} items")
                 for ele in content:
                     if isinstance(ele, str):
                         content_l.append(TextContent(text=ele))
-                        print(f"DEBUG: Added list string: '{ele[:50]}...'")
                     elif hasattr(ele, 'type'):
                         content_l.append(ele)
-                        if ele.type == 'text' and hasattr(ele, 'text'):
-                            print(f"DEBUG: Added list text content: '{ele.text[:50]}...'")
-                        elif ele.type == 'audio':
-                            print(f"DEBUG: Added list audio content: {getattr(ele, 'audio_url', 'unknown')}")
                     else:
                         content_l.append(ele)
-                        print(f"DEBUG: Added unknown list element: {type(ele)}")
-            
-            print(f"DEBUG: Final content_l has {len(content_l)} items for message {turn_id+1}")
             
             if turn_id == 0:
                 prefix = f"<|begin_of_text|><|start_header_id|>{role}<|end_header_id|>\n\n"
@@ -413,8 +398,6 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
             prefix_tokens = tokenizer.encode(prefix, add_special_tokens=False)
             input_tokens.extend(prefix_tokens)
             label_tokens.extend([-100 for _ in prefix_tokens])
-            
-            print(f"DEBUG: Added {len(prefix_tokens)} prefix tokens for {role}")
 
             if recipient:
                 assert role == "assistant", "Recipient is only available for assistant role."
@@ -450,7 +433,6 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                                 input_tokens.extend(sep_token)
                                 label_tokens.extend(sep_token)
                                 added_assistant_text = True
-                                print(f"DEBUG: Added target text supervision: {len(target_text_tokens)} tokens")
                 
                 # Fallback: if no misc.target_text, try to extract prior USER text as supervision
                 if not added_assistant_text and turn_id > 0:
@@ -485,15 +467,12 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                                         input_tokens.extend(sep_token)
                                         label_tokens.extend(sep_token)
                                         added_assistant_text = True
-                                        print(f"DEBUG: Added fallback text supervision: {len(cand_tokens)} tokens")
                     except Exception:
                         # Silent fallback if structure is unexpected
                         pass
             
-            # CRITICAL: Process all content items for current message
+            # Process all content items for current message
             for content in content_l:
-                print(f"DEBUG: Processing content type: {getattr(content, 'type', 'unknown')}")
-                
                 if hasattr(content, 'type') and content.type == "text":
                     text_tokens = tokenizer.encode(content.text, add_special_tokens=False)
                     input_tokens.extend(text_tokens)
@@ -501,12 +480,10 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                         label_tokens.extend(text_tokens)
                     else:
                         label_tokens.extend([-100 for _ in text_tokens])
-                    print(f"DEBUG: Added text content: {len(text_tokens)} tokens - '{content.text[:50]}...'")
 
                 elif hasattr(content, 'type') and content.type == "audio":
                     # Generate the text-part of the audio tokens
                     audio_contents.append(content)
-                    print(f"DEBUG: Added audio content to audio_contents: {getattr(content, 'audio_url', 'unknown')}")
                     
                     if role == "user" or role == "system":
                         # Add the text tokens
@@ -516,7 +493,6 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                         )
                         input_tokens.extend(text_tokens)
                         label_tokens.extend([-100 for _ in text_tokens])
-                        print(f"DEBUG: Added audio input tokens: {len(text_tokens)} tokens")
                     elif role == "assistant":
                         # Add the text tokens for audio-out part.
                         text_tokens = tokenizer.encode(
@@ -528,7 +504,6 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                             label_tokens.extend(text_tokens)
                         else:
                             label_tokens.extend([-100 for _ in text_tokens])
-                        print(f"DEBUG: Added audio output tokens: {len(text_tokens)} tokens")
                         
             next_id = turn_id + 1
             if role == "assistant" and next_id != total_m and sample.messages[next_id].role == "assistant":
@@ -541,10 +516,7 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                 label_tokens.extend(postfix_tokens)
             else:
                 label_tokens.extend([-100 for _ in postfix_tokens])
-            
-            print(f"DEBUG: Completed message {turn_id+1}/{total_m}, total tokens so far: {len(input_tokens)}")
 
-        print(f"DEBUG: Finished processing all {total_m} messages, total input tokens: {len(input_tokens)}, audio_contents: {len(audio_contents)}")
         return input_tokens, label_tokens, audio_contents, speaker_id
 
     except Exception as e:
