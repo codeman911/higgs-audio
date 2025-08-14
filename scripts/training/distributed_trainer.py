@@ -721,8 +721,8 @@ def main():
                         min_supervised = supervised_per_sample.min().item()
                         avg_supervised = supervised_per_sample.float().mean().item()
                         
-                        # Phase-A: Arabic needs ≥64 supervised tokens/sample
-                        PHASE_A_MIN_SUPERVISED = 64
+                        # Phase-A: Arabic needs ≥8 supervised tokens/sample (LOWERED FROM 64)
+                        PHASE_A_MIN_SUPERVISED = 8  # Realistic minimum for short Arabic phrases
                         if min_supervised < PHASE_A_MIN_SUPERVISED:
                             if global_step % 50 == 0:
                                 logger.warning(f"BATCH DROPPED: min_supervised={min_supervised} < {PHASE_A_MIN_SUPERVISED}")
