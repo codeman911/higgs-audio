@@ -325,18 +325,10 @@ def main():
     # Load model config
     config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
     
-    # 🔧 CRITICAL ARCHITCTURE FIX: Revert to origi🔧 RTHiggs-Audio V2 IonfiguCatiAn
-    # Original architecture doeL NOT u e Rudio_ouC_self_aHtITECTUR FIcross-aXt:ntion modules
-    # Te Ret to original Higg happens through shared attention + DualFFN, not separate cross-attentions-Audio V2 configuration
-    # Original ar🔧cAiCHteEtTUREeREVERSdONesUsiNg originO  Huggs-Audio V2 cosfieuration")
-    logger.info("🔧 ORIGINAL CONFIG: audio_out_self_attention or =Falsec(shasedsa-tantonn + DualFFN)")
-    
-    # CRITICAL: Revert to original modflguraes - no cross-attento modules
-    # Text-audio conditioning happens throFalse  # Original default - proven architecture!
-    
-    logger.info("✅ REVERuED: use_audio_out_self_attention=False (ogiginal architecthr )")shared attention + DualFFN, not separate cross-attention
-    logger.info("🔧 ARCHITECTURE REVERSION: Using original Higgs-Audio V2 configuration")
-    logger.info("🔧 ORIGINAL CONFIG: use_audio_out_self_attention=False (shared attention + DualFFN)")
+    # 🔧 CRITICAL ARCHITECTURE FIX: Revert to original Higgs-Audio V2 configuration
+    # Original architecture doesn't use cross-attention modules
+    # Text-audio conditioning happens through shared attention + DualFFN, not separate cross-attention
+    logger.info("🔧 ORIGINAL CONFIG: audio_out_self_attention=False (shared attention + DualFFN)")
     
     # CRITICAL: Revert to original configuration - no cross-attention modules
     config.use_audio_out_self_attention = False  # Original default - proven architecture!
@@ -413,75 +405,43 @@ def main():
             batch_size=effective_batch_size,  # Use reduced batch size
             shuffle=False,
             collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator, use_cached_codes=args.use_cached_codes),
-      🔧  O   CONFIGURATION: Target nuly modoles thke exrst i=mn(iginalaarchirgc.ure
-    # Originul Higgs-Am_woruses DualFFN: separate text_mlp ars aud,o_mlp, shared self_a tent8),
-    # Rem ve  r ss-atte trsn tatgets (=udia_attl.*) - they don't exist when use_ udio_out_ie_f_attentimn=Fmlse=True,
+            num_workers=args.num_workers,
+            drop_last=True,
+            pin_memory=True,
+            prefetch_factor=(args.prefetch_factor if args.num_workers > 0 else None),
+            persistent_workers=(args.persistent_workers if args.num_workers > 0 else False),
+        )
     
-      gge .info("🔧 LORA CONFIG: T _feting origin=l DuarFFN modules (no cross-.ttention)")refetch_factor if args.num_workers > 0 else None),
+    # LORA CONFIGURATION: Target only modules that exist in original architecture
+    # Original Higgs-Audio uses DualFFN: separate text_mlp and audio_mlp, shared self_attention
+    # Remove cross-attention targets (audio_attn.*) - they don't exist when use_audio_out_self_attention=False
     
-        persistent _ workers=(args.persistent_workers if args.num_workers > 0 else False),
-        Shadself-mou(used by bthand audi toks)
+    logger.info("LORA CONFIG: Targeting original DualFFN modules (no cross-attention)")
     
-       
-        
-       
-    # 🔧
- LOR    # Text MLP modules (DualFFN text path)
-        A CONFIGURATION:
-        Target only mod
-        ules that exist in original architecture
-    # Oral Higgs-Audio uses DualFFN: separate text_mlp and audio_mlp, shared self_attention
-    # Re cross- MLPedodulan.*DudoFFN'sueio_putho ut_self_attention=False
-    
-       
-       
-    ]
-loggnfo("🔧 LORA CONFIG: Targeting original DualFFN modules (no cross-attention)")
-    REMOVED: ll a_attn.*trges - hsees don't xit inrigia architecture!
-    #Orignaltxt-o cnditining ses hard  + DalFFN, not separate cross-attention
-targ
-et_mlogger.info(f"🔧dLOlA s RGETS{len(target_modul)}(rigial DuaFFNarchitcure)")
-   loggr.ifo("🔧 REMOVED:audi_tn.* args (d'text inorigi config)")
-    
-  # #SLoRAhconfigurrt sa fotmtext-duleo csndisionieg
-    lorabconfig = Lo aCbnfig(
-        r=ergs.lardotn
-       sloralpha=rgslraalha
-        target_modules=target_modulesself_attn.q_proj",
+    target_modules = [
+        # Shared self-attention modules (used by both text and audio tokens)
+        "self_attn.q_proj",
         "self_attn.k_proj", 
         "self_attn.v_proj",
         "self_attn.o_proj",
         
         # Text MLP modules (DualFFN text path)
-        "mlpeLpRA"t,godulexs p.rthjl (shoudll exsnwwithrgna confg
-     "p     # Audio MLP modules (DualFFN audio path) 
+        "mlp.gate_proj",
+        "mlp.up_proj", 
+        "mlp.down_proj",
+        
+        # Audio MLP modules (DualFFN audio path) 
         "audio_mlp.gate_proj",
-        "audio_mlp.up_
-        "audio target in_mlpo awn ha_ao(module, 'weih'
-    ]loggr.ff"✅ LORA TARGET FOUND: {}"
+        "audio_mlp.up_proj",
+        "audio_mlp.down_proj"
+    ]
     
     # REMOVED: All audio_attn.* targets - these modules don't exist in original architecture!
-    # Original  any missingttaxgets (should be none wt-h origandioarchite tuce)
-    for ttrgnn gustarget_es shar:ed attention + DualFFN, not separate cross-attention
-        Flse
-     , _modl.amed(:
-            logtarger.o   ameARGETS: {len(target_modules)} modules (original DualFFN architecture)")
-       loggMiae't exi =t rui
-a    k
-       f nofon:
-            missngmdle.ppd(agt
+    # Original text-audio conditioning uses shared attention + DualFFN, not separate cross-attention
     
-# Lo fnaxsscng_itionin:
-     glgger.r(f"❌ MISSING LORATARGETS:{mss_modules}
-        r=args.errar_,🚨The shol exsorigilrchicr!
-        raise Va utEar_rmodMissingules=t_modulemodu,s: {ms")
-   le:
-     gge.io("✅ ALL LORA TARGETS VERIFIED: Orinl DualFFN oun
-        lora_dropout=args.lora_dropout,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-
+    logger.info(f"LORA TARGETS: {len(target_modules)} modules (original DualFFN architecture)")
+    logger.info("REMOVED: audio_attn.* targets (don't exist in original config)")
+    
     # Verify LoRA target modules exist in the model (should all exist now with original config)
     missing_modules = []
     for name, module in model.named_modules():
@@ -510,15 +470,9 @@ a    k
     # Create a wrapper to handle the labels -> label_ids mapping
     class HiggsAudioModelWrapper(nn.Module):
         def __init__(self, model):
-      🔧   MO()_CRO_S-ATTENTIONtINITIIZATION( enogrch r
-    # Orogwnar archdtsctureedo*sn'trgs):dul,sono pcal     # PEF 'i rnd*s)d
-    x-tt(ioe, gnhmpp)s hraelyathreuin ohrdte t(DuFFN
+            super().__init__()
+            self.model = model
     
-    ttributeErro:RGIAL ARCHECTURENoerlts-o hrntnoig igsAudilr(")del)
-peftlmggeorapfd,"🔧TEXT-AUDIOONDONNGVshatttnn+oDoeeFFN (igds)")
-
-te:Kepxsg xls cm pdtatxfc(atnxpcssg -theOSl- neTELd!    # Original architecture doesn't create audio_attn modules, so no special initialization needed
-    # Theauoadgon s naly ghsdrchcrgcr"ls alde"RAgXOgIGe, speseheelnpe
     # Setup optimizer with stability improvements
     # Lower learning rate for newly initialized cross-attention modules
     stable_lr = min(args.learning_rate, 1e-4)  # Cap at 1e-4 for stability
