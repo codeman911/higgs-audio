@@ -55,9 +55,10 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 # === Your local modules (keep original logic) ===
 import sys
 sys.path.append('/vs/higgs-audio')
-from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample  # EXACT SAME AS WORKING SCRIPT
-from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator  # your collator (Boson/Higgs aware)
-from boson_multimodal.model.higgs_audio import HiggsAudioModel  # EXACT MODEL CLASS from working script
+from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
+from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
+from boson_multimodal.model.higgs_audio import HiggsAudioModel
+from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
 
 # ---------------- Logging ----------------
 logger = logging.getLogger("higgs_audio_lora")
@@ -109,7 +110,7 @@ def parse_args():
                         help="Output directory for model and checkpoints")
     
     # Model arguments - EXACT SAME AS WORKING SCRIPT
-    parser.add_argument("--model_path", type=str, 
+    parser.add_argument("--model_name_or_path", type=str, 
                         default="bosonai/higgs-audio-v2-generation-3B-base",
                         help="Path to base model")
     parser.add_argument("--audio_tokenizer_path", type=str,
@@ -251,19 +252,23 @@ def main():
     if is_main:
         logger.info("Loading model & tokenizer…")
     
-    # Text tokenizer from model path (EXACT SAME AS WORKING SCRIPT)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    
-    # Load model config (EXACT SAME AS WORKING SCRIPT)
-    config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+    # Load model first to get config
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=True)
+    config = AutoConfig.from_pretrained(args.model_name_or_path)
 
-    # Load model (EXACT SAME AS WORKING SCRIPT)
-    logger.info("Loading model...")
+    # CRITICAL: Load audio tokenizer like working distributed_trainer.py
+    logger.info("Loading audio tokenizer...")
+    audio_tokenizer = load_higgs_audio_tokenizer("bosonai/higgs-audio-v2-generation-3B-base", device="cpu")
+
+    # NOTE: If the official repo exposes a dedicated class (e.g., HiggsAudioForCausalLM),
+    #       replace AutoModelForCausalLM with that class.
     base_model = HiggsAudioModel.from_pretrained(
-        args.model_path,
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
-        device_map=None
+        args.model_name_or_path,
+        config=config,
+        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        low_cpu_mem_usage=True,
+        trust_remote_code=True,   # important for Boson custom heads
+        device_map={"": accelerator.device}
     )
 
     # Verify audio head vocabulary matches expectations
