@@ -119,7 +119,7 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
         else:
             # Create dummy audio to prevent errors
             audio_ids_concat = torch.zeros((8, 10), dtype=torch.long)  # 8 codebooks, 10 time steps
-            audio_ids_start = torch.tensor([0], dtype=torch.long)
+            audio_ids_start = torch.tensor([0, 10], dtype=torch.long)  # Corrected audio indexing structure
             audio_wv = torch.zeros((1000,), dtype=torch.float32)  # 1000 samples dummy audio
             audio_wv_start = torch.tensor([0], dtype=torch.long)
         
@@ -149,7 +149,7 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
             input_ids=dummy_input,
             label_ids=dummy_labels,
             audio_ids_concat=dummy_audio, 
-            audio_ids_start=torch.tensor([0], dtype=torch.long),
+            audio_ids_start=torch.tensor([0, 10], dtype=torch.long),  # Corrected audio indexing structure
             audio_waveforms_concat=dummy_wv,
             audio_waveforms_start=torch.tensor([0], dtype=torch.long),
             audio_sample_rate=torch.tensor([sample_rate], dtype=torch.float32),
