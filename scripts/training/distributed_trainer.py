@@ -278,7 +278,21 @@ def main():
     audio_tokenizer = load_higgs_audio_tokenizer(args.audio_tokenizer_path, device="cpu")
     
     # Load model config
-    model_config = AutoConfig.from_pretrained(args.model_path)
+    config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+    
+    # Enable cross-attention for text-to-audio conditioning
+    logger.info(" CRITICAL FIX: Enabling use_audio_out_self_attention for text-audio conditioning")
+    config.use_audio_out_self_attention = True
+    
+    # Load model
+    logger.info("Loading model...")
+    model = HiggsAudioModel.from_pretrained(
+        args.model_path,
+        config=config,  # Use modified config
+        torch_dtype=torch.bfloat16,
+        trust_remote_code=True,
+        device_map={"": accelerator.device}
+    )
     
     # Initialize collator
     logger.info("Initializing collator...")
@@ -286,14 +300,14 @@ def main():
     
     collator = HiggsAudioSampleCollator(
         whisper_processor=whisper_processor,
-        audio_in_token_id=model_config.audio_in_token_idx,
-        audio_out_token_id=model_config.audio_out_token_idx,
-        audio_stream_bos_id=model_config.audio_stream_bos_id,
-        audio_stream_eos_id=model_config.audio_stream_eos_id,
-        encode_whisper_embed=model_config.encode_whisper_embed,
-        pad_token_id=model_config.pad_token_id,
-        return_audio_in_tokens=model_config.encode_audio_in_tokens,
-        use_delay_pattern=model_config.use_delay_pattern,
+        audio_in_token_id=config.audio_in_token_idx,
+        audio_out_token_id=config.audio_out_token_idx,
+        audio_stream_bos_id=config.audio_stream_bos_id,
+        audio_stream_eos_id=config.audio_stream_eos_id,
+        encode_whisper_embed=config.encode_whisper_embed,
+        pad_token_id=config.pad_token_id,
+        return_audio_in_tokens=config.encode_audio_in_tokens,
+        use_delay_pattern=config.use_delay_pattern,
         round_to=8,  # Documentation recommends round_to=8 for optimal batching
         audio_num_codebooks=8
     )
@@ -338,19 +352,6 @@ def main():
             prefetch_factor=(args.prefetch_factor if args.num_workers > 0 else None),
             persistent_workers=(args.persistent_workers if args.num_workers > 0 else False),
         )
-    
-    # Load model
-    logger.info("Loading model...")
-    model = HiggsAudioModel.from_pretrained(
-        args.model_path,
-        torch_dtype=torch.bfloat16,
-        device_map={"": accelerator.device}
-    )
-    
-    # CRITICAL FIX: Enable cross-attention for text-to-audio conditioning
-    # Without this, audio_attn modules don't exist and LoRA silently fails
-    logger.info(" CRITICAL FIX: Enabling use_audio_out_self_attention for text-audio conditioning")
-    model.config.use_audio_out_self_attention = True
     
     # LoRA configuration for text-audio conditioning
     lora_config = LoraConfig(
