@@ -179,10 +179,10 @@ def main():
                         help="Path to audio tokenizer")
     
     # Training arguments
-    parser.add_argument("--batch_size", type=int, default=8,
-                        help="Batch size per device")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
-                        help="Gradient accumulation steps")
+    parser.add_argument("--batch_size", type=int, default=32,
+                        help="Batch size per device (increased for H200)")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=2,
+                        help="Gradient accumulation steps (reduced with larger batch)")
     parser.add_argument("--learning_rate", type=float, default=5e-4,
                         help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=3,
@@ -198,23 +198,23 @@ def main():
     parser.add_argument('--lora_dropout', type=float, default=0.05, help='LoRA dropout')
     parser.add_argument('--text_loss_weight', type=float, default=1.0, help='Text loss weight')
     
-    # Other arguments
-    parser.add_argument("--num_workers", type=int, default=48,
-                        help="Number of dataloader workers")
-    parser.add_argument("--prefetch_factor", type=int, default=8,
-                        help="DataLoader prefetch factor per worker (if num_workers>0)")
+    # Other arguments - OPTIMIZED FOR H200
+    parser.add_argument("--num_workers", type=int, default=16,
+                        help="DataLoader workers per GPU (optimized for H200)")
+    parser.add_argument("--prefetch_factor", type=int, default=4,
+                        help="DataLoader prefetch factor (optimized)")
     parser.add_argument("--persistent_workers", action="store_true", default=True,
                         help="Keep workers alive across epochs for speed")
     parser.add_argument("--audio_label_smoothing", type=float, default=0.05,
                         help="Label smoothing for audio CE over codebooks")
-    parser.add_argument("--compile_model", action="store_true", default=False,
-                        help="Enable torch.compile (PyTorch >= 2.4) for extra speed")
+    parser.add_argument("--compile_model", action="store_true", default=True,
+                        help="Enable torch.compile for H200 speed")
     parser.add_argument("--use_cached_codes", action="store_true", default=False,
                         help="Use <audio_path>.codes.pt if present (faster training)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
-    parser.add_argument("--log_steps", type=int, default=10,
-                        help="Log every N steps")
+    parser.add_argument("--log_steps", type=int, default=50,
+                        help="Log every N steps (reduced for speed)")
     parser.add_argument("--val_steps", type=int, default=100,
                         help="Run validation every N steps")
     parser.add_argument("--save_steps", type=int, default=1000,
