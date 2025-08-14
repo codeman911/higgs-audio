@@ -111,21 +111,26 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
         if audio_ids_list:
             # Concatenate audio codes from all segments [8, T_total]
             audio_ids_concat = torch.cat(audio_ids_list, dim=-1)
+            # Create proper start indices for each audio segment
+            audio_ids_start = torch.tensor([0] + [audio_codes.shape[1] for audio_codes in audio_ids_list[:-1]], dtype=torch.long).cumsum(dim=0)
             # Use first waveform as representative (collator handles properly)  
             audio_wv = audio_waveforms_list[0] if audio_waveforms_list else None
+            audio_wv_start = torch.tensor([0], dtype=torch.long)
         else:
             # Create dummy audio to prevent errors
             audio_ids_concat = torch.zeros((8, 10), dtype=torch.long)  # 8 codebooks, 10 time steps
+            audio_ids_start = torch.tensor([0], dtype=torch.long)
             audio_wv = torch.zeros((1000,), dtype=torch.float32)  # 1000 samples dummy audio
+            audio_wv_start = torch.tensor([0], dtype=torch.long)
         
         # Create ChatMLDatasetSample with all required fields
         chatml_sample = ChatMLDatasetSample(
             input_ids=torch.tensor(input_tokens, dtype=torch.long),
             label_ids=torch.tensor(label_tokens, dtype=torch.long), 
             audio_ids_concat=audio_ids_concat,
-            audio_ids_start=torch.tensor([0], dtype=torch.long),
+            audio_ids_start=audio_ids_start,
             audio_waveforms_concat=audio_wv,
-            audio_waveforms_start=torch.tensor([0], dtype=torch.long),
+            audio_waveforms_start=audio_wv_start,
             audio_sample_rate=torch.tensor([sample_rate], dtype=torch.float32),
             audio_speaker_indices=torch.tensor([speaker_id or 0], dtype=torch.long)
         )
