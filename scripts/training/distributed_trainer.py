@@ -61,29 +61,88 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
         # Get messages from sample
         messages = sample.get('messages', [])
         
-        # Build ChatML dict
-        chatml_dict = {"messages": []}
+        # CRITICAL FIX: Use proper Higgs Audio zero-shot TTS prompting format
+        # Extract reference transcript and target text from misc field
+        misc = sample.get('misc', {})
+        ref_transcript = misc.get('ref_transcript', '')
+        target_text = misc.get('target_text', '')
+        
+        # Create properly formatted messages for zero-shot TTS
+        formatted_messages = []
         
         for msg in messages:
-            role = msg.get('role')
-            content = msg.get('content')
+            role = msg.get('role', '')
+            content = msg.get('content', '')
             
-            if role and content:
-                # Handle different content formats
+            if role == 'system':
+                # Keep system message as is
+                formatted_messages.append(msg)
+            
+            elif role == 'user':
+                # CRITICAL: Format user message with Higgs Audio zero-shot TTS tags
+                # Original Higgs Audio expects: <ref_text>REF</ref_text><ref_audio>AUDIO</ref_audio><text>TARGET</text>
+                
+                # Extract audio content from original message
+                audio_content = None
                 if isinstance(content, list):
-                    # Multi-modal content
-                    processed_content = []
                     for item in content:
-                        if item.get('type') == 'text':
-                            processed_content.append({"type": "text", "text": item.get('text', '')})
-                        elif item.get('type') == 'audio':
-                            audio_url = item.get('audio_url', '')
-                            if audio_url:
-                                processed_content.append({"type": "audio", "audio_url": audio_url})
-                    chatml_dict["messages"].append({"role": role, "content": processed_content})
+                        if item.get('type') == 'audio':
+                            audio_content = item
+                            break
+                
+                # Build proper zero-shot TTS prompt format
+                formatted_content = []
+                
+                # Add reference text tag (what the reference audio says)
+                if ref_transcript and ref_transcript.strip():
+                    formatted_content.append({
+                        "type": "text", 
+                        "text": f"<ref_text>{ref_transcript.strip()}</ref_text>"
+                    })
+                
+                # Add reference audio
+                if audio_content:
+                    formatted_content.append(audio_content)
+                
+                # Add target text tag (what we want to synthesize)
+                if target_text and target_text.strip():
+                    formatted_content.append({
+                        "type": "text",
+                        "text": f"<text>{target_text.strip()}</text>"
+                    })
                 else:
-                    # Simple text content
-                    chatml_dict["messages"].append({"role": role, "content": content})
+                    # Fallback: extract target text from original content
+                    original_target_text = ""
+                    if isinstance(content, list):
+                        for item in content:
+                            if item.get('type') == 'text':
+                                original_target_text = item.get('text', '')
+                                break
+                    elif isinstance(content, str):
+                        original_target_text = content
+                    
+                    if original_target_text.strip():
+                        formatted_content.append({
+                            "type": "text",
+                            "text": f"<text>{original_target_text.strip()}</text>"
+                        })
+                
+                formatted_messages.append({
+                    "role": "user",
+                    "content": formatted_content
+                })
+                
+                logger.info(f"ZERO-SHOT TTS FORMAT: ref_text='{ref_transcript[:50]}...', target_text='{target_text[:50]}...'")
+            
+            else:
+                # Keep other messages (assistant, etc.) as is
+                formatted_messages.append(msg)
+        
+        # Create ChatML sample with formatted messages
+        chatml_dict = {
+            "messages": formatted_messages,
+            **{k: v for k, v in sample.items() if k != 'messages'}  # Preserve other fields
+        }
         
         # Tokenize with prepare_chatml_sample
         try:
