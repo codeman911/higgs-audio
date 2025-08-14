@@ -24,6 +24,13 @@ from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_a
 from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
 from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
 
+# ===== HIGGS-AUDIO constants =====
+AUDIO_BOS = 1024
+AUDIO_EOS = 1025
+AUDIO_V = 1026
+N_CODEBOOKS = 8
+MIN_ASSISTANT_TOKENS = 32  # Arabic learning threshold
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -305,73 +312,81 @@ def main():
         pin_memory=True
     )
     
-    # SURGICAL FIX 3: FULL LORA COVERAGE (ALL TEXT PATHWAY LAYERS)
-    # Target ALL blocks' text pathways for Arabic orthography learning
-    target_modules = [
-        # ALL self-attention modules (all blocks, not just top 2)
-        "self_attn.q_proj",
-        "self_attn.k_proj", 
-        "self_attn.v_proj",
-        "self_attn.o_proj",
-        
-        # ALL text MLP modules (all blocks, not just top 2)
-        "mlp.gate_proj",
-        "mlp.up_proj", 
-        "mlp.down_proj",
-        
-        # Audio MLP modules (DualFFN audio path) 
-        "audio_mlp.gate_proj",
-        "audio_mlp.up_proj",
-        "audio_mlp.down_proj",
-        
-        # Both output heads for full text-to-speech adaptation
-        "text_lm_head",   # Text output head for Arabic token generation
-        "audio_lm_head"   # Audio output head for speech generation
-    ]
-    
-    # Reduce LoRA parameters for full coverage (more layers = smaller rank)
+    # LoRA configuration with systematic target collection
+    TARGET_FRAGMENTS = (
+        "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+        "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj",
+        "audio_mlp.gate_proj", "audio_mlp.up_proj", "audio_mlp.down_proj",
+    )
+
+    def collect_lora_targets(model):
+        leaf_targets = set()
+        for name, module in model.named_modules():
+            for frag in TARGET_FRAGMENTS:
+                if name.endswith(frag):
+                    leaf_targets.add(frag.split(".")[-1])  # leaf module name
+        return sorted(leaf_targets)
+
+    lora_leaf_targets = collect_lora_targets(model)
+    if not lora_leaf_targets:
+        logger.warning("No LoRA targets found – check module names.")
+    else:
+        logger.info(f"LoRA leaf targets: {lora_leaf_targets}")
+
     lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=16,                    # Reduced from 32 for full coverage
-        lora_alpha=16,           # Balanced
-        lora_dropout=0.1,        # Slight regularization
-        target_modules=target_modules,
-        bias="none"
+        r=16, lora_alpha=32, lora_dropout=0.05,
+        target_modules=tuple(lora_leaf_targets),
+        bias="none", task_type=TaskType.CAUSAL_LM
     )
     
-    logger.info(f"FULL DEPTH LORA: Targeting {len(target_modules)} module types across ALL {len(model.layers)} blocks")
-    logger.info("ARABIC LEARNING: All text pathway layers now adaptable for orthography")
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    model = get_peft_model(model, lora_config)
     
-    # Verify LoRA target modules exist in the model (should all exist now with original config)
-    missing_modules = []
-    for name, module in model.named_modules():
-        for target in target_modules:
-            if target in name and hasattr(module, 'weight'):
-                logger.info(f" LORA TARGET FOUND: {name}")
-                break
-    
-    # Check for any missing targets (should be none with original architecture)
-    for target in target_modules:
-        found = False
-        for name, _ in model.named_modules():
-            if target in name:
-                found = True
-                break
-        if not found:
-            missing_modules.append(target)
-    
-    if missing_modules:
-        logger.error(f" MISSING LORA TARGETS: {missing_modules}")
-        logger.error(" These modules should exist in original architecture!")
-        raise ValueError(f"Missing LoRA target modules: {missing_modules}")
-    else:
-        logger.info(" ALL LORA TARGETS VERIFIED: Original DualFFN modules found")
-    
-    # Create a wrapper to handle the labels -> label_ids mapping
-    class HiggsAudioModelWrapper(nn.Module):
-        def __init__(self, model):
-            super().__init__()
-            self.model = model
+    # Step 3: Supervision preparation function
+    def prepare_supervision(batch, tokenizer, device, logger=None):
+        """
+        Fix audio teacher-forcing and text labels
+        """
+        inp = batch.input_ids.to(device)
+        attn = batch.attention_mask.to(device)
+        a_in = batch.audio_in_ids.to(device) if hasattr(batch, 'audio_in_ids') and batch.audio_in_ids is not None else None
+        a_out = batch.audio_out_ids.to(device) if hasattr(batch, 'audio_out_ids') and batch.audio_out_ids is not None else None
+
+        if a_out is not None:
+            # ---- Audio: shift-right teacher forcing ----
+            C, T = a_out.shape
+            assert C == N_CODEBOOKS, f"Expected {N_CODEBOOKS} codebooks, got {C}"
+
+            a_shift = a_out.clone()
+            a_shift[:, 1:] = a_out[:, :-1]
+            a_shift[:, 0] = AUDIO_BOS  # BOS at t=0 for inputs
+
+            a_lbl = a_out.clone()
+            a_lbl[:, 0] = -100  # do not learn BOS
+            bos_mask = (a_lbl == AUDIO_BOS)
+            if bos_mask.any() and logger:
+                logger.info(f" MAPPING BOS TOKENS: {int(bos_mask.sum().item())} tokens ({AUDIO_BOS}) → -100")
+            a_lbl[bos_mask] = -100
+        else:
+            a_shift = None
+            a_lbl = None
+
+        # ---- Text labels ----
+        if hasattr(batch, 'label_ids') and batch.label_ids is not None:
+            t_lbl = batch.label_ids.to(device)
+        else:
+            # Fallback: supervise non-pad tokens
+            t_lbl = inp.clone()
+            t_lbl[t_lbl == tokenizer.pad_token_id] = -100
+
+        return dict(
+            input_ids=inp, attention_mask=attn,
+            audio_in_ids=a_in, audio_out_ids_shifted_in=a_shift, audio_labels=a_lbl,
+            text_labels=t_lbl
+        )
+
+    def non_ignore_count(t): 
+        return int((t != -100).sum().item())
     
     # Setup optimizer with stability improvements
     # Lower learning rate for newly initialized cross-attention modules
@@ -478,196 +493,122 @@ def main():
         
         for step, batch in enumerate(progress_bar):
             with accelerator.accumulate(model):
-                # Move batch tensors to the correct device and dtype
-                # Accelerate sometimes doesn't handle custom batch objects properly
                 device = accelerator.device
                 
-                # Get model dtype for audio features (model uses mixed precision)
-                model_dtype = next(model.parameters()).dtype
+                # Step 4: Use prepare_supervision for clean batch processing
+                sup = prepare_supervision(batch, tokenizer, device, logger)
                 
-                # Helper function to move tensor to device and optionally convert dtype
-                def to_device(tensor, convert_dtype=False):
-                    if tensor is not None and hasattr(tensor, 'to'):
-                        if convert_dtype and tensor.dtype in [torch.float32, torch.float64]:
-                            # Convert float tensors to match model dtype (for audio features)
-                            return tensor.to(device=device, dtype=model_dtype)
-                        else:
-                            return tensor.to(device)
-                    return tensor
-                
-                # Forward pass - map collator output to model input correctly
-                # The collator returns audio_in_wv but model expects audio_features
-                model_inputs = {
-                    'input_ids': to_device(batch.input_ids),
-                    'attention_mask': to_device(batch.attention_mask),
-                    'audio_features': to_device(batch.audio_in_wv, convert_dtype=True) if hasattr(batch, 'audio_in_wv') else None,
-                    'audio_feature_attention_mask': to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
-                    'audio_in_ids': to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
-                    'audio_in_ids_start': to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
-                    'audio_out_ids': to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
-                    'audio_out_ids_start': to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,  
-                    'audio_out_ids_start_group_loc': to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
-                }
-                model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
-                
-                # CORE FIX 1: ASSISTANT-SPAN SUPERVISION ONLY
-                text_labels = extract_assistant_labels(model_inputs['input_ids'], tokenizer)
-                
-                # CORE FIX 2: GATE ON SUPERVISED TOKENS (≥64 for Arabic)
-                if text_labels is not None:
-                    supervised_counts = (text_labels != -100).sum(1)
-                    min_supervised = supervised_counts.min().item()
-                    
-                    # Phase-A: Require ≥64 supervised Arabic tokens
-                    if global_step < 10000 and min_supervised < 64:
-                        continue  # Skip insufficient batches
-                else:
-                    continue
-                
-                # CORE FIX 3: PHASE-A REF-DROP CURRICULUM
-                phase_a = global_step < 10000
-                ref_drop_prob = 0.7 if phase_a else 0.2
-                drop_reference = torch.rand(1).item() < ref_drop_prob
-                
-                if drop_reference and 'audio_in_ids' in model_inputs:
-                    del model_inputs['audio_in_ids']
-                    if 'audio_in_wv' in model_inputs:
-                        del model_inputs['audio_in_wv']
-                    ref_status = "DROPPED"
-                else:
-                    ref_status = "PRESENT"
+                # Step 4: Enforce minimum assistant tokens
+                B = sup["input_ids"].size(0)
+                valid_text = non_ignore_count(sup["text_labels"])
+                per_sample = valid_text / max(1, B)
 
-                # Get the underlying model (handle PEFT wrapping)
-                if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
-                    actual_model = model.base_model.model  # PEFT wrapped
-                elif hasattr(model, 'module'):
-                    actual_model = model.module  # Accelerate wrapped
-                else:
-                    actual_model = model
+                if per_sample < MIN_ASSISTANT_TOKENS:
+                    logger.error(f" INSUFFICIENT TEXT SUPERVISION: {per_sample:.1f} tokens/sample < {MIN_ASSISTANT_TOKENS} required for Arabic!")
+                    continue  # Skip starved batches
                 
-                # Forward pass - call model directly WITHOUT labels
-                outputs = actual_model(**model_inputs)
+                # Forward pass with clean inputs
+                model_inputs = {}
+                if sup["input_ids"] is not None:
+                    model_inputs["input_ids"] = sup["input_ids"]
+                if sup["attention_mask"] is not None:
+                    model_inputs["attention_mask"] = sup["attention_mask"]
+                if sup["audio_in_ids"] is not None:
+                    model_inputs["audio_in_ids"] = sup["audio_in_ids"]
+                if sup["audio_out_ids_shifted_in"] is not None:
+                    model_inputs["audio_out_ids"] = sup["audio_out_ids_shifted_in"]
                 
-                total_loss = None
-                loss_components = {}
+                outputs = model(**model_inputs)
                 
-                # CORE FIX 4: BALANCED LOSSES (1.0 weights, not 10.0)
+                # Step 5: Normalize audio logits to [C, T, V]
+                audio_logits = outputs.get("audio_logits")
+                if audio_logits is not None:
+                    if audio_logits.dim() != 3:
+                        raise RuntimeError(f"Unexpected audio_logits shape {audio_logits.shape}")
+                    if audio_logits.shape[0] == N_CODEBOOKS:
+                        # [C, T, V] ok
+                        pass
+                    elif audio_logits.shape[1] == N_CODEBOOKS:
+                        # [T, C, V] -> [C, T, V]
+                        audio_logits = audio_logits.permute(1, 0, 2).contiguous()
+                    else:
+                        raise RuntimeError(f"Unexpected audio_logits shape {audio_logits.shape}")
                 
-                # Audio loss
-                if hasattr(batch, 'audio_out_ids') and batch.audio_out_ids is not None:
-                    audio_labels = to_device(batch.audio_out_ids)
+                # Step 6: Compute both losses with proper shifts & masks
+                ce = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                
+                # ----- Audio CE -----
+                audio_loss = torch.tensor(0.0, device=device)
+                if audio_logits is not None and sup["audio_labels"] is not None:
+                    C, T, V = audio_logits.shape
+                    a_lbl = sup["audio_labels"]  # [C, T]
+                    audio_loss = ce(audio_logits.reshape(C*T, V), a_lbl.reshape(C*T))
                     
-                    # Teacher-forcing shift: prevent identity leak
-                    audio_inputs = audio_labels.clone()
-                    audio_inputs[:, 1:] = audio_labels[:, :-1]  # Shift right
-                    audio_labels[:, 0] = -100  # Mask BOS
-                    
-                    if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None:
-                        audio_logits = outputs.audio_logits
-                        
-                        # Align dimensions [T,8,V] → [8,T,V] if needed
-                        if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
-                            audio_logits = audio_logits.permute(1, 0, 2).contiguous()
-                        
-                        audio_loss = torch.nn.functional.cross_entropy(
-                            audio_logits.view(-1, audio_logits.size(-1)),
-                            audio_labels.view(-1),
-                            ignore_index=-100,
-                            reduction='mean'
-                        )
-                        
-                        total_loss = audio_loss
-                        loss_components['audio_loss'] = audio_loss.item()
-
-                # Text loss 
-                if hasattr(outputs, 'logits') and outputs.logits is not None:
-                    text_logits = outputs.logits
-                    
-                    # Next-token prediction alignment
-                    shift_logits = text_logits[..., :-1, :].contiguous()
-                    shift_labels = text_labels[..., 1:].contiguous()
-                    
-                    text_loss = torch.nn.functional.cross_entropy(
-                        shift_logits.view(-1, shift_logits.size(-1)),
-                        shift_labels.view(-1),
-                        ignore_index=-100,
-                        reduction='mean'
-                    )
-                    
-                    total_loss = total_loss + text_loss if total_loss is not None else text_loss
-                    loss_components['text_loss'] = text_loss.item()
-
-                # CORE FIX 5: ESSENTIAL LOGGING ONLY
-                if global_step % args.log_steps == 0:
+                    # Step 7: Identity leak detector
+                    if accelerator.is_main_process and global_step <= 200 and audio_loss.item() < 1.0:
+                        logger.warning("SUSPICIOUS: Audio CE < 1.0 early – check teacher-forcing shift and BOS masking.")
+                
+                # ----- Text CE -----
+                text_loss = torch.tensor(0.0, device=device)
+                if "logits" in outputs and outputs["logits"] is not None:
+                    txt = outputs["logits"]              # [B, Ttxt, Vtxt]
+                    t_lbl = sup["text_labels"]           # [B, Ttxt]
+                    txt = txt[:, :-1, :].contiguous()    # shift for LM
+                    t_lbl = t_lbl[:, 1:].contiguous()
+                    B, Ttxt, Vtxt = txt.shape
+                    text_loss = ce(txt.reshape(B*Ttxt, Vtxt), t_lbl.reshape(B*Ttxt))
+                
+                # Combined loss
+                TEXT_LOSS_WEIGHT = args.text_loss_weight
+                loss = audio_loss + TEXT_LOSS_WEIGHT * text_loss
+                
+                # Step 8: Strategic logging (essential only)
+                if global_step % args.log_steps == 0 and accelerator.is_main_process:
                     with torch.no_grad():
-                        # Text metrics with detailed predictions
-                        if 'text_loss' in loss_components:
-                            text_pred = shift_logits.argmax(-1)
-                            text_valid = (shift_labels != -100)
-                            if text_valid.any():
-                                text_acc = (text_pred[text_valid] == shift_labels[text_valid]).float().mean()
-                                text_vocab = torch.unique(text_pred[text_valid]).numel()
-                                
-                                # Log top 10 predicted tokens
-                                top_pred_tokens = text_pred[text_valid][:10].tolist()
-                                top_label_tokens = shift_labels[text_valid][:10].tolist()
-                                
-                                # Decode input and predicted text samples
-                                input_sample = tokenizer.decode(batch.input_ids[0], skip_special_tokens=True)[:200]
-                                pred_sample = tokenizer.decode(top_pred_tokens, skip_special_tokens=True)
-                                label_sample = tokenizer.decode(top_label_tokens, skip_special_tokens=True)
-                                
-                                logger.info(f"Step {global_step}: TEXT Loss={loss_components['text_loss']:.4f}, "
-                                          f"Acc={text_acc:.1%}, Vocab={text_vocab}")
-                                logger.info(f"INPUT TEXT: {input_sample}")
-                                logger.info(f"PRED TEXT: {pred_sample}")
-                                logger.info(f"LABEL TEXT: {label_sample}")
-                                logger.info(f"TOP-10 PRED TOKENS: {top_pred_tokens}")
-                                logger.info(f"TOP-10 LABEL TOKENS: {top_label_tokens}")
+                        # Text metrics
+                        if "logits" in outputs and outputs["logits"] is not None:
+                            txt_pred = outputs["logits"][:, :-1, :].argmax(-1)
+                            txt_lbl_shifted = sup["text_labels"][:, 1:]
+                            txt_valid = (txt_lbl_shifted != -100)
+                            if txt_valid.any():
+                                txt_acc = (txt_pred[txt_valid] == txt_lbl_shifted[txt_valid]).float().mean()
+                                txt_vocab = torch.unique(txt_pred[txt_valid]).numel()
+                                logger.info(f"TEXT: Loss={text_loss.item():.3f}, Acc={txt_acc:.1%}, Vocab={txt_vocab}")
                             else:
-                                text_acc = text_vocab = 0
-                                logger.info(f"Step {global_step}: TEXT Loss={loss_components['text_loss']:.4f}, "
-                                          f"Acc={text_acc:.1%}, Vocab={text_vocab} (NO VALID TOKENS)")
+                                logger.info(f"TEXT: Loss={text_loss.item():.3f}, Acc=0%, Vocab=0 (no valid)")
                         
-                        # Audio metrics with detailed predictions
-                        if 'audio_loss' in loss_components:
-                            # Get audio predictions and show top 10
-                            if hasattr(locals(), 'audio_logits') and audio_logits is not None:
-                                audio_pred = audio_logits.argmax(-1)
-                                if audio_pred.numel() > 0:
-                                    audio_pred_flat = audio_pred.flatten()
-                                    audio_labels_flat = audio_labels.flatten()
-                                    
-                                    # Show top 10 audio predictions
-                                    top_audio_pred = audio_pred_flat[:10].tolist()
-                                    top_audio_labels = audio_labels_flat[:10].tolist()
-                                    
-                                    audio_vocab = torch.unique(audio_pred_flat[audio_labels_flat != -100]).numel()
-                                    
-                                    logger.info(f"Step {global_step}: AUDIO Loss={loss_components['audio_loss']:.4f}, "
-                                              f"Vocab={audio_vocab}")
-                                    logger.info(f"TOP-10 AUDIO PRED: {top_audio_pred}")
-                                    logger.info(f"TOP-10 AUDIO LABELS: {top_audio_labels}")
-                                else:
-                                    logger.info(f"Step {global_step}: AUDIO Loss={loss_components['audio_loss']:.4f} (EMPTY PRED)")
+                        # Audio metrics  
+                        if audio_logits is not None and sup["audio_labels"] is not None:
+                            aud_pred = audio_logits.argmax(-1)  # [C, T]
+                            aud_lbl = sup["audio_labels"]       # [C, T]
+                            aud_valid = (aud_lbl != -100)
+                            if aud_valid.any():
+                                aud_acc = (aud_pred[aud_valid] == aud_lbl[aud_valid]).float().mean()
+                                aud_vocab = torch.unique(aud_pred[aud_valid]).numel()
+                                
+                                # Per-codebook CE for identity leak detection
+                                cb_losses = []
+                                for c in range(N_CODEBOOKS):
+                                    cb_loss = ce(audio_logits[c], aud_lbl[c])
+                                    cb_losses.append(f"{cb_loss.item():.3f}")
+                                cb_str = "[" + ",".join(cb_losses) + "]"
+                                
+                                logger.info(f"AUDIO: Loss={audio_loss.item():.3f}, Acc={aud_acc:.1%}, Vocab={aud_vocab}")
+                                logger.info(f"CODEBOOK CE: {cb_str}")
                             else:
-                                logger.info(f"Step {global_step}: AUDIO Loss={loss_components['audio_loss']:.4f} (NO LOGITS)")
+                                logger.info(f"AUDIO: Loss={audio_loss.item():.3f}, Acc=0%, Vocab=0 (no valid)")
                         
-                        # Supervised tokens and ref status
-                        logger.info(f"Step {global_step}: SUPERVISED {min_supervised} tokens/sample, Ref={ref_status}")
-                        logger.info(f"Step {global_step}: LR={scheduler.get_last_lr()[0]:.2e}")
+                        # Essential training metrics
+                        logger.info(f"STEP {global_step}: LR={scheduler.get_last_lr()[0]:.2e}, TEXT_SUP={valid_text} tokens")
                 
                 # Backward pass
-                if total_loss is not None:
-                    total_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(actual_model.parameters(), max_norm=1.0)
-                    optimizer.step()
-                    scheduler.step()
-                    optimizer.zero_grad()
-                    
-                    global_step += 1
-                else:
-                    logger.warning("No valid loss computed - skipping step")
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip_norm)
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                
+                global_step += 1
                 
                 # Save checkpoint
                 if global_step % args.save_steps == 0:
@@ -688,99 +629,65 @@ def main():
             
             with torch.no_grad():
                 for batch in tqdm(val_dataloader, desc="Validation"):
-                    # Move batch tensors to the correct device and dtype
                     device = accelerator.device
                     
-                    # Get model dtype for audio features (model uses mixed precision)
-                    model_dtype = next(model.parameters()).dtype
+                    # Step 9: Use prepare_supervision for validation too
+                    sup = prepare_supervision(batch, tokenizer, device)
                     
-                    # Helper function to move tensor to device and optionally convert dtype
-                    def to_device(tensor, convert_dtype=False):
-                        if tensor is not None and hasattr(tensor, 'to'):
-                            if convert_dtype and tensor.dtype in [torch.float32, torch.float64]:
-                                # Convert float tensors to match model dtype (for audio features)
-                                return tensor.to(device=device, dtype=model_dtype)
-                            else:
-                                return tensor.to(device)
-                        return tensor
+                    # Skip validation batches with insufficient text
+                    B = sup["input_ids"].size(0)
+                    valid_text = non_ignore_count(sup["text_labels"])
+                    per_sample = valid_text / max(1, B)
+                    if per_sample < MIN_ASSISTANT_TOKENS:
+                        continue
                     
-                    # Validation forward pass - restore audio structure fields 
-                    model_inputs = {
-                        'input_ids': to_device(batch.input_ids),
-                        'attention_mask': to_device(batch.attention_mask),
-                        'audio_features': to_device(batch.audio_in_wv, convert_dtype=True) if hasattr(batch, 'audio_in_wv') else None,
-                        'audio_feature_attention_mask': to_device(batch.audio_feature_attention_mask) if hasattr(batch, 'audio_feature_attention_mask') else None,
-                        'audio_in_ids': to_device(batch.audio_in_ids) if hasattr(batch, 'audio_in_ids') else None,
-                        'audio_in_ids_start': to_device(batch.audio_in_ids_start) if hasattr(batch, 'audio_in_ids_start') else None,
-                        'audio_out_ids': to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None,
-                        'audio_out_ids_start': to_device(batch.audio_out_ids_start) if hasattr(batch, 'audio_out_ids_start') else None,  
-                        'audio_out_ids_start_group_loc': to_device(batch.audio_out_ids_start_group_loc) if hasattr(batch, 'audio_out_ids_start_group_loc') else None,
-                    }
-                    model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
+                    # Forward pass with clean inputs
+                    model_inputs = {}
+                    if sup["input_ids"] is not None:
+                        model_inputs["input_ids"] = sup["input_ids"]
+                    if sup["attention_mask"] is not None:
+                        model_inputs["attention_mask"] = sup["attention_mask"]
+                    if sup["audio_in_ids"] is not None:
+                        model_inputs["audio_in_ids"] = sup["audio_in_ids"]
+                    if sup["audio_out_ids_shifted_in"] is not None:
+                        model_inputs["audio_out_ids"] = sup["audio_out_ids_shifted_in"]
                     
-                    # Get underlying model
-                    if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
-                        actual_model = model.base_model.model
-                    elif hasattr(model, 'module'):
-                        actual_model = model.module
-                    else:
-                        actual_model = model
+                    outputs = model(**model_inputs)
                     
-                    # Forward pass without labels
-                    outputs = actual_model(**model_inputs)
-                    
-                    # Extract labels for validation loss
-                    text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
-                    audio_labels = to_device(batch.audio_out_ids) if hasattr(batch, 'audio_out_ids') else None
-                    
-                    # PROPER VALIDATION LOSS for zero-shot voice cloning
-                    batch_loss = 0.0
-                    
-                    # Primary: Audio Loss - WITH TENSOR ALIGNMENT FIX
-                    if hasattr(outputs, 'audio_logits') and outputs.audio_logits is not None and audio_labels is not None:
-                        audio_logits = outputs.audio_logits
-                        
-                        # CRITICAL FIX: Same tensor alignment as training loop
-                        if audio_logits.dim() == 3 and audio_logits.shape[1] == 8:
-                            # Permute to [8, T, V] to match label order (codebook-major)
+                    # Normalize audio logits to [C, T, V]
+                    audio_logits = outputs.get("audio_logits")
+                    if audio_logits is not None:
+                        if audio_logits.dim() != 3:
+                            continue
+                        if audio_logits.shape[0] == N_CODEBOOKS:
+                            pass  # [C, T, V] ok
+                        elif audio_logits.shape[1] == N_CODEBOOKS:
                             audio_logits = audio_logits.permute(1, 0, 2).contiguous()
-                        
-                        audio_loss_fct = torch.nn.CrossEntropyLoss(
-                            ignore_index=-100,
-                            label_smoothing=args.audio_label_smoothing
-                        )
-                        audio_loss = audio_loss_fct(
-                            audio_logits.view(-1, audio_logits.size(-1)),   # [(8*T), vocab]
-                            audio_labels.contiguous().view(-1)               # [(8*T)]
-                        )
-                        batch_loss += audio_loss.item()
+                        else:
+                            continue
                     
-                    # Secondary: Text Loss (weighted)
-                    if hasattr(outputs, 'logits') and outputs.logits is not None and text_labels is not None:
-                        text_logits = outputs.logits
-                        min_seq_len = min(text_logits.size(1), text_labels.size(1))
-                        if min_seq_len > 1:
-                            text_logits = text_logits[:, :min_seq_len, :]
-                            text_labels = text_labels[:, :min_seq_len]
-                            
-                            shift_logits = text_logits[..., :-1, :].contiguous()
-                            shift_labels = text_labels[..., 1:].contiguous()
-                            
-                            text_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-                            text_loss = text_loss_fct(
-                                shift_logits.view(-1, shift_logits.size(-1)),
-                                shift_labels.view(-1)
-                            )
-                            
-                            # Weight text loss lower for voice cloning
-                            batch_loss += 0.1 * text_loss.item()
+                    # Compute losses
+                    ce = torch.nn.CrossEntropyLoss(ignore_index=-100)
                     
-                    # Add to validation totals
-                    if batch_loss > 0:
-                        val_loss += batch_loss
-                        val_steps += 1
-                    else:
-                        continue  # Skip if no valid loss
+                    # Audio CE
+                    audio_loss = torch.tensor(0.0, device=device)
+                    if audio_logits is not None and sup["audio_labels"] is not None:
+                        C, T, V = audio_logits.shape
+                        a_lbl = sup["audio_labels"]
+                        audio_loss = ce(audio_logits.reshape(C*T, V), a_lbl.reshape(C*T))
+                    
+                    # Text CE
+                    text_loss = torch.tensor(0.0, device=device)
+                    if "logits" in outputs and outputs["logits"] is not None:
+                        txt = outputs["logits"][:, :-1, :].contiguous()
+                        t_lbl = sup["text_labels"][:, 1:].contiguous()
+                        B, Ttxt, Vtxt = txt.shape
+                        text_loss = ce(txt.reshape(B*Ttxt, Vtxt), t_lbl.reshape(B*Ttxt))
+                    
+                    # Combined validation loss
+                    batch_val_loss = audio_loss + TEXT_LOSS_WEIGHT * text_loss
+                    val_loss += batch_val_loss.item()
+                    val_steps += 1
             
             avg_val_loss = val_loss / val_steps
             logger.info(f"Epoch {epoch+1} - Validation loss: {avg_val_loss:.4f}")
