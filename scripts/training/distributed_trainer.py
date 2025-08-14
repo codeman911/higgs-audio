@@ -67,44 +67,17 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
         ref_transcript = misc.get('ref_transcript', '')
         target_text = misc.get('target_text', '')
         
-        # CRITICAL VALIDATION: Only for first sample
-        if len(chatml_samples) == 0:
-            messages = sample.get('messages', [])
-            ref_tags_ok = bool(ref_transcript and ref_transcript.strip())
-            target_tags_ok = bool(target_text and target_text.strip())
-            
-            # Check for reference audio in user messages
-            audio_ok = False
-            for msg in messages:
-                if msg.get('role') == 'user':
-                    content = msg.get('content', [])
-                    if isinstance(content, list):
-                        for item in content:
-                            if isinstance(item, dict) and item.get('type') == 'audio':
-                                audio_ok = True
-                                break
-            
-            logger.info(f"ZERO-SHOT PIPELINE: ref_text={ref_tags_ok}, target_text={target_tags_ok}, ref_audio={audio_ok}")
-            if not (ref_tags_ok and target_tags_ok and audio_ok):
-                logger.warning(f"PIPELINE ISSUE: Missing components - ref_text:{ref_tags_ok}, target_text:{target_tags_ok}, audio:{audio_ok}")
-        
         # Use prepare_chatml_sample to get proper tokenization
         try:
             input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
                 sample, tokenizer
             )
             
-            # CRITICAL TEXT LOSS VALIDATION: Only for first sample
+            # Simple logging for first sample only
             if len(chatml_samples) == 0:
                 target_token_count = sum(1 for token in label_tokens if token != -100)
                 audio_segment_count = len(audio_contents)
-                
-                logger.info(f"PIPELINE VALIDATION: {target_token_count} text tokens, {audio_segment_count} audio segments ready for training")
-                
-                # Verify target text is in the loss computation
-                if target_text and target_text.strip():
-                    target_only_tokens = tokenizer.encode(target_text.strip(), add_special_tokens=False)
-                    logger.info(f"TEXT LOSS TARGET: '{target_text[:40]}...' → {len(target_only_tokens)} tokens")
+                logger.info(f"Training ready: {target_token_count} text tokens, {audio_segment_count} audio segments")
         
         except Exception as e:
             logger.warning(f"Failed to prepare sample: {e}")
