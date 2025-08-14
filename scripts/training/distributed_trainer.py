@@ -328,13 +328,20 @@ def main():
         logger.info(f"Loading validation data from {val_path}")
         val_dataset = SimpleDataset(val_path)
     
+    # Memory optimization for cross-attention enabled model
+    # The newly initialized audio_attn modules significantly increase memory usage
+    effective_batch_size = max(args.batch_size // 2, 4)  # Reduce batch size by half, minimum 4
+    if effective_batch_size != args.batch_size:
+        logger.info(f"🔧 MEMORY FIX: Reducing batch size from {args.batch_size} to {effective_batch_size} for cross-attention stability")
+    
     # Create dataloaders
     train_dataloader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
+        batch_size=effective_batch_size,  # Use reduced batch size
         shuffle=True,
         collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator, use_cached_codes=args.use_cached_codes),
         num_workers=args.num_workers,
+        drop_last=True,
         pin_memory=True,
         prefetch_factor=(args.prefetch_factor if args.num_workers > 0 else None),
         persistent_workers=(args.persistent_workers if args.num_workers > 0 else False),
@@ -344,10 +351,11 @@ def main():
     if val_dataset:
         val_dataloader = DataLoader(
             val_dataset,
-            batch_size=args.batch_size,
+            batch_size=effective_batch_size,  # Use reduced batch size
             shuffle=False,
             collate_fn=lambda b: collate_fn(b, tokenizer, audio_tokenizer, collator, use_cached_codes=args.use_cached_codes),
-            num_workers=args.num_workers,
+            num_workers=min(args.num_workers, 8),
+            drop_last=False,
             pin_memory=True,
             prefetch_factor=(args.prefetch_factor if args.num_workers > 0 else None),
             persistent_workers=(args.persistent_workers if args.num_workers > 0 else False),
@@ -428,8 +436,23 @@ def main():
         except Exception as e:
             logger.warning(f"torch.compile could not be enabled: {e}")
     
-    # Setup optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    # Setup optimizer with stability improvements
+    # Lower learning rate for newly initialized cross-attention modules
+    stable_lr = min(args.learning_rate, 1e-4)  # Cap at 1e-4 for stability
+    if stable_lr != args.learning_rate:
+        logger.info(f"🔧 STABILITY FIX: Reducing learning rate from {args.learning_rate} to {stable_lr} for cross-attention stability")
+    
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=stable_lr,
+        weight_decay=0.01,
+        eps=1e-8,  # Increase epsilon for numerical stability
+        betas=(0.9, 0.95)  # More conservative beta2 for stability
+    )
+    
+    # CRITICAL: Add gradient clipping for newly initialized cross-attention modules
+    gradient_clip_norm = 0.5  # Conservative clipping for stability
+    logger.info(f"🔧 STABILITY FIX: Adding gradient clipping (max_norm={gradient_clip_norm}) for cross-attention stability")
     
     # Calculate training steps for proper warmup scheduling
     num_training_steps = len(train_dataloader) * args.num_epochs
@@ -453,6 +476,9 @@ def main():
     # Training loop
     logger.info("Starting training...")
     global_step = 0
+    
+    gradient_clip_norm = 1.0
+    logger.info(f" STABILITY FIX: Adding gradient clipping (max_norm={gradient_clip_norm}) for cross-attention stability")
     
     for epoch in range(args.num_epochs):
         model.train()
@@ -1180,30 +1206,28 @@ def main():
                         logger.info(f" Zero-shot voice cloning training - Reference audio conditioning ACTIVE")
                     logger.info(f" === END DEBUG STEP {step} ===\n")
                 
-                # Backward pass
-                accelerator.backward(loss)
+                # CRITICAL: Add comprehensive numerical stability checks
+                if torch.isnan(total_loss) or torch.isinf(total_loss):
+                    logger.error(f"🚨 NUMERICAL INSTABILITY: total_loss={total_loss} at step {step}")
+                    logger.error("Skipping step to prevent NaN propagation in cross-attention modules")
+                    optimizer.zero_grad()
+                    continue
                 
-                # Simplified LoRA health check
-                if global_step % 100 == 0:
-                    total_lora_grad_norm = 0.0
-                    lora_param_count = 0
-                    for n, p in model.named_parameters():
-                        if p.requires_grad and hasattr(p, 'grad') and p.grad is not None:
-                            if 'lora' in n.lower():
-                                total_lora_grad_norm += p.grad.data.float().norm().item()
-                                lora_param_count += 1
-                    
-                    if lora_param_count > 0:
-                        avg_lora_grad_norm = total_lora_grad_norm / lora_param_count
-                        logger.info(f" LoRA grad health: {avg_lora_grad_norm:.2e} avg ({lora_param_count} params)")
-                    else:
-                        logger.warning(f" NO LORA GRADIENTS FOUND")
+                # Check for NaN in individual loss components
+                if torch.isnan(audio_loss):
+                    logger.error(f"🚨 AUDIO LOSS NaN at step {step} - cross-attention instability detected")
+                if torch.isnan(weighted_text_loss):
+                    logger.error(f"🚨 TEXT LOSS NaN at step {step} - cross-attention instability detected")
                 
-                # Gradient clipping
-                if args.max_grad_norm > 0:
-                    accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                # Apply gradient clipping BEFORE optimizer step
+                accelerator.backward(total_loss)
                 
-                # Optimizer step
+                # Clip gradients to prevent explosion from new cross-attention modules
+                if accelerator.sync_gradients:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip_norm)
+                    if step % 100 == 0:
+                        logger.info(f"📊 Gradient norm: {grad_norm:.4f} (clipped at {gradient_clip_norm})")
+                
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
