@@ -203,7 +203,7 @@ def main():
     parser.add_argument('--lora_r', type=int, default=32, help='LoRA rank (increased for Arabic learning)')
     parser.add_argument('--lora_alpha', type=int, default=64, help='LoRA alpha (increased for Arabic learning)')
     parser.add_argument('--lora_dropout', type=float, default=0.05, help='LoRA dropout')
-    parser.add_argument('--text_loss_weight', type=float, default=1.0, help='Text loss weight (critical for language learning)')
+    parser.add_argument('--text_loss_weight', type=float, default=10.0, help='Text loss weight (critical for language learning - EMERGENCY: increased to 10.0 to fix text generation collapse)')
     
     # Other arguments
     parser.add_argument("--num_workers", type=int, default=0,
