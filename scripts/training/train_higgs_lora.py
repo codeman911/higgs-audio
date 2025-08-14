@@ -350,6 +350,81 @@ def main():
         collate_fn=collator
     )
 
+    def make_batch(batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Enforces:
+          - audio teacher-forcing shift-right (no identity leak)
+          - labels masking: BOS(1024)->-100; keep EOS(1025) only for stopping logic
+          - text label extraction on assistant tokens; enforce min token count or drop microbatch
+        """
+        device = accelerator.device
+
+        # ---- Raw from your collator ----
+        input_ids = batch.input_ids.to(device)
+        attention_mask = batch.attention_mask.to(device)
+
+        # audio tensors: [C, T]
+        audio_in_ids = batch.audio_in_ids.to(device) if batch.audio_in_ids is not None else None
+        audio_out_ids = batch.audio_out_ids.to(device) if batch.audio_out_ids is not None else None
+
+        if audio_out_ids is None:
+            # Skip batch if no audio output
+            return None
+
+        # Sanity
+        assert audio_in_ids.dim() == 2 and audio_in_ids.size(0) == N_CODEBOOKS, f"audio_in_ids shape unexpected: {audio_in_ids.shape}"
+        assert audio_out_ids.dim() == 2 and audio_out_ids.size(0) == N_CODEBOOKS, f"audio_out_ids shape unexpected: {audio_out_ids.shape}"
+
+        # ---- 1) Audio teacher-forcing: shift-right inputs per codebook ----
+        # Inputs to the model (teacher forcing) have BOS at t=0, then t-1 labels
+        # Labels are the "next token", with labels[:,0] = -100 and any BOS=1024 mapped to -100
+        C, T_out = audio_out_ids.shape
+
+        # Build shifted inputs for decoder
+        shifted_in = audio_out_ids.clone()
+        shifted_in[:, 1:] = audio_out_ids[:, :-1]  # right shift
+        shifted_in[:, 0] = AUDIO_BOS               # ensure BOS at t=0
+
+        # Build labels
+        audio_labels = audio_out_ids.clone()
+        audio_labels[:, 0] = -100                  # do not learn BOS
+        # Map BOS tokens inside labels (if any) to -100
+        bos_mask = (audio_labels == AUDIO_BOS)
+        if bos_mask.any():
+            if is_main:
+                logger.info(f" MAPPING BOS TOKENS: {int(bos_mask.sum().item())} tokens (1024) → -100")
+            audio_labels[bos_mask] = -100
+
+        # ---- 2) Text labels ---
+        # Use collator-provided text labels if available
+        if hasattr(batch, 'label_ids') and batch.label_ids is not None:
+            text_labels = batch.label_ids.to(device)
+        else:
+            # Fallback: supervise everything except special tokens
+            text_labels = input_ids.clone()
+            text_labels[text_labels == tokenizer.pad_token_id] = -100
+
+        # Enforce minimum assistant supervision tokens / sample (approx by batch total)
+        total_text_tokens = count_non_ignore(text_labels)
+        B_text = input_ids.size(0)
+        per_sample = total_text_tokens / max(1, B_text)
+        if per_sample < args.min_assistant_tokens:
+            # Strategy A (default): keep the batch but log loudly
+            if is_main:
+                logger.error(f" INSUFFICIENT TEXT SUPERVISION: {per_sample:.1f} tokens/sample < {args.min_assistant_tokens} required for Arabic!")
+                logger.error("  This will cause 'mumbling' – model learns voice style but ignores text content!")
+
+        # Final shapes for loss
+        batch_out = dict(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            audio_in_ids=audio_in_ids,
+            audio_out_ids_shifted_in=shifted_in,  # teacher-forcing inputs
+            audio_labels=audio_labels,
+            text_labels=text_labels,
+        )
+        return batch_out
+
     # Optimizer / Scheduler
     # Use AdamW with low weight_decay and warmup to avoid early collapse on LoRA blocks
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
@@ -377,6 +452,8 @@ def main():
     for epoch in range(10**9):  # effectively until max_steps
         for raw in train_loader:
             batch = make_batch(raw)
+            if batch is None:
+                continue
             # Forward
             outputs = model(
                 input_ids=batch["input_ids"],
@@ -492,80 +569,6 @@ def main():
 
     if is_main:
         logger.info("Training finished.")
-
-
-def make_batch(batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    """
-    Enforces:
-      - audio teacher-forcing shift-right (no identity leak)
-      - labels masking: BOS(1024)->-100; keep EOS(1025) only for stopping logic
-      - text label extraction on assistant tokens; enforce min token count or drop microbatch
-    """
-    device = accelerator.device
-
-    # ---- Raw from your collator ----
-    input_ids = batch["input_ids"].to(device)
-    attention_mask = batch["attention_mask"].to(device)
-
-    # audio tensors: [C, T]
-    audio_in_ids = batch["audio_in_ids"].to(device)
-    audio_out_ids = batch["audio_out_ids"].to(device)
-
-    # Sanity
-    assert audio_in_ids.dim() == 2 and audio_in_ids.size(0) == N_CODEBOOKS, f"audio_in_ids shape unexpected: {audio_in_ids.shape}"
-    assert audio_out_ids.dim() == 2 and audio_out_ids.size(0) == N_CODEBOOKS, f"audio_out_ids shape unexpected: {audio_out_ids.shape}"
-
-    # ---- 1) Audio teacher-forcing: shift-right inputs per codebook ----
-    # Inputs to the model (teacher forcing) have BOS at t=0, then t-1 labels
-    # Labels are the "next token", with labels[:,0] = -100 and any BOS=1024 mapped to -100
-    C, T_out = audio_out_ids.shape
-
-    # Build shifted inputs for decoder
-    shifted_in = audio_out_ids.clone()
-    shifted_in[:, 1:] = audio_out_ids[:, :-1]  # right shift
-    shifted_in[:, 0] = AUDIO_BOS               # ensure BOS at t=0
-
-    # Build labels
-    audio_labels = audio_out_ids.clone()
-    audio_labels[:, 0] = -100                  # do not learn BOS
-    # Map BOS tokens inside labels (if any) to -100
-    bos_mask = (audio_labels == AUDIO_BOS)
-    if bos_mask.any():
-        if is_main:
-            logger.info(f" MAPPING BOS TOKENS: {int(bos_mask.sum().item())} tokens (1024) → -100")
-        audio_labels[bos_mask] = -100
-
-    # ---- 2) Text labels ---
-    # Expect your collator to provide "text_labels" OR we build from input_ids and role spans.
-    # To remain compatible with your code, check presence:
-    if "text_labels" in batch:
-        text_labels = batch["text_labels"].to(device)
-    else:
-        # Fallback: supervise everything except special tokens; in practice, you should
-        # wire your collator to set assistant spans. We'll keep assistance minimal here.
-        text_labels = input_ids.clone()
-        text_labels[text_labels == tokenizer.pad_token_id] = -100
-
-    # Enforce minimum assistant supervision tokens / sample (approx by batch total)
-    total_text_tokens = count_non_ignore(text_labels)
-    B_text = input_ids.size(0)
-    per_sample = total_text_tokens / max(1, B_text)
-    if per_sample < args.min_assistant_tokens:
-        # Strategy A (default): keep the batch but log loudly (you can also choose to "return None" to drop it)
-        if is_main:
-            logger.error(f" INSUFFICIENT TEXT SUPERVISION: {per_sample:.1f} tokens/sample < {args.min_assistant_tokens} required for Arabic!")
-            logger.error("  This will cause 'mumbling' – model learns voice style but ignores text content!")
-
-    # Final shapes for loss
-    batch_out = dict(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        audio_in_ids=audio_in_ids,
-        audio_out_ids_shifted_in=shifted_in,  # teacher-forcing inputs
-        audio_labels=audio_labels,
-        text_labels=text_labels,
-    )
-    return batch_out
 
 
 if __name__ == "__main__":
