@@ -671,7 +671,13 @@ def main():
                                 # Per-codebook CE for identity leak detection
                                 cb_losses = []
                                 for c in range(N_CODEBOOKS):
-                                    cb_loss = torch.nn.CrossEntropyLoss(ignore_index=-100)(outputs["audio_logits"][c], aud_lbl[c])
+                                    # Use the same permuted audio_logits for consistency
+                                    if audio_logits_for_acc.dim() == 3:
+                                        cb_logits = audio_logits_for_acc[c]  # [T, V]
+                                    else:
+                                        cb_logits = outputs["audio_logits"][c]  # Fallback
+                                    
+                                    cb_loss = torch.nn.CrossEntropyLoss(ignore_index=-100)(cb_logits, aud_lbl[c])
                                     cb_losses.append(f"{cb_loss.item():.3f}")
                                 cb_str = "[" + ",".join(cb_losses) + "]"
                                 
