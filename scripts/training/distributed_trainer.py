@@ -368,10 +368,6 @@ def main():
             # Audio attention modules (only if use_audio_out_self_attention=True)
             # CRITICAL: These modules only exist when cross-attention is enabled!
             "audio_attn.q_proj", "audio_attn.k_proj", "audio_attn.v_proj", "audio_attn.o_proj",
-            
-            # Layer normalization components
-            "input_layernorm", "post_attention_layernorm",
-            "audio_input_layernorm", "audio_post_attention_layernorm", "audio_post_audio_attn_layer_norm",
         ],
         lora_dropout=args.lora_dropout,
         bias="none",
