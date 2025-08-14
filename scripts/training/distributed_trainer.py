@@ -416,7 +416,7 @@ def main():
     )
     
     # CRITICAL: Add gradient clipping for newly initialized cross-attention modules
-    gradient_clip_norm = 0.5  # Conservative clipping for stability
+    gradient_clip_norm = 1.0  # Conservative clipping for stability
     logger.info(f" STABILITY FIX: Adding gradient clipping (max_norm={gradient_clip_norm}) for cross-attention stability")
     
     # Calculate training steps for proper warmup scheduling
