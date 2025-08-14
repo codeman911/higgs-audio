@@ -359,16 +359,59 @@ def main():
             if input_tokens is None or label_tokens is None:
                 continue  # Skip invalid samples
             
+            # Process audio using audio_tokenizer - EXACT SAME AS WORKING distributed_trainer.py
+            audio_ids_list = []
+            audio_waveforms_list = []
+            
+            for audio_content in audio_contents:
+                if audio_content and hasattr(audio_content, 'audio_url'):
+                    audio_path = audio_content.audio_url
+                    if audio_path and os.path.exists(audio_path):
+                        try:
+                            # Tokenize audio
+                            audio_codes = audio_tokenizer.encode(audio_path)
+                            
+                            # Load waveform
+                            import librosa
+                            waveform, sr = librosa.load(audio_path, sr=24000, mono=True)
+                            waveform = torch.tensor(waveform, dtype=torch.float32)
+                            
+                            audio_ids_list.append(audio_codes)
+                            audio_waveforms_list.append(waveform)
+                            
+                        except Exception as e:
+                            logger.warning(f"Failed to process audio {audio_path}: {e}")
+            
+            # Create proper audio concatenation for ChatMLDatasetSample
+            if audio_ids_list:
+                # Concatenate audio codes: shape (num_codebooks, total_length)
+                audio_ids_concat = torch.cat([audio_codes for audio_codes in audio_ids_list], dim=1)
+                audio_ids_start = torch.tensor([0] + [audio_codes.shape[1] for audio_codes in audio_ids_list[:-1]]).cumsum(dim=0)
+                
+                # Concatenate audio waveforms
+                audio_waveforms_concat = torch.cat(audio_waveforms_list, dim=0)
+                audio_waveforms_start = torch.tensor([0] + [wv.shape[0] for wv in audio_waveforms_list[:-1]]).cumsum(dim=0)
+                audio_sample_rate = torch.tensor([24000] * len(audio_waveforms_list))
+                audio_speaker_indices = torch.tensor([speaker_id or 0] * len(audio_waveforms_list), dtype=torch.long)
+            else:
+                # Empty audio tensors - EXACT SAME AS WORKING SCRIPT
+                audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)  # 8 codebooks
+                audio_ids_start = torch.tensor([], dtype=torch.long)
+                audio_waveforms_concat = torch.zeros((0,), dtype=torch.float32)
+                audio_waveforms_start = torch.tensor([], dtype=torch.long)
+                audio_sample_rate = torch.tensor([24000])
+                audio_speaker_indices = torch.tensor([speaker_id or 0], dtype=torch.long)
+            
             # Create proper ChatMLDatasetSample for original collator
             chatml_sample = ChatMLDatasetSample(
                 input_ids=torch.tensor(input_tokens, dtype=torch.long),
                 label_ids=torch.tensor(label_tokens, dtype=torch.long),
-                audio_ids_concat=torch.zeros((8, 0), dtype=torch.long),  # Will be filled by collator
-                audio_ids_start=torch.tensor([], dtype=torch.long),
-                audio_waveforms_concat=torch.zeros((0,), dtype=torch.float32),
-                audio_waveforms_start=torch.tensor([], dtype=torch.long),
-                audio_sample_rate=torch.tensor([24000]),
-                audio_speaker_indices=torch.tensor([speaker_id or 0], dtype=torch.long)
+                audio_ids_concat=audio_ids_concat,
+                audio_ids_start=audio_ids_start,
+                audio_waveforms_concat=audio_waveforms_concat,
+                audio_waveforms_start=audio_waveforms_start,
+                audio_sample_rate=audio_sample_rate,
+                audio_speaker_indices=audio_speaker_indices
             )
             
             chatml_samples.append(chatml_sample)
