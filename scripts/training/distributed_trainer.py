@@ -904,7 +904,7 @@ def main():
                         total_loss = total_loss + weighted_text_loss if total_loss is not None else weighted_text_loss
                         loss_components['weighted_text_loss'] = weighted_text_loss.item()
                         
-                        # CRITICAL: Debug text loss computation (like audio debugging)
+                        # 🔍 CRITICAL: Debug text loss computation (like audio debugging)
                         if global_step % args.log_steps == 0:
                             with torch.no_grad():
                                 # Text token analysis (similar to audio)
@@ -917,40 +917,89 @@ def main():
                                     valid_pred = text_pred[text_valid_mask]
                                     valid_true = text_true[text_valid_mask]
                                     
+                                    # Enhanced text token logging (like audio tokens)
+                                    logger.info(f"📝 TEXT TOKEN ANALYSIS (Step {global_step}):")
+                                    logger.info(f"📝 Valid text tokens: {len(valid_pred)} (pred) vs {len(valid_true)} (true)")
+                                    
                                     # Show first 10 predicted vs actual text tokens
                                     if len(valid_pred) >= 10:
                                         first_10_pred = valid_pred[:10].cpu().tolist()
                                         first_10_true = valid_true[:10].cpu().tolist()
-                                        logger.info(f" TEXT First 10 tokens: pred={first_10_pred} | true={first_10_true}")
+                                        logger.info(f"📝 TEXT First 10 tokens: pred={first_10_pred} | true={first_10_true}")
                                         
-                                        # Show last 10 as well
+                                        # Show last 10 as well for comparison
                                         last_10_pred = valid_pred[-10:].cpu().tolist()
                                         last_10_true = valid_true[-10:].cpu().tolist()
-                                        logger.info(f" TEXT Last 10 tokens:  pred={last_10_pred} | true={last_10_true}")
+                                        logger.info(f"📝 TEXT Last 10 tokens:  pred={last_10_pred} | true={last_10_true}")
+                                        
+                                        # Token-by-token comparison for first 10
+                                        matches = [1 if p == t else 0 for p, t in zip(first_10_pred, first_10_true)]
+                                        logger.info(f"📝 TEXT First 10 matches: {matches} (1=correct, 0=wrong)")
                                     
-                                    # Token diversity check
+                                    # Token diversity check (like audio)
                                     pred_unique = len(torch.unique(valid_pred))
                                     true_unique = len(torch.unique(valid_true))
-                                    logger.info(f" TEXT Token diversity: pred={pred_unique}, labels={true_unique}")
+                                    vocab_size = tokenizer.vocab_size if hasattr(tokenizer, 'vocab_size') else 128000
+                                    pred_coverage = pred_unique / vocab_size
+                                    logger.info(f"📝 TEXT Token diversity: pred={pred_unique}, labels={true_unique} (vocab_size={vocab_size})")
+                                    logger.info(f"📝 TEXT Vocab coverage: {pred_coverage:.1%} of total vocabulary")
                                     
-                                    # Accuracy calculation
+                                    # Overall accuracy calculation
                                     correct = (valid_pred == valid_true).sum().item()
                                     total = len(valid_pred)
                                     accuracy = correct / total if total > 0 else 0.0
-                                    logger.info(f" TEXT Accuracy: {correct}/{total} = {accuracy:.4f} ({accuracy*100:.1f}%)")
+                                    logger.info(f"📝 TEXT Accuracy: {correct}/{total} = {accuracy:.4f} ({accuracy*100:.1f}%)")
                                     
-                                    # Show actual text tokens if possible (decode a few)
+                                    # Check for text learning patterns
+                                    if accuracy < 0.05:
+                                        logger.error(f"🚨 TEXT LEARNING FAILURE: {accuracy:.1%} accuracy - model not learning Arabic!")
+                                    elif accuracy < 0.15:
+                                        logger.warning(f"⚠️  TEXT LEARNING SLOW: {accuracy:.1%} accuracy - Arabic quality may be poor")
+                                    elif accuracy > 0.3:
+                                        logger.info(f"✅ EXCELLENT TEXT LEARNING: {accuracy:.1%} accuracy - Arabic should be high quality")
+                                    else:
+                                        logger.info(f"🎯 STEADY TEXT LEARNING: {accuracy:.1%} accuracy - Arabic developing")
+                                    
+                                    # Enhanced: Decode sample text tokens to see actual predictions vs targets
                                     try:
-                                        # Try to decode first few tokens to see actual text
-                                        sample_pred_text = tokenizer.decode(first_10_pred[:5], skip_special_tokens=True)
-                                        sample_true_text = tokenizer.decode(first_10_true[:5], skip_special_tokens=True)
-                                        logger.info(f" TEXT Sample: pred='{sample_pred_text}' | true='{sample_true_text}'")
+                                        # Decode first 5 tokens for readability
+                                        if len(first_10_pred) >= 5 and len(first_10_true) >= 5:
+                                            sample_pred_text = tokenizer.decode(first_10_pred[:5], skip_special_tokens=True)
+                                            sample_true_text = tokenizer.decode(first_10_true[:5], skip_special_tokens=True)
+                                            logger.info(f"📝 TEXT Sample decoded:")
+                                            logger.info(f"📝   Predicted: '{sample_pred_text}'")
+                                            logger.info(f"📝   Target:    '{sample_true_text}'")
+                                            
+                                            # Check if predicted text contains Arabic characters
+                                            arabic_chars_pred = sum(1 for c in sample_pred_text if '\u0600' <= c <= '\u06FF')
+                                            arabic_chars_true = sum(1 for c in sample_true_text if '\u0600' <= c <= '\u06FF')
+                                            logger.info(f"📝 Arabic chars: pred={arabic_chars_pred}, true={arabic_chars_true}")
+                                            
+                                            if arabic_chars_true > 0 and arabic_chars_pred == 0:
+                                                logger.error(f"🚨 ARABIC FAILURE: Model not generating Arabic characters!")
+                                            elif arabic_chars_pred > 0:
+                                                logger.info(f"✅ ARABIC GENERATION: Model producing Arabic characters")
+                                                
+                                        # Also try decoding longer sequences (up to 15 tokens)
+                                        if len(valid_pred) >= 15 and len(valid_true) >= 15:
+                                            longer_pred_text = tokenizer.decode(valid_pred[:15].cpu().tolist(), skip_special_tokens=True)
+                                            longer_true_text = tokenizer.decode(valid_true[:15].cpu().tolist(), skip_special_tokens=True)
+                                            logger.info(f"📝 TEXT Longer sample (15 tokens):")
+                                            logger.info(f"📝   Predicted: '{longer_pred_text}'")
+                                            logger.info(f"📝   Target:    '{longer_true_text}'")
+                                            
                                     except Exception as e:
-                                        logger.info(f" TEXT decode error: {e}")
+                                        logger.info(f"📝 TEXT decode error: {e}")
+                                        
+                                    # Text learning health check (like audio health check)
+                                    baseline_text_ce = 9.0  # Rough estimate for text cross-entropy baseline
+                                    text_progress = (baseline_text_ce - text_loss.item()) / baseline_text_ce
+                                    logger.info(f"📝 TEXT LEARNING PROGRESS: {text_progress:.1%} improvement from baseline")
+                                    
                                 else:
-                                    logger.info(f" HEALTHY TEXT LEARNING: {text_loss:.4f} - Arabic quality developing")
+                                    logger.warning(f"📝 NO VALID TEXT TOKENS: Check text labels and sequence processing")
                             
-                            # CRITICAL: Monitor text loss trends for Arabic learning
+                            # 🔍 CRITICAL: Monitor text loss trends for Arabic learning
                             if global_step % args.log_steps == 0:
                                 logger.info(f" TEXT LOSS (Step {global_step}): {text_loss.item():.4f} (weighted: {weighted_text_loss.item():.4f}, weight: {args.text_loss_weight})")
                                 
