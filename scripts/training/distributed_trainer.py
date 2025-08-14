@@ -366,8 +366,9 @@ def main():
         "audio_mlp.up_proj",
         "audio_mlp.down_proj",
         
-        # CRITICAL: Text output head for Arabic token generation
-        "text_lm_head"
+        # CRITICAL: Output heads for Arabic text-to-speech
+        "text_lm_head",   # Text output head for Arabic token generation
+        "audio_lm_head"   # Audio output head for speech generation
     ]
     
     # REMOVED: All audio_attn.* targets - these modules don't exist in original architecture!
