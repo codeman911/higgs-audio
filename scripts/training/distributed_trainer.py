@@ -406,6 +406,20 @@ def main():
     def non_ignore_count(t): 
         return int((t != -100).sum().item())
     
+    # Helper function for robust model forward calls
+    def safe_model_forward(model, **kwargs):
+        """Safely call model.forward() while filtering out unwanted 'labels' parameter"""
+        try:
+            return model(**kwargs)
+        except TypeError as e:
+            if "'labels'" in str(e) and "unexpected keyword argument" in str(e):
+                # Framework injected unwanted 'labels' - filter it out
+                filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'labels'}
+                logger.warning(f"Filtered out unwanted 'labels' parameter injected by framework")
+                return model(**filtered_kwargs)
+            else:
+                raise e
+
     # Setup optimizer with stability improvements
     # Lower learning rate for newly initialized cross-attention modules
     stable_lr = min(args.learning_rate, 1e-4)  # Cap at 1e-4 for stability
@@ -570,8 +584,8 @@ def main():
                         if hasattr(value, 'shape'):
                             logger.info(f"DEBUG: {key} shape: {value.shape}")
                 
-                # HiggsAudioModel.forward() accepts 'label_ids' and 'label_audio_ids', not 'labels'
-                outputs = model(**model_inputs)
+                # ROBUST: Handle framework auto-injection of 'labels' parameter
+                outputs = safe_model_forward(model, **model_inputs)
                 
                 # Model now computes loss internally when labels are provided
                 loss = outputs.loss
@@ -698,7 +712,7 @@ def main():
                     
                     # CRITICAL: HiggsAudioModel.forward() does NOT accept 'labels' parameter
                     # Labels are used separately for loss computation
-                    outputs = model(**model_inputs)
+                    outputs = safe_model_forward(model, **model_inputs)
                     
                     # Model now computes loss internally when labels are provided
                     loss = outputs.loss
