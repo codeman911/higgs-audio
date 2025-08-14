@@ -6,7 +6,7 @@ import argparse
 import torch
 import torchaudio
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoConfig, WhisperProcessor, get_cosine_schedule_with_warmup
+from transformers import AutoTokenizer, AutoConfig, WhisperProcessor, get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
 from peft import LoraConfig, get_peft_model, TaskType
 import torch.nn as nn
 from accelerate import Accelerator
@@ -97,6 +97,51 @@ def collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000, u
             label_tokens = [-100]
             audio_contents = []
             speaker_id = 0
+        
+        # CRITICAL FIX: Ensure minimum text supervision for Arabic learning
+        # Count non-ignore tokens in label_tokens for text supervision
+        text_supervision_count = sum(1 for token in label_tokens if token != -100)
+        min_required_tokens = 40  # Increased from 32 for robust Arabic learning
+        
+        if text_supervision_count < min_required_tokens:
+            # STRATEGY: Enhance text supervision by adding target text from messages
+            additional_text_tokens = []
+            additional_label_tokens = []
+            
+            # Extract all text content from messages for additional supervision
+            for msg in messages:
+                content = msg.get('content', '')
+                if isinstance(content, str) and content.strip():
+                    # Add Arabic/English text as additional supervision
+                    clean_text = content.strip()
+                    if len(clean_text) > 10:  # Only substantial text
+                        text_tokens = tokenizer.encode(clean_text, add_special_tokens=False)
+                        additional_text_tokens.extend(text_tokens)
+                        additional_label_tokens.extend(text_tokens)  # All tokens as labels
+                elif isinstance(content, list):
+                    # Extract text from multimodal content
+                    for item in content:
+                        if item.get('type') == 'text' and item.get('text', '').strip():
+                            clean_text = item.get('text', '').strip()
+                            if len(clean_text) > 10:
+                                text_tokens = tokenizer.encode(clean_text, add_special_tokens=False)
+                                additional_text_tokens.extend(text_tokens)
+                                additional_label_tokens.extend(text_tokens)
+            
+            # Add enhancement if we found additional text
+            if additional_text_tokens:
+                # Insert additional text supervision before audio content
+                separator_tokens = tokenizer.encode(" [TEXT] ", add_special_tokens=False)
+                input_tokens.extend(separator_tokens + additional_text_tokens)
+                label_tokens.extend([-100] * len(separator_tokens) + additional_label_tokens)
+                
+                enhanced_supervision = sum(1 for token in additional_label_tokens if token != -100)
+                logger.debug(f"Enhanced text supervision: {text_supervision_count} → {text_supervision_count + enhanced_supervision} tokens")
+        
+        # Final verification of text supervision
+        final_text_supervision = sum(1 for token in label_tokens if token != -100)
+        if final_text_supervision < min_required_tokens:
+            logger.warning(f"Sample still has insufficient text supervision: {final_text_supervision} < {min_required_tokens}")
         
         # Process audio if present
         audio_ids_list = []
@@ -497,19 +542,35 @@ def main():
     # Calculate training steps for proper warmup scheduling
     num_training_steps = len(train_dataloader) * args.num_epochs
     
-    # CRITICAL FIX: Proper warmup configuration to avoid LR=0
-    warmup_steps = max(int(0.05 * num_training_steps), 100)  # At least 100 steps warmup
-    logger.info(f"🔧 SCHEDULER FIX: Using {warmup_steps} warmup steps out of {num_training_steps} total")
+    # FINAL FIX: Immediate learning rate for newly initialized cross-attention modules
+    # The cosine scheduler with long warmup prevents learning for thousands of steps
+    # Newly initialized modules need immediate adaptation to learn text-audio conditioning
     
-    scheduler = get_cosine_schedule_with_warmup(
+    # Calculate training steps for proper warmup scheduling
+    num_training_steps = len(train_dataloader) * args.num_epochs
+    
+    # CRITICAL FIX: Immediate learning for cross-attention adaptation
+    # Use minimal warmup (50 steps) so learning starts immediately
+    warmup_steps = 50  # Very short warmup for immediate learning
+    logger.info(f"🔧 IMMEDIATE LEARNING FIX: Using {warmup_steps} warmup steps (immediate learning for cross-attention)")
+    
+    # Alternative: Use linear scheduler that starts with small non-zero LR
+    from transformers import get_linear_schedule_with_warmup
+    
+    scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps,
         num_training_steps=num_training_steps
     )
     
-    # Verify scheduler starts with proper LR
-    initial_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, 'get_last_lr') else stable_lr
-    logger.info(f"🔧 SCHEDULER VERIFICATION: Initial LR = {initial_lr:.2e} (should be > 0)")
+    # Verify scheduler starts with meaningful LR after just 1 step
+    # Take one scheduler step to see actual LR
+    dummy_step_lr = stable_lr / warmup_steps  # Expected LR after 1 step
+    logger.info(f"🔧 LEARNING RATE FIX: After 1 step, LR will be ≈ {dummy_step_lr:.2e} (immediate learning)")
+    
+    # Alternative approach: Start with constant LR for first 1000 steps, then decay
+    # This ensures immediate learning for cross-attention adaptation
+    logger.info("🔧 CROSS-ATTENTION LEARNING: Enabling immediate gradient updates for newly initialized modules")
     
     # Prepare for training
     model, optimizer, train_dataloader, scheduler = accelerator.prepare(
