@@ -364,7 +364,10 @@ def main():
         # Audio MLP modules (DualFFN audio path) 
         "audio_mlp.gate_proj",
         "audio_mlp.up_proj",
-        "audio_mlp.down_proj"
+        "audio_mlp.down_proj",
+        
+        # CRITICAL: Text output head for Arabic token generation
+        "text_lm_head"
     ]
     
     # REMOVED: All audio_attn.* targets - these modules don't exist in original architecture!
@@ -741,19 +744,18 @@ def main():
                     
                     # D3: Non-ignore text count - CRITICAL for Arabic learning
                     if text_labels is not None:
-                        total_text_labels = text_labels.numel()
-                        text_non_ignore = (text_labels != -100).sum().item()
-                        batch_size = text_labels.shape[0]
-                        per_sample_text = text_non_ignore / batch_size
-                        text_supervision_ratio = text_non_ignore / total_text_labels if total_text_labels > 0 else 0.0
+                        temp_text_labels = to_device(batch.label_ids)
+                        temp_nonignore = (temp_text_labels != -100).sum().item()
+                        batch_size = temp_text_labels.shape[0]
+                        per_sample_text = temp_nonignore / batch_size
+                        text_supervision_ratio = temp_nonignore / temp_text_labels.numel() if temp_text_labels.numel() > 0 else 0.0
                         
-                        logger.info(f"  FINAL TEXT LABELS: {text_non_ignore} non-ignore / {total_text_labels} total ({text_supervision_ratio:.1%})")
+                        logger.info(f"  FINAL TEXT LABELS: {temp_nonignore} non-ignore / {temp_text_labels.numel()} total ({text_supervision_ratio:.1%})")
                         logger.info(f"  PER-SAMPLE TEXT: {per_sample_text:.1f} tokens/sample (need ≥32 for Arabic)")
                         
                         # CRITICAL: Final text supervision validation
                         if per_sample_text < 20:
                             logger.error(f" FATAL: Only {per_sample_text:.1f} text tokens/sample - Arabic learning IMPOSSIBLE!")
-                            logger.error(f"   → Model will learn voice style but produce gibberish Arabic content!")
                         elif per_sample_text < 32:
                             logger.error(f" CRITICAL: Only {per_sample_text:.1f} text tokens/sample - insufficient for robust Arabic!")
                         elif per_sample_text >= 50:
@@ -762,9 +764,9 @@ def main():
                             logger.warning(f"  MARGINAL TEXT SUPERVISION: {per_sample_text:.1f} tokens/sample")
                         
                         # Sample text tokens to verify Arabic tokenization quality
-                        if text_non_ignore > 0:
-                            non_ignore_mask = text_labels != -100
-                            sample_tokens = text_labels[non_ignore_mask][:10].tolist()
+                        if temp_nonignore > 0:
+                            non_ignore_mask = temp_text_labels != -100
+                            sample_tokens = temp_text_labels[non_ignore_mask][:10].tolist()
                             logger.info(f"  Sample text tokens: {sample_tokens}")
                             
                             # Check for Arabic token patterns (rough heuristic)
