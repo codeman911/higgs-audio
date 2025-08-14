@@ -361,6 +361,13 @@ def main():
         [f"layers.{i}.audio_mlp.up_proj" for i in range(28)] + \
         [f"layers.{i}.audio_mlp.down_proj" for i in range(28)] + [
             
+            # CRITICAL FIX: Cross-attention layers for text-to-audio conditioning
+            # These layers allow the model to use text content when generating audio
+        ] + [f"layers.{i}.audio_attn.q_proj" for i in range(28)] + \
+        [f"layers.{i}.audio_attn.k_proj" for i in range(28)] + \
+        [f"layers.{i}.audio_attn.v_proj" for i in range(28)] + \
+        [f"layers.{i}.audio_attn.o_proj" for i in range(28)] + [
+            
             # STRATEGY 2: Standard attention for reference conditioning
         ] + [f"layers.{i}.self_attn.q_proj" for i in range(28)] + \
         [f"layers.{i}.self_attn.k_proj" for i in range(28)] + \
