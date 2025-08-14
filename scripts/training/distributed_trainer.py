@@ -8,7 +8,7 @@ import torchaudio
 import librosa
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoConfig, WhisperProcessor, get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
-from peft import LoraConfig, get_peft_model, TaskType
+from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 import torch.nn as nn
 from accelerate import Accelerator
 from tqdm import tqdm
