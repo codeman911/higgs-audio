@@ -55,7 +55,7 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 # === Your local modules (keep original logic) ===
 import sys
 sys.path.append('/vs/higgs-audio')
-from boson_multimodal.dataset.chatml_dataset import ChatMLDataset  # your loader (JSON->examples)
+from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample  # EXACT SAME AS WORKING SCRIPT
 from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator  # your collator (Boson/Higgs aware)
 from boson_multimodal.model.higgs_audio import HiggsAudioModel  # EXACT MODEL CLASS from working script
 
@@ -71,6 +71,30 @@ AUDIO_BOS = 1024
 AUDIO_EOS = 1025
 AUDIO_V = 1026      # [0..1023] + BOS(1024) + EOS(1025)
 N_CODEBOOKS = 8
+
+# ---------------- Simple Dataset Class (EXACT SAME AS WORKING SCRIPT) ----------------
+class SimpleDataset:
+    """Simple dataset that loads ChatML JSON files - EXACT SAME AS WORKING distributed_trainer.py"""
+    
+    def __init__(self, json_path):
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        # Handle both list and dict formats
+        if isinstance(data, list):
+            self.samples = data
+        elif isinstance(data, dict):
+            self.samples = data.get('samples', data.get('data', []))
+        else:
+            self.samples = []
+        
+        logger.info(f"Loaded {len(self.samples)} samples from {json_path}")
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        return self.samples[idx]
 
 # -------------- Argument Parser --------------
 def parse_args():
@@ -296,7 +320,7 @@ def main():
     # --------- Dataset / Collator ---------
     if is_main:
         logger.info("Loading dataset & collator…")
-    train_ds = ChatMLDataset(args.dataset_path)
+    train_ds = SimpleDataset(args.dataset_path)
     collator = HiggsAudioSampleCollator(tokenizer=tokenizer)
 
     # NOTE: We will post-process collator outputs to:
