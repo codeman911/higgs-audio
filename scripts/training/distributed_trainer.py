@@ -513,6 +513,12 @@ def main():
             with accelerator.accumulate(model):
                 device = accelerator.device
                 
+                # DEBUG: Check what's in the batch to find where 'labels' is coming from
+                if global_step == 0:
+                    logger.info(f"DEBUG: Batch attributes: {[attr for attr in dir(batch) if not attr.startswith('_')]}")
+                    if hasattr(batch, 'labels'):
+                        logger.info(f"DEBUG: Found 'labels' in batch with shape: {batch.labels.shape}")
+                
                 # Step 4: Use prepare_supervision for clean batch processing
                 sup = prepare_supervision(batch, tokenizer, device, logger)
                 
@@ -547,6 +553,10 @@ def main():
                     model_inputs["audio_out_ids_start"] = batch.audio_out_ids_start.to(device)
                 if hasattr(batch, 'audio_out_ids_start_group_loc') and batch.audio_out_ids_start_group_loc is not None:
                     model_inputs["audio_out_ids_start_group_loc"] = batch.audio_out_ids_start_group_loc.to(device)
+                
+                # DEBUG: Log model inputs to verify no 'labels' field
+                if global_step == 0:
+                    logger.info(f"DEBUG: Model input keys: {list(model_inputs.keys())}")
                 
                 # CRITICAL: HiggsAudioModel.forward() does NOT accept 'labels' parameter
                 # Labels are used separately for loss computation
