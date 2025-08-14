@@ -629,27 +629,37 @@ def main():
                 
                 # Step 8: Strategic logging (essential only)
                 if global_step % args.log_steps == 0 and accelerator.is_main_process:
-                    with torch.no_grad():
-                        # Text metrics
-                        if "logits" in outputs and outputs["logits"] is not None:
-                            txt_pred = outputs["logits"][:, :-1, :].argmax(-1)
-                            txt_lbl_shifted = sup["text_labels"][:, 1:]
-                            txt_valid = (txt_lbl_shifted != -100)
-                            if txt_valid.any():
-                                txt_acc = (txt_pred[txt_valid] == txt_lbl_shifted[txt_valid]).float().mean()
-                                txt_vocab = torch.unique(txt_pred[txt_valid]).numel()
-                                logger.info(f"TEXT: Loss={text_loss.item():.3f}, Acc={txt_acc:.1%}, Vocab={txt_vocab}")
-                            else:
-                                logger.info(f"TEXT: Loss={text_loss.item():.3f}, Acc=0%, Vocab=0 (no valid)")
+                    if "logits" in outputs and outputs["logits"] is not None:
+                        # Text metrics - use same truncation as loss computation
+                        txt_pred = outputs["logits"][:, :-1, :].argmax(-1)  # [B, T]
+                        txt_lbl_shifted = text_labels[:, 1:]  # [B, T]
+                        
+                        # Apply same truncation as in loss computation
+                        B_pred, T_pred = txt_pred.shape
+                        B_lbl, T_lbl = txt_lbl_shifted.shape
+                        if T_pred != T_lbl:
+                            min_T = min(T_pred, T_lbl)
+                            txt_pred = txt_pred[:, :min_T]
+                            txt_lbl_shifted = txt_lbl_shifted[:, :min_T]
+                        
+                        txt_valid = (txt_lbl_shifted != -100)
+                        
+                        if txt_valid.any():
+                            txt_acc = (txt_pred[txt_valid] == txt_lbl_shifted[txt_valid]).float().mean()
+                            txt_vocab = len(torch.unique(txt_lbl_shifted[txt_valid]))
+                            logger.info(f"TEXT: Loss={text_loss.item():.3f}, Acc={txt_acc.item():.1%}, Vocab={txt_vocab}")
+                        else:
+                            logger.info(f"TEXT: Loss={text_loss.item():.3f}, Acc=0%, Vocab=0 (no valid)")
                         
                         # Audio metrics  
                         if "audio_logits" in outputs and outputs["audio_logits"] is not None:
                             aud_pred = outputs["audio_logits"].argmax(-1)  # [C, T]
-                            aud_lbl = sup["audio_labels"]       # [C, T]
+                            aud_lbl = audio_labels       # [C, T]
                             aud_valid = (aud_lbl != -100)
                             if aud_valid.any():
                                 aud_acc = (aud_pred[aud_valid] == aud_lbl[aud_valid]).float().mean()
-                                aud_vocab = torch.unique(aud_pred[aud_valid]).numel()
+                                aud_vocab = len(torch.unique(aud_lbl[aud_valid]))
+                                logger.info(f"AUDIO: Loss={audio_loss.item():.3f}, Acc={aud_acc.item():.1%}, Vocab={aud_vocab}")
                                 
                                 # Per-codebook CE for identity leak detection
                                 cb_losses = []
@@ -658,13 +668,27 @@ def main():
                                     cb_losses.append(f"{cb_loss.item():.3f}")
                                 cb_str = "[" + ",".join(cb_losses) + "]"
                                 
-                                logger.info(f"AUDIO: Loss={audio_loss.item():.3f}, Acc={aud_acc:.1%}, Vocab={aud_vocab}")
-                                logger.info(f"CODEBOOK CE: {cb_str}")
+                                logger.info(f"CODEBOOK CE: {cb_str} (detect identity leak if all < 2.0)")
                             else:
                                 logger.info(f"AUDIO: Loss={audio_loss.item():.3f}, Acc=0%, Vocab=0 (no valid)")
-                        
-                        # Essential training metrics
-                        logger.info(f"STEP {global_step}: LR={scheduler.get_last_lr()[0]:.2e}, TEXT_SUP={valid_text} tokens")
+                    
+                    logger.info(f"TOTAL: Loss={loss.item():.3f}, LR={scheduler.get_last_lr()[0]:.2e}, Step={global_step}")
+                    
+                    # Entropy difference diagnostic
+                    if global_step > 0 and global_step % 200 == 0:
+                        if "logits" in outputs and outputs["logits"] is not None:
+                            text_logits_for_entropy = outputs["logits"][:, :-1, :]
+                            
+                            # Apply same truncation for entropy calculation
+                            if text_logits_for_entropy.shape[1] != txt_lbl_shifted.shape[1]:
+                                min_T = min(text_logits_for_entropy.shape[1], txt_lbl_shifted.shape[1])
+                                text_logits_for_entropy = text_logits_for_entropy[:, :min_T, :]
+                            
+                            entropy_diff = compute_entropy_difference(text_logits_for_entropy, txt_lbl_shifted, tokenizer.pad_token_id)
+                            if entropy_diff > 0.1:
+                                logger.info(f"✅ CONDITIONING ACTIVE: Entropy diff = {entropy_diff:.3f} > 0.1")
+                            else:
+                                logger.warning(f"❌ POOR CONDITIONING: Entropy diff = {entropy_diff:.3f} ≤ 0.1")
                 
                 # Backward pass
                 loss.backward()
