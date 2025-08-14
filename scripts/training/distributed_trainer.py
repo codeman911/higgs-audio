@@ -436,6 +436,35 @@ def main():
         except Exception as e:
             logger.warning(f"torch.compile could not be enabled: {e}")
     
+    # Safe initialization for newly created cross-attention modules
+    def safe_init_cross_attention_modules(model):
+        """Initialize newly created audio_attn modules with safe small-scale weights"""
+        initialized_count = 0
+        for name, module in model.named_modules():
+            # Target newly initialized audio_attn projection layers
+            if 'audio_attn' in name and any(proj in name for proj in ['q_proj', 'k_proj', 'v_proj', 'o_proj']):
+                if hasattr(module, 'weight') and module.weight is not None:
+                    # Use small-scale Xavier/Glorot initialization
+                    torch.nn.init.xavier_uniform_(module.weight, gain=0.1)  # Small gain for stability
+                    logger.info(f"🔧 INIT FIX: Safely initialized {name} with gain=0.1")
+                    initialized_count += 1
+                    
+                if hasattr(module, 'bias') and module.bias is not None:
+                    # Initialize bias to zero
+                    torch.nn.init.zeros_(module.bias)
+        
+        logger.info(f"🔧 INITIALIZATION FIX: Safely initialized {initialized_count} cross-attention projection layers")
+        return initialized_count
+
+    # Apply safe initialization before training starts
+    if hasattr(model, 'use_audio_out_self_attention') and model.use_audio_out_self_attention:
+        logger.info("🔧 APPLYING SAFE INITIALIZATION: Preventing NaN explosion in cross-attention modules")
+        init_count = safe_init_cross_attention_modules(model)
+        if init_count > 0:
+            logger.info(f"✅ SAFE INIT COMPLETE: {init_count} audio_attn modules re-initialized")
+        else:
+            logger.warning("⚠️  No audio_attn modules found for re-initialization")
+    
     # Setup optimizer with stability improvements
     # Lower learning rate for newly initialized cross-attention modules
     stable_lr = min(args.learning_rate, 1e-4)  # Cap at 1e-4 for stability
