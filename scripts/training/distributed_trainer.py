@@ -347,42 +347,57 @@ def main():
         device_map={"": accelerator.device}
     )
     
-    # Apply LoRA
-    logger.info("Applying LoRA...")
+    # CRITICAL FIX: Enable cross-attention for text-to-audio conditioning
+    # Without this, audio_attn modules don't exist and LoRA silently fails
+    logger.info(" CRITICAL FIX: Enabling use_audio_out_self_attention for text-audio conditioning")
+    model.config.use_audio_out_self_attention = True
+    
+    # LoRA configuration for text-audio conditioning
     lora_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         target_modules=[
-            # CRITICAL: Audio output head - generates final audio tokens
-            "audio_decoder_proj.audio_lm_head",
+            # Core LLM attention and MLP layers for text processing
+            "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+            "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj",
             
-            # STRATEGY 1: Audio MLP layers for ALL layers (0-27) - audio generation pathway
-        ] + [f"layers.{i}.audio_mlp.gate_proj" for i in range(28)] + \
-        [f"layers.{i}.audio_mlp.up_proj" for i in range(28)] + \
-        [f"layers.{i}.audio_mlp.down_proj" for i in range(28)] + [
+            # Audio-specific dual FFN components (exist in all non-fast-forward layers)
+            "audio_mlp.gate_proj", "audio_mlp.up_proj", "audio_mlp.down_proj",
             
-            # CRITICAL FIX: Cross-attention layers for text-to-audio conditioning
-            # These layers allow the model to use text content when generating audio
-        ] + [f"layers.{i}.audio_attn.q_proj" for i in range(28)] + \
-        [f"layers.{i}.audio_attn.k_proj" for i in range(28)] + \
-        [f"layers.{i}.audio_attn.v_proj" for i in range(28)] + \
-        [f"layers.{i}.audio_attn.o_proj" for i in range(28)] + [
+            # Audio attention modules (only if use_audio_out_self_attention=True)
+            # CRITICAL: These modules only exist when cross-attention is enabled!
+            "audio_attn.q_proj", "audio_attn.k_proj", "audio_attn.v_proj", "audio_attn.o_proj",
             
-            # STRATEGY 2: Standard attention for reference conditioning
-        ] + [f"layers.{i}.self_attn.q_proj" for i in range(28)] + \
-        [f"layers.{i}.self_attn.k_proj" for i in range(28)] + \
-        [f"layers.{i}.self_attn.v_proj" for i in range(28)] + \
-        [f"layers.{i}.self_attn.o_proj" for i in range(28)] + [
-            
-            # CRITICAL FIX: TEXT BACKBONE ADAPTATION for Arabic phonetics
-            # Target top LLaMA layers (20-27) for language learning
-        ] + [f"layers.{i}.mlp.gate_proj" for i in range(20, 28)] + \
-        [f"layers.{i}.mlp.up_proj" for i in range(20, 28)] + \
-        [f"layers.{i}.mlp.down_proj" for i in range(20, 28)],
+            # Layer normalization components
+            "input_layernorm", "post_attention_layernorm",
+            "audio_input_layernorm", "audio_post_attention_layernorm", "audio_post_audio_attn_layer_norm",
+        ],
         lora_dropout=args.lora_dropout,
         bias="none",
-        task_type=TaskType.CAUSAL_LM,
+        task_type="CAUSAL_LM",
     )
+
+    # Verify the model architecture matches our LoRA configuration
+    logger.info(" Verifying model architecture for LoRA compatibility...")
+    missing_modules = []
+    existing_modules = []
+    
+    for name, module in model.named_modules():
+        for target in lora_config.target_modules:
+            if name.endswith(target):
+                existing_modules.append(name)
+                break
+    
+    # Check for critical cross-attention modules
+    audio_attn_found = any("audio_attn" in name for name in existing_modules)
+    if not audio_attn_found:
+        logger.error(" CRITICAL: No audio_attn modules found! Text-audio conditioning will fail.")
+        logger.error(" SOLUTION: Model needs to be reloaded with use_audio_out_self_attention=True")
+        raise RuntimeError("Audio attention modules missing - cannot perform text-audio conditioning")
+    else:
+        logger.info(f" Found {len([n for n in existing_modules if 'audio_attn' in n])} audio attention modules")
+    
+    logger.info(f" LoRA will target {len(existing_modules)} modules out of {len(lora_config.target_modules)} specified")
     
     # Create a wrapper to handle the labels -> label_ids mapping
     class HiggsAudioModelWrapper(nn.Module):
@@ -550,7 +565,7 @@ def main():
                                     baseline_entropy = -(baseline_probs * torch.log(baseline_probs + 1e-8)).sum(dim=-1).mean()
                                     scrambled_entropy = -(scrambled_probs * torch.log(scrambled_probs + 1e-8)).sum(dim=-1).mean()
                                     entropy_diff = abs(baseline_entropy - scrambled_entropy)
-                                    logger.info(f"  TEXT CONDITIONING TEST: entropy_diff={entropy_diff:.4f}")
+                                    logger.info(f" TEXT CONDITIONING TEST: entropy_diff={entropy_diff:.4f}")
                                     if entropy_diff < 0.1:
                                         logger.error(f" CRITICAL: Model NOT using text for audio generation! (entropy_diff < 0.1)")
                                     else:
