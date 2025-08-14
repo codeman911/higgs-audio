@@ -179,9 +179,9 @@ def main():
                         help="Path to audio tokenizer")
     
     # Training arguments
-    parser.add_argument("--batch_size", type=int, default=32,
+    parser.add_argument("--batch_size", type=int, default=12,
                         help="Batch size per device (increased for H200)")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=2,
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
                         help="Gradient accumulation steps (reduced with larger batch)")
     parser.add_argument("--learning_rate", type=float, default=5e-4,
                         help="Learning rate")
@@ -193,7 +193,7 @@ def main():
                         help="Max gradient norm")
     
     # LoRA arguments
-    parser.add_argument('--lora_r', type=int, default=12, help='LoRA rank (increased for Arabic learning)')
+    parser.add_argument('--lora_r', type=int, default=32, help='LoRA rank (increased for Arabic learning)')
     parser.add_argument('--lora_alpha', type=int, default=64, help='LoRA alpha (increased for Arabic learning)')
     parser.add_argument('--lora_dropout', type=float, default=0.05, help='LoRA dropout')
     parser.add_argument('--text_loss_weight', type=float, default=1.0, help='Text loss weight')
