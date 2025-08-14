@@ -179,7 +179,7 @@ def main():
                         help="Path to audio tokenizer")
     
     # Training arguments
-    parser.add_argument("--batch_size", type=int, default=1,
+    parser.add_argument("--batch_size", type=int, default=8,
                         help="Batch size per device")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
                         help="Gradient accumulation steps")
@@ -199,7 +199,7 @@ def main():
     parser.add_argument('--text_loss_weight', type=float, default=1.0, help='Text loss weight')
     
     # Other arguments
-    parser.add_argument("--num_workers", type=int, default=0,
+    parser.add_argument("--num_workers", type=int, default=48,
                         help="Number of dataloader workers")
     parser.add_argument("--prefetch_factor", type=int, default=8,
                         help="DataLoader prefetch factor per worker (if num_workers>0)")
@@ -213,11 +213,11 @@ def main():
                         help="Use <audio_path>.codes.pt if present (faster training)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
-    parser.add_argument("--log_steps", type=int, default=100,
+    parser.add_argument("--log_steps", type=int, default=10,
                         help="Log every N steps")
-    parser.add_argument("--val_steps", type=int, default=1000,
+    parser.add_argument("--val_steps", type=int, default=100,
                         help="Run validation every N steps")
-    parser.add_argument("--save_steps", type=int, default=100,
+    parser.add_argument("--save_steps", type=int, default=1000,
                         help="Save checkpoint every N steps")
     parser.add_argument("--mixed_precision", type=str, default="bf16",
                         choices=["no", "fp16", "bf16"],
@@ -525,7 +525,7 @@ def main():
                     logger.error(f" INSUFFICIENT TEXT SUPERVISION: {per_sample:.1f} tokens/sample < {MIN_ASSISTANT_TOKENS} required for Arabic!")
                     continue  # Skip starved batches
                 
-                # Forward pass with clean inputs
+                # Forward pass with clean inputs - filter out labels and other non-model fields
                 model_inputs = {}
                 if sup["input_ids"] is not None:
                     model_inputs["input_ids"] = sup["input_ids"]
@@ -536,6 +536,20 @@ def main():
                 if sup["audio_out_ids_shifted_in"] is not None:
                     model_inputs["audio_out_ids"] = sup["audio_out_ids_shifted_in"]
                 
+                # Add any additional fields from batch that the model expects (but not labels)
+                if hasattr(batch, 'audio_in_wv') and batch.audio_in_wv is not None:
+                    model_inputs["audio_features"] = batch.audio_in_wv.to(device)
+                if hasattr(batch, 'audio_feature_attention_mask') and batch.audio_feature_attention_mask is not None:
+                    model_inputs["audio_feature_attention_mask"] = batch.audio_feature_attention_mask.to(device)
+                if hasattr(batch, 'audio_in_ids_start') and batch.audio_in_ids_start is not None:
+                    model_inputs["audio_in_ids_start"] = batch.audio_in_ids_start.to(device)
+                if hasattr(batch, 'audio_out_ids_start') and batch.audio_out_ids_start is not None:
+                    model_inputs["audio_out_ids_start"] = batch.audio_out_ids_start.to(device)
+                if hasattr(batch, 'audio_out_ids_start_group_loc') and batch.audio_out_ids_start_group_loc is not None:
+                    model_inputs["audio_out_ids_start_group_loc"] = batch.audio_out_ids_start_group_loc.to(device)
+                
+                # CRITICAL: HiggsAudioModel.forward() does NOT accept 'labels' parameter
+                # Labels are used separately for loss computation
                 outputs = model(**model_inputs)
                 
                 # Step 5: Normalize audio logits to [C, T, V]
@@ -659,7 +673,7 @@ def main():
                     if per_sample < MIN_ASSISTANT_TOKENS:
                         continue
                     
-                    # Forward pass with clean inputs
+                    # Forward pass with clean inputs - filter out labels and other non-model fields
                     model_inputs = {}
                     if sup["input_ids"] is not None:
                         model_inputs["input_ids"] = sup["input_ids"]
@@ -670,6 +684,20 @@ def main():
                     if sup["audio_out_ids_shifted_in"] is not None:
                         model_inputs["audio_out_ids"] = sup["audio_out_ids_shifted_in"]
                     
+                    # Add any additional fields from batch that the model expects (but not labels)
+                    if hasattr(batch, 'audio_in_wv') and batch.audio_in_wv is not None:
+                        model_inputs["audio_features"] = batch.audio_in_wv.to(device)
+                    if hasattr(batch, 'audio_feature_attention_mask') and batch.audio_feature_attention_mask is not None:
+                        model_inputs["audio_feature_attention_mask"] = batch.audio_feature_attention_mask.to(device)
+                    if hasattr(batch, 'audio_in_ids_start') and batch.audio_in_ids_start is not None:
+                        model_inputs["audio_in_ids_start"] = batch.audio_in_ids_start.to(device)
+                    if hasattr(batch, 'audio_out_ids_start') and batch.audio_out_ids_start is not None:
+                        model_inputs["audio_out_ids_start"] = batch.audio_out_ids_start.to(device)
+                    if hasattr(batch, 'audio_out_ids_start_group_loc') and batch.audio_out_ids_start_group_loc is not None:
+                        model_inputs["audio_out_ids_start_group_loc"] = batch.audio_out_ids_start_group_loc.to(device)
+                    
+                    # CRITICAL: HiggsAudioModel.forward() does NOT accept 'labels' parameter
+                    # Labels are used separately for loss computation
                     outputs = model(**model_inputs)
                     
                     # Normalize audio logits to [C, T, V]
