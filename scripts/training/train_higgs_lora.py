@@ -341,13 +341,46 @@ def main():
         audio_num_codebooks=8
     )
 
+    # CRITICAL FIX: Need custom collate_fn to convert raw dicts to ChatMLDatasetSample objects
+    # EXACT SAME AS WORKING distributed_trainer.py
+    def custom_collate_fn(batch):
+        """Convert raw dict samples to ChatMLDatasetSample objects, then use HiggsAudioSampleCollator"""
+        chatml_samples = []
+        
+        for sample in batch:
+            # Process each sample to create ChatMLDatasetSample
+            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
+            
+            if input_tokens is None or label_tokens is None:
+                continue  # Skip invalid samples
+            
+            # Create proper ChatMLDatasetSample for original collator
+            chatml_sample = ChatMLDatasetSample(
+                input_ids=torch.tensor(input_tokens, dtype=torch.long),
+                label_ids=torch.tensor(label_tokens, dtype=torch.long),
+                audio_ids_concat=torch.zeros((8, 0), dtype=torch.long),  # Will be filled by collator
+                audio_ids_start=torch.tensor([], dtype=torch.long),
+                audio_waveforms_concat=torch.zeros((0,), dtype=torch.float32),
+                audio_waveforms_start=torch.tensor([], dtype=torch.long),
+                audio_sample_rate=torch.tensor([24000]),
+                audio_speaker_indices=torch.tensor([speaker_id or 0], dtype=torch.long)
+            )
+            
+            chatml_samples.append(chatml_sample)
+        
+        if not chatml_samples:
+            return None  # Skip empty batches
+            
+        # Now use the original HiggsAudioSampleCollator
+        return collator(chatml_samples)
+
     train_loader = DataLoader(
         train_ds,
         batch_size=args.per_device_batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
-        collate_fn=collator
+        collate_fn=custom_collate_fn  # Use our custom collate function
     )
 
     def make_batch(batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
