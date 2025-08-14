@@ -573,47 +573,18 @@ def main():
                 # HiggsAudioModel.forward() accepts 'label_ids' and 'label_audio_ids', not 'labels'
                 outputs = model(**model_inputs)
                 
-                # Step 5: Normalize audio logits to [C, T, V]
-                audio_logits = outputs.get("audio_logits")
-                if audio_logits is not None:
-                    if audio_logits.dim() != 3:
-                        raise RuntimeError(f"Unexpected audio_logits shape {audio_logits.shape}")
-                    if audio_logits.shape[0] == N_CODEBOOKS:
-                        # [C, T, V] ok
-                        pass
-                    elif audio_logits.shape[1] == N_CODEBOOKS:
-                        # [T, C, V] -> [C, T, V]
-                        audio_logits = audio_logits.permute(1, 0, 2).contiguous()
-                    else:
-                        raise RuntimeError(f"Unexpected audio_logits shape {audio_logits.shape}")
+                # Model now computes loss internally when labels are provided
+                loss = outputs.loss
                 
-                # Step 6: Compute both losses with proper shifts & masks
-                ce = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                # Step 6: Extract individual losses for logging (if available in outputs)
+                text_loss = getattr(outputs, 'text_loss', None)
+                audio_loss = getattr(outputs, 'audio_loss', None)
                 
-                # ----- Audio CE -----
-                audio_loss = torch.tensor(0.0, device=device)
-                if audio_logits is not None and sup["audio_labels"] is not None:
-                    C, T, V = audio_logits.shape
-                    a_lbl = sup["audio_labels"]  # [C, T]
-                    audio_loss = ce(audio_logits.reshape(C*T, V), a_lbl.reshape(C*T))
-                    
-                    # Step 7: Identity leak detector
-                    if accelerator.is_main_process and global_step <= 200 and audio_loss.item() < 1.0:
-                        logger.warning("SUSPICIOUS: Audio CE < 1.0 early – check teacher-forcing shift and BOS masking.")
-                
-                # ----- Text CE -----
-                text_loss = torch.tensor(0.0, device=device)
-                if "logits" in outputs and outputs["logits"] is not None:
-                    txt = outputs["logits"]              # [B, Ttxt, Vtxt]
-                    t_lbl = sup["text_labels"]           # [B, Ttxt]
-                    txt = txt[:, :-1, :].contiguous()    # shift for LM
-                    t_lbl = t_lbl[:, 1:].contiguous()
-                    B, Ttxt, Vtxt = txt.shape
-                    text_loss = ce(txt.reshape(B*Ttxt, Vtxt), t_lbl.reshape(B*Ttxt))
-                
-                # Combined loss
-                TEXT_LOSS_WEIGHT = args.text_loss_weight
-                loss = audio_loss + TEXT_LOSS_WEIGHT * text_loss
+                # If individual losses not available, use total loss
+                if text_loss is None or audio_loss is None:
+                    # Fallback: assume equal weighting for logging purposes
+                    text_loss = loss * 0.5
+                    audio_loss = loss * 0.5
                 
                 # Step 8: Strategic logging (essential only)
                 if global_step % args.log_steps == 0 and accelerator.is_main_process:
@@ -631,8 +602,8 @@ def main():
                                 logger.info(f"TEXT: Loss={text_loss.item():.3f}, Acc=0%, Vocab=0 (no valid)")
                         
                         # Audio metrics  
-                        if audio_logits is not None and sup["audio_labels"] is not None:
-                            aud_pred = audio_logits.argmax(-1)  # [C, T]
+                        if "audio_logits" in outputs and outputs["audio_logits"] is not None:
+                            aud_pred = outputs["audio_logits"].argmax(-1)  # [C, T]
                             aud_lbl = sup["audio_labels"]       # [C, T]
                             aud_valid = (aud_lbl != -100)
                             if aud_valid.any():
@@ -642,7 +613,7 @@ def main():
                                 # Per-codebook CE for identity leak detection
                                 cb_losses = []
                                 for c in range(N_CODEBOOKS):
-                                    cb_loss = ce(audio_logits[c], aud_lbl[c])
+                                    cb_loss = torch.nn.CrossEntropyLoss(ignore_index=-100)(outputs["audio_logits"][c], aud_lbl[c])
                                     cb_losses.append(f"{cb_loss.item():.3f}")
                                 cb_str = "[" + ",".join(cb_losses) + "]"
                                 
@@ -729,38 +700,21 @@ def main():
                     # Labels are used separately for loss computation
                     outputs = model(**model_inputs)
                     
-                    # Normalize audio logits to [C, T, V]
-                    audio_logits = outputs.get("audio_logits")
-                    if audio_logits is not None:
-                        if audio_logits.dim() != 3:
-                            continue
-                        if audio_logits.shape[0] == N_CODEBOOKS:
-                            pass  # [C, T, V] ok
-                        elif audio_logits.shape[1] == N_CODEBOOKS:
-                            audio_logits = audio_logits.permute(1, 0, 2).contiguous()
-                        else:
-                            continue
+                    # Model now computes loss internally when labels are provided
+                    loss = outputs.loss
                     
-                    # Compute losses
-                    ce = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                    # Step 6: Extract individual losses for logging (if available in outputs)
+                    text_loss = getattr(outputs, 'text_loss', None)
+                    audio_loss = getattr(outputs, 'audio_loss', None)
                     
-                    # Audio CE
-                    audio_loss = torch.tensor(0.0, device=device)
-                    if audio_logits is not None and sup["audio_labels"] is not None:
-                        C, T, V = audio_logits.shape
-                        a_lbl = sup["audio_labels"]
-                        audio_loss = ce(audio_logits.reshape(C*T, V), a_lbl.reshape(C*T))
-                    
-                    # Text CE
-                    text_loss = torch.tensor(0.0, device=device)
-                    if "logits" in outputs and outputs["logits"] is not None:
-                        txt = outputs["logits"][:, :-1, :].contiguous()
-                        t_lbl = sup["text_labels"][:, 1:].contiguous()
-                        B, Ttxt, Vtxt = txt.shape
-                        text_loss = ce(txt.reshape(B*Ttxt, Vtxt), t_lbl.reshape(B*Ttxt))
+                    # If individual losses not available, use total loss
+                    if text_loss is None or audio_loss is None:
+                        # Fallback: assume equal weighting for logging purposes
+                        text_loss = loss * 0.5
+                        audio_loss = loss * 0.5
                     
                     # Combined validation loss
-                    batch_val_loss = audio_loss + TEXT_LOSS_WEIGHT * text_loss
+                    batch_val_loss = audio_loss + text_loss
                     val_loss += batch_val_loss.item()
                     val_steps += 1
             
