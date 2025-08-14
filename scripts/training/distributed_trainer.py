@@ -5,6 +5,7 @@ import json
 import argparse
 import torch
 import torchaudio
+import librosa
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoConfig, WhisperProcessor, get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
 from peft import LoraConfig, get_peft_model, TaskType
@@ -52,7 +53,7 @@ class SimpleDataset(Dataset):
         return self.samples[idx]
 
 
-def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000, use_cached_codes=False):
+def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
     """Simple collate function that creates proper ChatMLDatasetSample objects for original collator"""
     
     chatml_samples = []
@@ -125,15 +126,11 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000, use_cached_
                         audio_codes = audio_tokenizer.encode(audio_path)
                         
                         # Load waveform
-                        waveform, sr = torchaudio.load(audio_path)
-                        if sr != sample_rate:
-                            waveform = torchaudio.transforms.Resample(sr, sample_rate)(waveform)
-                        if waveform.shape[0] > 1:
-                            waveform = waveform.mean(dim=0, keepdim=True)
-                        waveform = waveform.squeeze(0)  # Flatten to 1D
-                        audio_waveforms_list.append(waveform)
+                        waveform, sr = librosa.load(audio_path, sr=sample_rate, mono=True)
+                        waveform = torch.tensor(waveform, dtype=torch.float32)
                         
                         audio_ids_list.append(audio_codes)
+                        audio_waveforms_list.append(waveform)
                         
                     except Exception as e:
                         logger.warning(f"Failed to process audio {audio_path}: {e}")
@@ -291,7 +288,7 @@ def main():
         device_map={"": accelerator.device}
     )
     
-    # Initialize collator
+    # Initialize collator using WhisperProcessor
     logger.info("Initializing collator...")
     whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
     
@@ -331,32 +328,12 @@ def main():
     if effective_batch_size != args.batch_size:
         logger.info(f" MEMORY FIX: Reducing batch size from {args.batch_size} to {effective_batch_size} for cross-attention stability")
     
-    # Create dataloaders using ORIGINAL Higgs Audio collator
-    from transformers import WhisperProcessor
-    
-    # Initialize WhisperProcessor for the original collator
-    whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
-    
-    # Create original HiggsAudioSampleCollator
-    original_collator = HiggsAudioSampleCollator(
-        whisper_processor=whisper_processor,
-        audio_in_token_id=tokenizer.convert_tokens_to_ids('<|AUDIO|>'),
-        audio_out_token_id=tokenizer.convert_tokens_to_ids('<|AUDIO_OUT|>'),
-        pad_token_id=tokenizer.pad_token_id,
-        audio_stream_bos_id=tokenizer.convert_tokens_to_ids('<|audio_bos|>'),
-        audio_stream_eos_id=tokenizer.convert_tokens_to_ids('<|audio_eos|>'),
-        audio_num_codebooks=8,  # Ensure 8 codebooks for compatibility
-        encode_whisper_embed=True,
-        return_audio_in_tokens=True,
-        use_delay_pattern=True,
-        mask_audio_out_token_label=True
-    )
-    
+    # Create dataloaders using original collator
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=effective_batch_size,
         shuffle=True,
-        collate_fn=lambda batch: original_collator(collate_fn(batch, tokenizer, audio_tokenizer, use_cached_codes=args.use_cached_codes)),
+        collate_fn=lambda batch: collator(collate_fn(batch, tokenizer, audio_tokenizer)),
         num_workers=4,
         pin_memory=True
     )
@@ -365,7 +342,7 @@ def main():
         val_dataset,
         batch_size=effective_batch_size,
         shuffle=False,
-        collate_fn=lambda batch: original_collator(collate_fn(batch, tokenizer, audio_tokenizer, use_cached_codes=args.use_cached_codes)),
+        collate_fn=lambda batch: collator(collate_fn(batch, tokenizer, audio_tokenizer)),
         num_workers=4,
         pin_memory=True
     )
