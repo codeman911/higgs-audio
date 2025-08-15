@@ -6,7 +6,6 @@ import argparse
 import torch
 import torchaudio
 import librosa
-from typing import Union, Dict
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoConfig, WhisperProcessor, get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
@@ -26,15 +25,7 @@ sys.path.insert(0, str(project_root))
 from boson_multimodal.model.higgs_audio import HiggsAudioModel
 from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
 from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
-from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample, ChatMLSample, TextContent
-import dacite
-
-# ===== HIGGS-AUDIO constants =====
-AUDIO_BOS = 1024
-AUDIO_EOS = 1025
-AUDIO_V = 1026
-N_CODEBOOKS = 8
-MIN_ASSISTANT_TOKENS = 32  # Arabic learning threshold
+from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -63,240 +54,6 @@ class SimpleDataset(Dataset):
     
     def __getitem__(self, idx):
         return self.samples[idx]
-
-
-def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000):
-    """SIMPLE collate function - properly process audio like the backup trainer"""
-    chatml_samples = []
-    
-    for sample in batch:
-        # CRITICAL FIX: Convert to proper chatml_dict structure first (like backup trainer)
-        messages = sample.get('messages', [])
-        
-        # Build ChatML dict (exactly like backup trainer)
-        chatml_dict = {"messages": []}
-        
-        for msg in messages:
-            role = msg.get('role')
-            content = msg.get('content')
-            
-            if role and content:
-                # Handle different content formats
-                if isinstance(content, list):
-                    # Multi-modal content
-                    processed_content = []
-                    for item in content:
-                        if item.get('type') == 'text':
-                            processed_content.append({"type": "text", "text": item.get('text', '')})
-                        elif item.get('type') == 'audio':
-                            audio_url = item.get('audio_url', '')
-                            if audio_url:
-                                processed_content.append({"type": "audio", "audio_url": audio_url})
-                    chatml_dict["messages"].append({"role": role, "content": processed_content})
-                else:
-                    # Simple text content
-                    chatml_dict["messages"].append({"role": role, "content": content})
-        
-        # Tokenize with prepare_chatml_sample (exactly like backup trainer)
-        try:
-            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
-                chatml_dict, tokenizer
-            )
-            
-            # CRITICAL FIX: Post-process to mask audio placeholder tokens in text labels
-            # This prevents <|audio_eos|> contamination in text predictions while preserving audio processing
-            if input_tokens and label_tokens:
-                # Find and mask audio placeholder tokens in text labels
-                audio_special_tokens = [
-                    tokenizer.encode("<|audio_bos|>", add_special_tokens=False)[0] if tokenizer.encode("<|audio_bos|>", add_special_tokens=False) else None,
-                    tokenizer.encode("<|AUDIO|>", add_special_tokens=False)[0] if tokenizer.encode("<|AUDIO|>", add_special_tokens=False) else None,
-                    tokenizer.encode("<|audio_eos|>", add_special_tokens=False)[0] if tokenizer.encode("<|audio_eos|>", add_special_tokens=False) else None,
-                    tokenizer.encode("<|audio_out_bos|>", add_special_tokens=False)[0] if tokenizer.encode("<|audio_out_bos|>", add_special_tokens=False) else None,
-                    tokenizer.encode("<|AUDIO_OUT|>", add_special_tokens=False)[0] if tokenizer.encode("<|AUDIO_OUT|>", add_special_tokens=False) else None,
-                ]
-                audio_special_tokens = [t for t in audio_special_tokens if t is not None]
-                
-                # Mask audio special tokens in text labels (but keep them in input_tokens for model processing)
-                for i in range(len(label_tokens)):
-                    if i < len(input_tokens) and input_tokens[i] in audio_special_tokens:
-                        label_tokens[i] = -100  # Mask audio tokens in text labels
-                        
-        except Exception as e:
-            logger.warning(f"Failed to prepare sample: {e}")
-            # Create empty sample
-            input_tokens = [tokenizer.pad_token_id]
-            label_tokens = [-100]
-            audio_contents = []
-            speaker_id = 0
-        
-        # Process audio properly using audio_tokenizer (like backup trainer)
-        audio_ids_list = []
-        audio_waveforms_list = []
-        
-        for audio_content in audio_contents:
-            if audio_content and hasattr(audio_content, 'audio_url'):
-                audio_path = audio_content.audio_url
-                if audio_path and os.path.exists(audio_path):
-                    try:
-                        # Tokenize audio
-                        audio_codes = audio_tokenizer.encode(audio_path)
-                        # Ensure tensor is on CPU (like backup trainer)
-                        if audio_codes.is_cuda:
-                            audio_codes = audio_codes.cpu()
-                        # Ensure 8 codebooks (like backup trainer)
-                        if audio_codes.shape[0] != 8:
-                            if audio_codes.shape[0] > 8:
-                                audio_codes = audio_codes[:8, :]
-                            else:
-                                padding = torch.zeros(8 - audio_codes.shape[0], audio_codes.shape[1])
-                                audio_codes = torch.cat([audio_codes, padding], dim=0)
-                        audio_ids_list.append(audio_codes)
-                        
-                        # Load waveform using torchaudio (like backup trainer)
-                        waveform, sr = torchaudio.load(audio_path)
-                        if sr != sample_rate:
-                            waveform = torchaudio.transforms.Resample(sr, sample_rate)(waveform)
-                        if waveform.shape[0] > 1:
-                            waveform = waveform.mean(dim=0, keepdim=True)
-                        waveform = waveform.squeeze(0)  # Flatten to 1D
-                        audio_waveforms_list.append(waveform)
-                        
-                    except Exception as e:
-                        logger.warning(f"Failed to process audio {audio_path}: {e}")
-        
-        # Create tensors (exactly like backup trainer)
-        if audio_ids_list:
-            audio_ids_concat = torch.cat(audio_ids_list, dim=1)
-            audio_ids_start = torch.cumsum(
-                torch.tensor([0] + [ids.shape[1] for ids in audio_ids_list]), dim=0
-            )
-        else:
-            audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)
-            audio_ids_start = torch.tensor([0], dtype=torch.long)
-        
-        if audio_waveforms_list:
-            audio_waveforms_concat = torch.cat(audio_waveforms_list, dim=0)
-            lengths = [len(wv) for wv in audio_waveforms_list]
-            audio_waveforms_start = torch.tensor([0] + lengths[:-1]).cumsum(dim=0)
-            audio_sample_rate = torch.tensor([sample_rate] * len(audio_waveforms_list))
-            audio_speaker_indices = torch.zeros(len(audio_waveforms_list), dtype=torch.long)
-        else:
-            audio_waveforms_concat = torch.tensor([])
-            audio_waveforms_start = torch.tensor([0], dtype=torch.long)
-            audio_sample_rate = torch.tensor([sample_rate])
-            audio_speaker_indices = torch.tensor([0], dtype=torch.long)
-        
-        # Create ChatMLDatasetSample (exactly like backup trainer)
-        chatml_sample = ChatMLDatasetSample(
-            input_ids=torch.tensor(input_tokens, dtype=torch.long),
-            label_ids=torch.tensor(label_tokens, dtype=torch.long),
-            audio_ids_concat=audio_ids_concat,
-            audio_ids_start=audio_ids_start,
-            audio_waveforms_concat=audio_waveforms_concat,
-            audio_waveforms_start=audio_waveforms_start,
-            audio_sample_rate=audio_sample_rate,
-            audio_speaker_indices=audio_speaker_indices
-        )
-        
-        chatml_samples.append(chatml_sample)
-    
-    # Now call original collator with proper objects
-    return collator(chatml_samples)
-
-
-def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
-    """Prepare ChatML sample for training"""
-    
-    try:
-        # Handle different input types (same as original)
-        if not isinstance(sample, ChatMLSample):
-            # [Same conversion logic as original - abbreviated for space]
-            clean_sample = sample
-            try:
-                sample = dacite.from_dict(
-                    data_class=ChatMLSample, data=clean_sample, config=dacite.Config(strict=True, check_types=False)
-                )
-            except Exception as e:
-                logger.warning(f"Failed to convert to ChatMLSample: {e}")
-                return None, None, None, None
-
-        input_tokens = []
-        label_tokens = []
-        audio_contents = []
-        speaker_id = None
-        if sample.speaker is not None:
-            speaker_id = sample.speaker
-
-        total_m = len(sample.messages)
-        for turn_id, message in enumerate(sample.messages):
-            role = message.role
-            content = message.content
-            content_l = []
-
-            # Convert content to list format
-            if isinstance(content, str):
-                content_l.append(TextContent(text=content))
-            elif isinstance(content, list):
-                for ele in content:
-                    if isinstance(ele, str):
-                        content_l.append(TextContent(text=ele))
-                    else:
-                        content_l.append(ele)
-            else:
-                content_l.append(content)
-
-            # Add role header
-            if turn_id == 0:
-                prefix = f"<|begin_of_text|><|start_header_id|>{role}<|end_header_id|>\n\n"
-            else:
-                prefix = f"<|start_header_id|>{role}<|end_header_id|>\n\n"
-            
-            prefix_tokens = tokenizer.encode(prefix, add_special_tokens=False)
-            input_tokens.extend(prefix_tokens)
-            label_tokens.extend([-100 for _ in prefix_tokens])  # Headers always masked
-
-            # Process content
-            for content in content_l:
-                if content.type == "text":
-                    # TEXT CONTENT: Add to both input and labels (if assistant)
-                    text_tokens = tokenizer.encode(content.text, add_special_tokens=False)
-                    input_tokens.extend(text_tokens)
-                    if role == "assistant" and (sample.start_index is None or turn_id >= sample.start_index):
-                        label_tokens.extend(text_tokens)  # TEXT TOKENS in text labels
-                    else:
-                        label_tokens.extend([-100 for _ in text_tokens])
-
-                elif content.type == "audio":
-                    # AUDIO CONTENT: Add audio placeholders but MASK them in text labels
-                    audio_contents.append(content)
-                    if role == "user" or role == "system":
-                        # User/system audio: <|audio_bos|><|AUDIO|><|audio_eos|>
-                        audio_placeholder = "<|audio_bos|><|AUDIO|><|audio_eos|>"
-                    elif role == "assistant":
-                        # Assistant audio: <|audio_out_bos|><|AUDIO_OUT|><|audio_eos|>
-                        audio_placeholder = "<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|>"
-                    else:
-                        audio_placeholder = "<|audio_bos|><|AUDIO|><|audio_eos|>"
-                    
-                    placeholder_tokens = tokenizer.encode(audio_placeholder, add_special_tokens=False)
-                    input_tokens.extend(placeholder_tokens)
-                    # CRITICAL FIX: ALWAYS mask audio placeholders in text labels
-                    label_tokens.extend([-100 for _ in placeholder_tokens])  # MASKED!
-            
-            # Add end-of-turn token
-            eot_postfix = "<|eot_id|>"
-            postfix_tokens = tokenizer.encode(eot_postfix, add_special_tokens=False)
-            input_tokens.extend(postfix_tokens)
-            if role == "assistant" and (sample.start_index is None or turn_id >= sample.start_index):
-                label_tokens.extend(postfix_tokens)
-            else:
-                label_tokens.extend([-100 for _ in postfix_tokens])
-
-        return input_tokens, label_tokens, audio_contents, speaker_id
-
-    except Exception as e:
-        logger.error(f"Error in prepare_chatml_sample: {str(e)}")
-        return None, None, None, None
 
 
 def main():
@@ -401,21 +158,11 @@ def main():
     # Load model config
     config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
     
-    # CRITICAL ARCHITECTURE FIX: Enable text-audio cross-attention for zero-shot voice cloning
-    # The model NEEDS audio attention modules for proper text-audio conditioning
-    # Without this, the model cannot condition audio generation on text input!
-    logger.info(" ENABLING CRITICAL CROSS-ATTENTION: use_audio_out_self_attention=True")
-    
-    # ENABLE: Text-audio cross-attention for proper zero-shot voice cloning
-    config.use_audio_out_self_attention = True  # REQUIRED for text-audio conditioning!
-    
-    logger.info(" ENABLED: Cross-attention modules for text-audio conditioning")
-    
     # Load model
     logger.info("Loading model...")
     model = HiggsAudioModel.from_pretrained(
         args.model_path,
-        config=config,  # Use modified config
+        config=config,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
         device_map={"": accelerator.device}
@@ -446,68 +193,6 @@ def main():
     train_dataset = SimpleDataset(os.path.join(args.dataset_path, "train_chatml_samples.json"))[:args.debug_samples]
     val_dataset = SimpleDataset(os.path.join(args.dataset_path, "val_chatml_samples.json"))[:args.debug_val_samples]
     
-    # ========== STRATEGIC LOGGING: DATA PIPELINE ANALYSIS ==========
-    logger.info(" STRATEGIC ANALYSIS: ChatML Data Format")
-    logger.info("=" * 80)
-    
-    # Analyze first sample to understand exact data format
-    if len(train_dataset) > 0:
-        sample = train_dataset[0]
-        logger.info(" RAW CHATML SAMPLE STRUCTURE:")
-        logger.info(f"   Sample keys: {list(sample.keys())}")
-        
-        if 'messages' in sample:
-            logger.info(f"   Messages count: {len(sample['messages'])}")
-            for i, msg in enumerate(sample['messages']):
-                role = msg.get('role', 'unknown')
-                content = msg.get('content', [])
-                logger.info(f"   Message {i} - Role: {role}")
-                
-                if isinstance(content, list):
-                    for j, item in enumerate(content):
-                        item_type = item.get('type', 'unknown')
-                        if item_type == 'text':
-                            text_preview = item.get('text', '')[:80] + ('...' if len(item.get('text', '')) > 80 else '')
-                            logger.info(f"     Content {j} [text]: {text_preview}")
-                        elif item_type == 'audio':
-                            audio_path = item.get('audio_url', 'No URL')
-                            logger.info(f"     Content {j} [audio]: {Path(audio_path).name}")
-                elif isinstance(content, str):
-                    content_preview = content[:80] + ('...' if len(content) > 80 else '')
-                    logger.info(f"     Content [text]: {content_preview}")
-        
-        # Test prepare_chatml_sample to see what it produces
-        logger.info(" TESTING prepare_chatml_sample OUTPUT:")
-        try:
-            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
-            
-            logger.info(f"   input_tokens length: {len(input_tokens)}")
-            logger.info(f"   label_tokens length: {len(label_tokens)}")
-            logger.info(f"   audio_contents count: {len(audio_contents)}")
-            logger.info(f"   speaker_id: {speaker_id}")
-            
-            # Analyze label masking pattern
-            supervised_tokens = len([t for t in label_tokens if t != -100])
-            ignored_tokens = len([t for t in label_tokens if t == -100])
-            logger.info(f"   Supervised tokens: {supervised_tokens}")
-            logger.info(f"   Ignored tokens: {ignored_tokens}")
-            
-            # Show tokenized conversation preview
-            input_text_preview = tokenizer.decode(input_tokens[:200], skip_special_tokens=False)
-            logger.info(f"   Input text preview: {input_text_preview}")
-            
-            # Show what gets supervised (labels != -100)
-            supervised_token_ids = [input_tokens[i] for i, label in enumerate(label_tokens) if label != -100 and i < len(input_tokens)]
-            if supervised_token_ids:
-                supervised_text = tokenizer.decode(supervised_token_ids[:100], skip_special_tokens=False)
-                logger.info(f"   Supervised text preview: {supervised_text}")
-            
-        except Exception as e:
-            logger.error(f"   Error in prepare_chatml_sample: {e}")
-    
-    logger.info(" STRATEGIC ANALYSIS COMPLETE")
-    logger.info("=" * 80)
-    
     # Create data loaders - OPTIMIZED FOR H200
     train_dataloader = DataLoader(
         train_dataset,
@@ -516,7 +201,7 @@ def main():
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=lambda batch: simple_collate_fn(batch, tokenizer, audio_tokenizer, collator),  # Use custom collate function
+        collate_fn=collator,  # Use original collator
         pin_memory=True,  # H200 optimization
         drop_last=True    # Consistent batch sizes for speed
     )
@@ -528,7 +213,7 @@ def main():
         num_workers=args.num_workers // 2,  # Less workers for validation
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=lambda batch: simple_collate_fn(batch, tokenizer, audio_tokenizer, collator),  # Use custom collate function
+        collate_fn=collator,  # Use original collator
         pin_memory=True,
         drop_last=False
     )
@@ -562,57 +247,6 @@ def main():
     
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     model = get_peft_model(model, lora_config)
-    
-    # Step 3: Supervision preparation function
-    def prepare_supervision(batch, tokenizer, device, logger=None):
-        """
-        Fix audio teacher-forcing and text labels
-        """
-        inp = batch.input_ids.to(device)
-        attn = batch.attention_mask.to(device)
-        a_in = batch.audio_in_ids.to(device) if hasattr(batch, 'audio_in_ids') and batch.audio_in_ids is not None else None
-        a_out = batch.audio_out_ids.to(device) if hasattr(batch, 'audio_out_ids') and batch.audio_out_ids is not None else None
-
-        if a_out is not None:
-            # ---- Audio: shift-right teacher forcing ----
-            C, T = a_out.shape
-            assert C == N_CODEBOOKS, f"Expected {N_CODEBOOKS} codebooks, got {C}"
-
-            a_shift = a_out.clone()
-            a_shift[:, 1:] = a_out[:, :-1]
-            a_shift[:, 0] = AUDIO_BOS  # BOS at t=0 for inputs
-
-            a_lbl = a_out.clone()
-            a_lbl[:, 0] = -100  # do not learn BOS
-            bos_mask = (a_lbl == AUDIO_BOS)
-            if bos_mask.any() and logger:
-                logger.info(f" MAPPING BOS TOKENS: {int(bos_mask.sum().item())} tokens ({AUDIO_BOS}) → -100")
-            a_lbl[bos_mask] = -100
-        else:
-            a_shift = None
-            a_lbl = None
-
-        # ---- Text labels ----
-        if hasattr(batch, 'label_ids') and batch.label_ids is not None:
-            t_lbl = batch.label_ids.to(device)
-        else:
-            # Fallback: supervise non-pad tokens
-            t_lbl = inp.clone()
-            t_lbl[t_lbl == tokenizer.pad_token_id] = -100
-
-        return dict(
-            input_ids=inp, attention_mask=attn,
-            audio_in_ids=a_in, audio_out_ids=a_shift, audio_labels=a_lbl,
-            text_labels=t_lbl,
-            # CRITICAL FIX: Create exactly the right number of start indices to produce correct length values
-            # For 8 codebooks, we need 8 start indices to produce 8 length values (not 9)
-            audio_in_ids_start=torch.arange(a_in.shape[0], dtype=torch.long, device=device) * a_in.shape[1] if a_in is not None else torch.tensor([0], dtype=torch.long, device=device),
-            audio_out_ids_start=torch.arange(a_shift.shape[0], dtype=torch.long, device=device) * a_shift.shape[1] if a_shift is not None else torch.tensor([0], dtype=torch.long, device=device),
-            audio_out_ids_start_group_loc=None  # Not needed for single audio segments
-        )
-
-    def non_ignore_count(t): 
-        return int((t != -100).sum().item())
     
     # Setup optimizer with stability improvements
     # Lower learning rate for newly initialized cross-attention modules
@@ -774,7 +408,7 @@ def main():
                     audio_logits = outputs["audio_logits"]
                     if audio_logits.dim() == 3:
                         # Ensure [C, T, V] format
-                        if audio_logits.shape[1] == N_CODEBOOKS:
+                        if audio_logits.shape[1] == 8:
                             audio_logits = audio_logits.permute(1, 0, 2).contiguous()
                         
                         C, T, V = audio_logits.shape
@@ -1046,7 +680,7 @@ def main():
                         audio_logits = outputs["audio_logits"]
                         if audio_logits.dim() == 3:
                             # Ensure [C, T, V] format
-                            if audio_logits.shape[1] == N_CODEBOOKS:
+                            if audio_logits.shape[1] == 8:
                                 audio_logits = audio_logits.permute(1, 0, 2).contiguous()
                             
                             C, T, V = audio_logits.shape
