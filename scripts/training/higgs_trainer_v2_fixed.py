@@ -227,130 +227,6 @@ class InferenceStyleDatasetForTrainer(Dataset):
             return self.__getitem__((idx + 1) % len(self))
 
 
-class HiggsAudioTrainer(Trainer):
-    """
-    Custom trainer combining official stability with your cross-modal conditioning
-    """
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.config = self.model.config
-        
-        # Initialize newly created audio attention modules (your fix)
-        self._initialize_audio_attention_modules()
-    
-    def _initialize_audio_attention_modules(self):
-        """Initialize newly created audio attention modules for stability"""
-        logger.info("🎯 WEIGHT INITIALIZATION: Initializing audio attention modules")
-        
-        with torch.no_grad():
-            for name, param in self.model.named_parameters():
-                if 'audio_attn' in name and 'weight' in name:
-                    if 'lora_A' in name:
-                        # LoRA A matrices should be near zero
-                        torch.nn.init.normal_(param, mean=0.0, std=0.001)
-                    elif 'lora_B' in name:
-                        # LoRA B matrices should be zero initially
-                        torch.nn.init.zeros_(param)
-                    elif any(proj in name for proj in ['q_proj', 'k_proj', 'v_proj', 'o_proj']):
-                        # Attention projections should be small
-                        torch.nn.init.xavier_uniform_(param, gain=0.02)
-                elif 'audio_post_audio_attn_layer_norm' in name and 'weight' in name:
-                    torch.nn.init.ones_(param)
-        
-        logger.info("✅ WEIGHT INITIALIZATION: Audio attention modules initialized")
-    
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        """
-        Custom loss computation following EXACT official trainer approach.
-        """
-        # OFFICIAL APPROACH: Whitelist only the parameters the model needs
-        if isinstance(inputs, ExtendedHiggsAudioBatchInput):
-            model_inputs = {}
-            # Explicitly copy only the attributes we need (official approach)
-            for attr_name in ['input_ids', 'attention_mask', 'label_ids', 
-                            'audio_features', 'audio_feature_attention_mask',
-                            'audio_out_ids', 'audio_out_ids_start', 
-                            'audio_in_ids', 'audio_in_ids_start',
-                            'label_audio_ids']:
-                attr_value = getattr(inputs, attr_name, None)
-                if attr_value is not None:
-                    model_inputs[attr_name] = attr_value
-        else:
-            model_inputs = {}
-            for key, value in inputs.items():
-                if key == 'labels':
-                    # Convert labels → label_ids (official approach)
-                    model_inputs['label_ids'] = value
-                elif key in ['input_ids', 'attention_mask', 'label_ids',
-                            'audio_features', 'audio_feature_attention_mask',
-                            'audio_out_ids', 'audio_out_ids_start', 
-                            'audio_in_ids', 'audio_in_ids_start',
-                            'label_audio_ids']:
-                    # Only copy whitelisted keys (official approach)
-                    model_inputs[key] = value
-        
-        # Apply audio token masking in text labels (your improvement)
-        if 'label_ids' in model_inputs and model_inputs['label_ids'] is not None:
-            model_inputs['label_ids'] = self._mask_audio_tokens_in_text_labels(model_inputs['label_ids'])
-        
-        # Ensure all inputs are on the same device (official approach)
-        for key, value in model_inputs.items():
-            if isinstance(value, torch.Tensor):
-                # Fix for DataParallel: use next(model.parameters()).device instead of model.device
-                device = next(model.parameters()).device
-                model_inputs[key] = value.to(device)
-        
-        # Forward pass - use model's built-in loss (official approach)
-        outputs = model(**model_inputs)
-        
-        loss = outputs["loss"] if isinstance(outputs, dict) else outputs.loss
-        
-        # Add NaN detection (your safety improvement)
-        if torch.isnan(loss):
-            logger.warning("⚠️  NaN loss detected! Skipping this batch.")
-            return torch.tensor(0.0, requires_grad=True, device=loss.device)
-        
-        return (loss, outputs) if return_outputs else loss
-    
-    def _mask_audio_tokens_in_text_labels(self, label_ids):
-        """Mask audio tokens in text labels to prevent contamination"""
-        # Audio token IDs that should be masked in text labels (your exact list)
-        audio_token_ids = [128000, 128001, 128002, 128003, 128004, 128005, 128006, 128007, 
-                          128008, 128009, 128010, 128011, 128012, 128013, 128014, 128015,
-                          128016, 128017, 128018, 128019, 128020, 128021, 128022, 128023]
-        
-        masked_labels = label_ids.clone()
-        for token_id in audio_token_ids:
-            masked_labels[masked_labels == token_id] = -100
-        
-        return masked_labels
-    
-    def _prepare_inputs(self, inputs):
-        """Override to remove 'labels' that HuggingFace automatically adds"""
-        inputs = super()._prepare_inputs(inputs)
-        
-        # SIMPLE FIX: Remove 'labels' if HuggingFace added it
-        if hasattr(inputs, 'labels'):
-            delattr(inputs, 'labels')
-        elif isinstance(inputs, dict) and 'labels' in inputs:
-            inputs.pop('labels')
-        
-        return inputs
-    
-    def training_step(self, model, inputs, num_items_in_batch=None):
-        """
-        DEFINITIVE FIX: Override training_step to remove 'labels' before it ever reaches the model.
-        This prevents the DataParallel wrapper from passing the unexpected keyword argument.
-        """
-        if 'labels' in inputs:
-            # Forcefully remove the problematic key
-            inputs.pop('labels')
-        
-        # Proceed with the original training step using the sanitized inputs
-        return super().training_step(model, inputs, num_items_in_batch)
-
-
 def setup_lora_config(model: nn.Module, lora_config: Dict) -> nn.Module:
     """
     Setup LoRA configuration - official approach extended with audio attention
@@ -560,8 +436,8 @@ def main():
         logger.error(f"❌ COLLATOR: Failed to setup official collator: {e}")
         raise
     
-    # Initialize trainer (official approach + your improvements)
-    trainer = HiggsAudioTrainer(
+    # Initialize trainer (official approach)
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
