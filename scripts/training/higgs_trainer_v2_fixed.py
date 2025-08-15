@@ -268,7 +268,14 @@ class HiggsAudioModelWrapper(nn.Module):
         logger.info(f"✅ CROSS-MODAL CONDITIONING: Rebuilt {len(new_layers)} layers with audio attention")
     
     def forward(self, **kwargs):
-        # Remove parameter conversion from here - PEFT bypasses this anyway
+        # FINAL SAFETY CHECK: Remove any 'labels' that slip through
+        if 'labels' in kwargs:
+            logger.warning(f"🚨 FINAL SAFETY: Found 'labels' in model wrapper! Converting to 'label_ids'")
+            kwargs['label_ids'] = kwargs.pop('labels')
+        
+        # Debug: Log what we're passing to the model
+        logger.debug(f"🔍 MODEL WRAPPER INPUT KEYS: {list(kwargs.keys())}")
+        
         return self.model(**kwargs)
 
 
