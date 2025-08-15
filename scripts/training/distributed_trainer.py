@@ -56,68 +56,112 @@ class SimpleDataset(Dataset):
 
 
 def custom_collate_fn(batch, tokenizer, audio_tokenizer, collator):
-    """Convert raw dict samples to ChatMLDatasetSample objects, then use HiggsAudioSampleCollator - PROVEN WORKING VERSION"""
+    """Convert raw dict samples to ChatMLDatasetSample objects with PROPER ZERO-SHOT AUDIO SEPARATION"""
     chatml_samples = []
     
     for sample in batch:
-        # Process each sample to create ChatMLDatasetSample - USE ORIGINAL prepare_chatml_sample (NO PATCHES!)
+        # Process each sample to create ChatMLDatasetSample with ZERO-SHOT STRUCTURE
         input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
         
         if input_tokens is None or label_tokens is None:
             continue  # Skip invalid samples
         
-        # Process audio using audio_tokenizer - EXACT SAME AS WORKING train_higgs_lora.py
-        audio_ids_list = []
-        audio_waveforms_list = []
+        # CRITICAL FIX: Separate audio by role for zero-shot voice cloning
+        reference_audio_list = []  # From user messages (conditioning)
+        target_audio_list = []     # From assistant messages (generation target)
         
-        for audio_content in audio_contents:
-            if audio_content and hasattr(audio_content, 'audio_url'):
-                audio_path = audio_content.audio_url
-                if audio_path and os.path.exists(audio_path):
-                    try:
-                        # Tokenize audio
-                        audio_codes = audio_tokenizer.encode(audio_path)
-                        
-                        # Load waveform
-                        waveform, sr = librosa.load(audio_path, sr=24000, mono=True)
-                        waveform = torch.tensor(waveform, dtype=torch.float32)
-                        
-                        audio_ids_list.append(audio_codes)
-                        audio_waveforms_list.append(waveform)
-                        
-                    except Exception as e:
-                        logger.warning(f"Failed to process audio {audio_path}: {e}")
+        # Parse the original sample to get message roles
+        messages = sample.get('messages', [])
+        audio_idx = 0
         
-        # Create proper audio concatenation for ChatMLDatasetSample
-        if audio_ids_list:
-            # Concatenate audio codes: shape (num_codebooks, total_length)
-            audio_ids_concat = torch.cat([audio_codes for audio_codes in audio_ids_list], dim=1)
-            audio_ids_start = torch.tensor([0] + [audio_codes.shape[1] for audio_codes in audio_ids_list[:-1]]).cumsum(dim=0)
+        for message in messages:
+            role = message.get('role', '')
+            content = message.get('content', [])
             
-            # Concatenate audio waveforms
-            audio_waveforms_concat = torch.cat(audio_waveforms_list, dim=0)
-            audio_waveforms_start = torch.tensor([0] + [wv.shape[0] for wv in audio_waveforms_list[:-1]]).cumsum(dim=0)
-            audio_sample_rate = torch.tensor([24000] * len(audio_waveforms_list))
-            audio_speaker_indices = torch.tensor([speaker_id or 0] * len(audio_waveforms_list), dtype=torch.long)
+            if isinstance(content, list):
+                for item in content:
+                    if item.get('type') == 'audio':
+                        audio_path = item.get('audio_url', '')
+                        if audio_path and os.path.exists(audio_path) and audio_idx < len(audio_contents):
+                            try:
+                                # Tokenize audio
+                                audio_codes = audio_tokenizer.encode(audio_path)
+                                
+                                # Load waveform
+                                waveform, sr = librosa.load(audio_path, sr=24000, mono=True)
+                                waveform = torch.tensor(waveform, dtype=torch.float32)
+                                
+                                # ZERO-SHOT ROLE SEPARATION
+                                if role == 'user':
+                                    # Reference audio (for conditioning)
+                                    reference_audio_list.append({
+                                        'codes': audio_codes,
+                                        'waveform': waveform,
+                                        'path': audio_path
+                                    })
+                                elif role == 'assistant':
+                                    # Target audio (what model should generate)
+                                    target_audio_list.append({
+                                        'codes': audio_codes,
+                                        'waveform': waveform,
+                                        'path': audio_path
+                                    })
+                                
+                                audio_idx += 1
+                                
+                            except Exception as e:
+                                logger.warning(f"Failed to process audio {audio_path}: {e}")
+        
+        # Create REFERENCE AUDIO tensors (audio_in - for conditioning)
+        if reference_audio_list:
+            ref_audio_codes = torch.cat([item['codes'] for item in reference_audio_list], dim=1)
+            ref_waveforms = torch.cat([item['waveform'] for item in reference_audio_list], dim=0)
+            ref_waveforms_start = torch.tensor([0] + [item['waveform'].shape[0] for item in reference_audio_list[:-1]]).cumsum(dim=0)
         else:
-            # Empty audio tensors - EXACT SAME AS WORKING SCRIPT
-            audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)  # 8 codebooks
+            ref_audio_codes = torch.zeros((8, 0), dtype=torch.long)
+            ref_waveforms = torch.zeros((0,), dtype=torch.float32)
+            ref_waveforms_start = torch.tensor([0], dtype=torch.long)
+        
+        # Create TARGET AUDIO tensors (audio_out - for generation)
+        if target_audio_list:
+            target_audio_codes = torch.cat([item['codes'] for item in target_audio_list], dim=1)
+            # For targets, we need both the codes and labels
+            target_labels = target_audio_codes.clone()  # Labels for loss computation
+        else:
+            target_audio_codes = torch.zeros((8, 0), dtype=torch.long)
+            target_labels = torch.zeros((8, 0), dtype=torch.long)
+        
+        # Create ALL AUDIO concatenation (for compatibility with original structure)
+        all_audio_list = reference_audio_list + target_audio_list
+        if all_audio_list:
+            audio_ids_concat = torch.cat([item['codes'] for item in all_audio_list], dim=1)
+            audio_ids_start = torch.tensor([0] + [item['codes'].shape[1] for item in all_audio_list[:-1]]).cumsum(dim=0)
+            audio_waveforms_concat = torch.cat([item['waveform'] for item in all_audio_list], dim=0)
+            audio_waveforms_start = torch.tensor([0] + [item['waveform'].shape[0] for item in all_audio_list[:-1]]).cumsum(dim=0)
+            audio_sample_rate = torch.tensor([24000] * len(all_audio_list))
+            audio_speaker_indices = torch.tensor([speaker_id or 0] * len(all_audio_list), dtype=torch.long)
+        else:
+            # Empty audio tensors
+            audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)
             audio_ids_start = torch.tensor([], dtype=torch.long)
             audio_waveforms_concat = torch.zeros((0,), dtype=torch.float32)
             audio_waveforms_start = torch.tensor([], dtype=torch.long)
             audio_sample_rate = torch.tensor([24000])
             audio_speaker_indices = torch.tensor([speaker_id or 0], dtype=torch.long)
         
-        # Create proper ChatMLDatasetSample for original collator
+        # Create ZERO-SHOT COMPATIBLE ChatMLDatasetSample
         chatml_sample = ChatMLDatasetSample(
             input_ids=torch.tensor(input_tokens, dtype=torch.long),
             label_ids=torch.tensor(label_tokens, dtype=torch.long),
+            # ALL audio (for compatibility)
             audio_ids_concat=audio_ids_concat,
             audio_ids_start=audio_ids_start,
             audio_waveforms_concat=audio_waveforms_concat,
             audio_waveforms_start=audio_waveforms_start,
             audio_sample_rate=audio_sample_rate,
-            audio_speaker_indices=audio_speaker_indices
+            audio_speaker_indices=audio_speaker_indices,
+            # TARGET AUDIO labels (for generation loss)
+            audio_label_ids_concat=target_labels if target_audio_list else None
         )
         
         chatml_samples.append(chatml_sample)
@@ -125,7 +169,7 @@ def custom_collate_fn(batch, tokenizer, audio_tokenizer, collator):
     if not chatml_samples:
         return None  # Skip empty batches
         
-    # Now use the original HiggsAudioSampleCollator - THE PROVEN WORKING COLLATOR
+    # Use the original HiggsAudioSampleCollator with proper zero-shot structure
     return collator(chatml_samples)
 
 
