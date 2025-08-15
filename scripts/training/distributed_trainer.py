@@ -151,6 +151,14 @@ def mask_audio_tokens_in_text_labels(batch, tokenizer):
     audio_in_id = tokenizer.convert_tokens_to_ids("<|AUDIO|>")
     audio_out_id = tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>")
     
+    # DEBUG: Log token IDs found
+    print(f"DEBUG MASKING - Token IDs found:")
+    print(f"  audio_eos_id: {audio_eos_id}")
+    print(f"  audio_bos_id: {audio_bos_id}")
+    print(f"  audio_out_bos_id: {audio_out_bos_id}")
+    print(f"  audio_in_id: {audio_in_id}")
+    print(f"  audio_out_id: {audio_out_id}")
+    
     # Collect all audio token IDs to mask
     audio_token_ids = set()
     if audio_eos_id is not None: audio_token_ids.add(audio_eos_id)
@@ -159,9 +167,26 @@ def mask_audio_tokens_in_text_labels(batch, tokenizer):
     if audio_in_id is not None: audio_token_ids.add(audio_in_id)
     if audio_out_id is not None: audio_token_ids.add(audio_out_id)
     
-    # Mask audio tokens in text labels (in-place to preserve batch structure)
+    print(f"  audio_token_ids to mask: {audio_token_ids}")
+    
+    # DEBUG: Check what's actually in labels before masking
+    unique_tokens_before = torch.unique(batch.label_ids[batch.label_ids != -100])
+    print(f"  Unique tokens in labels BEFORE masking: {unique_tokens_before[:20].tolist()}")  # First 20
+    
+    # Count audio tokens in labels before masking
+    total_masked = 0
     for audio_token_id in audio_token_ids:
+        count = (batch.label_ids == audio_token_id).sum().item()
+        if count > 0:
+            print(f"  Found {count} instances of token {audio_token_id} to mask")
+            total_masked += count
         batch.label_ids[batch.label_ids == audio_token_id] = -100
+    
+    print(f"  Total tokens masked: {total_masked}")
+    
+    # DEBUG: Check what's left after masking
+    unique_tokens_after = torch.unique(batch.label_ids[batch.label_ids != -100])
+    print(f"  Unique tokens in labels AFTER masking: {unique_tokens_after[:20].tolist()}")  # First 20
     
     return batch
 
