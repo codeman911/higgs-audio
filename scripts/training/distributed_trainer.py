@@ -180,6 +180,9 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
         # DEBUG: Log audio structure for first sample
         if len(chatml_samples) == 0:  # Only log first sample
             logger.info(f"🔍 AUDIO STRUCTURE DEBUG for sample 0:")
+            logger.info("=" * 80)
+            
+            # Log raw ChatML conversation structure from batch
             logger.info(f"   input_tokens length: {len(input_tokens)}")
             logger.info(f"   audio_ids_concat shape: {audio_ids_concat.shape}")
             logger.info(f"   audio_ids_start: {audio_ids_start}")
@@ -641,7 +644,7 @@ def main():
                     logger.info(f"🔍 STRATEGIC CHATML DEBUG - Step {global_step}")
                     logger.info("=" * 80)
                     
-                    # Log raw ChatML conversation structure from batch
+                    # Log raw ChatML conversation structure
                     if hasattr(batch, '__len__') and len(batch) > 0:
                         sample_item = batch[0] if hasattr(batch, '__getitem__') and len(batch) > 0 else batch
                         if hasattr(sample_item, 'messages'):
@@ -656,8 +659,7 @@ def main():
                                                 logger.info(f"    Content {j} [text]: {text_preview}...")
                                             elif content_item.type == 'audio':
                                                 audio_path = getattr(content_item, 'audio_url', 'No URL')
-                                                duration = getattr(content_item, 'duration', 'Unknown')
-                                                logger.info(f"    Content {j} [audio]: {Path(audio_path).name} (duration: {duration}s)")
+                                                logger.info(f"    Content {j} [audio]: {Path(audio_path).name}")
                     
                     # Log tokenized conversation structure 
                     logger.info(f"📊 TOKENIZED INPUT VERIFICATION:")
@@ -818,8 +820,33 @@ def main():
                 else:
                     actual_model = model
                 
-                # Forward pass - call underlying model directly to bypass PEFT label injection
-                outputs = actual_model(**model_inputs)
+                # CRITICAL DEBUGGING: Pre-forward pass checks
+                logger.info("🚀 ABOUT TO START FORWARD PASS...")
+                logger.info(f"Model device: {next(model.parameters()).device}")
+                logger.info(f"Model dtype: {next(model.parameters()).dtype}")
+                logger.info("📊 INPUT TENSOR DEVICE/DTYPE CHECK:")
+                for k, v in model_inputs.items():
+                    if torch.is_tensor(v):
+                        logger.info(f"  {k}: device={v.device}, dtype={v.dtype}, shape={v.shape}")
+                    else:
+                        logger.info(f"  {k}: {type(v)} = {v}")
+                
+                logger.info("🔥 EXECUTING MODEL FORWARD PASS NOW...")
+                try:
+                    outputs = actual_model(**model_inputs)
+                    logger.info("✅ FORWARD PASS COMPLETED SUCCESSFULLY!")
+                    logger.info(f"📤 MODEL OUTPUTS: {type(outputs)}")
+                    if hasattr(outputs, 'keys'):
+                        logger.info(f"   Output keys: {list(outputs.keys())}")
+                        for k, v in outputs.items():
+                            if torch.is_tensor(v):
+                                logger.info(f"   {k}: {v.shape} {v.dtype}")
+                except Exception as e:
+                    logger.error(f"💥 FORWARD PASS FAILED: {str(e)}")
+                    logger.error(f"💥 Error type: {type(e).__name__}")
+                    import traceback
+                    logger.error(f"💥 Full traceback:\n{traceback.format_exc()}")
+                    raise e
                 
                 # Extract labels separately for manual loss computation
                 text_labels = sup["text_labels"]
