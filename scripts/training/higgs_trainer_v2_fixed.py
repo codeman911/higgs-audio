@@ -332,7 +332,9 @@ class HiggsAudioTrainer(Trainer):
         # Ensure all inputs are on the same device
         for key, value in model_inputs.items():
             if isinstance(value, torch.Tensor):
-                model_inputs[key] = value.to(model.device)
+                # Fix for DataParallel: use next(model.parameters()).device instead of model.device
+                device = next(model.parameters()).device
+                model_inputs[key] = value.to(device)
         
         # Forward pass - use model's built-in loss (official approach)
         outputs = model(**model_inputs)
