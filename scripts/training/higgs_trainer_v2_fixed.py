@@ -226,90 +226,6 @@ class InferenceStyleDatasetForTrainer(Dataset):
             return self.__getitem__((idx + 1) % len(self))
 
 
-class HiggsAudioModelWrapper(nn.Module):
-    """
-    Model wrapper that handles cross-modal conditioning and audio attention
-    Based on official pattern but with your advanced capabilities
-    """
-    
-    def __init__(self, model_path: str, device: str = 'cuda'):
-        super().__init__()
-        
-        # Load model and config
-        self.config = HiggsAudioConfig.from_pretrained(model_path)
-        self.model = HiggsAudioModel.from_pretrained(model_path, config=self.config)
-        
-        # CRITICAL: Enable cross-modal conditioning (your advancement)
-        if not self.config.use_audio_out_self_attention:
-            logger.info("🔧 ENABLING CROSS-MODAL CONDITIONING: Setting use_audio_out_self_attention=True")
-            self.config.use_audio_out_self_attention = True
-            self.model.use_audio_out_self_attention = True
-            
-            # Rebuild layers with audio attention modules
-            self._rebuild_layers_with_audio_attention()
-        
-        self.device = device
-        self.to(device)
-    
-    def _rebuild_layers_with_audio_attention(self):
-        """Rebuild decoder layers with audio attention modules enabled"""
-        logger.info("🏗️  REBUILDING LAYERS: Adding audio attention modules for cross-modal conditioning")
-        
-        from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioDualFFNDecoderLayer
-        
-        # Rebuild layers with audio attention
-        new_layers = nn.ModuleList()
-        for i, layer in enumerate(self.model.layers):
-            new_layer = HiggsAudioDualFFNDecoderLayer(
-                self.config,
-                layer_idx=i,
-                fast_forward=False,
-                use_audio_attention=True  # Enable audio attention
-            )
-            
-            # Copy existing weights
-            new_layer.load_state_dict(layer.state_dict(), strict=False)
-            new_layers.append(new_layer)
-        
-        self.model.layers = new_layers
-        logger.info(f"✅ CROSS-MODAL CONDITIONING: Rebuilt {len(new_layers)} layers with audio attention")
-    
-    def forward(self, **kwargs):
-        # CRITICAL DEBUG: Log exactly what we receive
-        print(f"🔍 MODEL WRAPPER RECEIVED: {list(kwargs.keys())}")
-        print(f"🔍 'labels' in kwargs: {'labels' in kwargs}")
-        
-        # CRITICAL: DataParallel bypasses compute_loss and calls this directly with 'labels'
-        # We must handle the conversion here as a safety net
-        if 'labels' in kwargs:
-            print(f"🚨 CONVERTING 'labels' to 'label_ids'")
-            kwargs['label_ids'] = kwargs.pop('labels')
-            print(f"🔍 AFTER CONVERSION: {list(kwargs.keys())}")
-        
-        # ADDITIONAL SAFETY: Remove any other unexpected parameters
-        expected_params = {
-            'input_ids', 'inputs_embeds', 'attention_mask', 'audio_features', 
-            'audio_feature_attention_mask', 'audio_in_ids', 'audio_in_ids_start',
-            'audio_out_ids', 'audio_out_ids_start', 'audio_out_ids_start_group_loc',
-            'label_ids', 'label_audio_ids', 'past_key_values', 'use_cache',
-            'output_attentions', 'output_hidden_states', 'output_audio_hidden_states',
-            'return_dict', 'cache_position', 'cache_audio_discrete_codes_mask',
-            'past_key_values_buckets', 'reward'
-        }
-        
-        # Filter to only expected parameters
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k in expected_params}
-        
-        print(f"🔍 FILTERED KWARGS: {list(filtered_kwargs.keys())}")
-        print(f"🔍 'labels' in filtered_kwargs: {'labels' in filtered_kwargs}")
-        
-        if 'labels' in filtered_kwargs:
-            print(f"❌ CRITICAL ERROR: 'labels' STILL in filtered_kwargs!")
-            raise ValueError("Labels still in filtered kwargs after filtering!")
-        
-        return self.model(**filtered_kwargs)
-
-
 class HiggsAudioTrainer(Trainer):
     """
     Custom trainer combining official stability with your cross-modal conditioning
@@ -420,6 +336,19 @@ class HiggsAudioTrainer(Trainer):
             inputs.pop('labels')
         
         return inputs
+    
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        """
+        Override training_step to ensure 'labels' never reaches the model
+        """
+        # CRITICAL FIX: Remove 'labels' from inputs before any processing
+        if hasattr(inputs, 'labels'):
+            delattr(inputs, 'labels')
+        elif isinstance(inputs, dict) and 'labels' in inputs:
+            inputs.pop('labels')
+        
+        # Call parent training_step with cleaned inputs
+        return super().training_step(model, inputs, num_items_in_batch)
 
 
 def setup_lora_config(model: nn.Module, lora_config: Dict) -> nn.Module:
@@ -454,16 +383,52 @@ def setup_lora_config(model: nn.Module, lora_config: Dict) -> nn.Module:
     
     # CRITICAL FIX: Apply LoRA to the underlying model, not the wrapper
     # This avoids PEFT's automatic label handling
-    if hasattr(model, 'model'):
-        # Apply PEFT to the underlying HiggsAudioModel directly
-        model.model = get_peft_model(model.model, peft_config)
-        logger.info("🔧 APPLIED PEFT TO: model.model (underlying HiggsAudioModel)")
-    else:
-        model = get_peft_model(model, peft_config)
-        logger.info("🔧 APPLIED PEFT TO: model (direct)")
+    model = get_peft_model(model, peft_config)
+    logger.info("🔧 APPLIED PEFT TO: model (direct)")
     
     model = model.to(device)
     return model
+
+
+def create_model_and_tokenizer(args):
+    """
+    Create model and tokenizer - following official approach without wrapper
+    """
+    # Load model and tokenizer
+    tokenizer = HiggsAudioTokenizer.from_pretrained(
+        args.tokenizer_path or args.model_path,
+        trust_remote_code=True
+    )
+    
+    model = HiggsAudioModel.from_pretrained(
+        args.model_path,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16
+    )
+    
+    # Enable audio attention for cross-modal conditioning
+    if not model.config.use_audio_out_self_attention:
+        logger.info("🔧 ENABLING: use_audio_out_self_attention for cross-modal conditioning")
+        model.config.use_audio_out_self_attention = True
+        
+        # Rebuild layers with audio attention
+        new_layers = nn.ModuleList()
+        for i, layer in enumerate(model.layers):
+            new_layer = HiggsAudioDualFFNDecoderLayer(
+                model.config,
+                layer_idx=i,
+                fast_forward=False,
+                use_audio_attention=True  # Enable audio attention
+            )
+            
+            # Copy existing weights
+            new_layer.load_state_dict(layer.state_dict(), strict=False)
+            new_layers.append(new_layer)
+        
+        model.layers = new_layers
+        logger.info(f"✅ CROSS-MODAL CONDITIONING: Rebuilt {len(new_layers)} layers with audio attention")
+    
+    return model, tokenizer
 
 
 def main():
@@ -513,16 +478,12 @@ def main():
     if not args.tokenizer_path:
         args.tokenizer_path = args.model_path
     
-    # Load tokenizer and audio tokenizer
-    logger.info(f"Loading tokenizer from {args.tokenizer_path}")
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
+    # Load model and tokenizer - OFFICIAL APPROACH (no wrapper)
+    logger.info(f"Loading model from {args.model_path}")
+    model, tokenizer = create_model_and_tokenizer(args)
     
     logger.info(f"Loading audio tokenizer from {args.audio_tokenizer_path}")
     audio_tokenizer = load_higgs_audio_tokenizer(args.audio_tokenizer_path)
-    
-    # Load model with wrapper (official pattern + your improvements)
-    logger.info(f"Loading model from {args.model_path}")
-    model = HiggsAudioModelWrapper(args.model_path)
     
     # Setup LoRA (official approach extended for audio attention)
     if args.use_lora:
@@ -618,12 +579,7 @@ def main():
     # Save LoRA adapters separately
     if args.use_lora:
         lora_output_dir = os.path.join(args.output_dir, "lora_adapters")
-        if hasattr(model, 'model') and hasattr(model.model, 'text_model'):
-            model.model.text_model.save_pretrained(lora_output_dir)
-        elif hasattr(model, 'model'):
-            model.model.save_pretrained(lora_output_dir)
-        else:
-            model.save_pretrained(lora_output_dir)
+        model.save_pretrained(lora_output_dir)
         logger.info(f"✅ LORA SAVED: LoRA adapters saved to {lora_output_dir}")
 
 
