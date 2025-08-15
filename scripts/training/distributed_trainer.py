@@ -55,80 +55,18 @@ class SimpleDataset(Dataset):
         return self.samples[idx]
 
 
-# CRITICAL FIX: Patch original prepare_chatml_sample to mask audio tokens in text labels
-def fixed_prepare_chatml_sample_minimal(sample, tokenizer):
-    """
-    MINIMAL FIX: Use original prepare_chatml_sample but post-process to mask audio tokens
-    This prevents <|audio_eos|> contamination without breaking the working architecture
-    """
-    # Call original function
-    input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
-    
-    if input_tokens and label_tokens:
-        # Get audio special token IDs
-        audio_eos_id = tokenizer.encode("<|audio_eos|>", add_special_tokens=False)
-        audio_bos_id = tokenizer.encode("<|audio_bos|>", add_special_tokens=False)  
-        audio_out_bos_id = tokenizer.encode("<|audio_out_bos|>", add_special_tokens=False)
-        audio_id = tokenizer.encode("<|AUDIO|>", add_special_tokens=False)
-        audio_out_id = tokenizer.encode("<|AUDIO_OUT|>", add_special_tokens=False)
-        
-        audio_special_tokens = set()
-        if audio_eos_id: audio_special_tokens.update(audio_eos_id)
-        if audio_bos_id: audio_special_tokens.update(audio_bos_id)
-        if audio_out_bos_id: audio_special_tokens.update(audio_out_bos_id)
-        if audio_id: audio_special_tokens.update(audio_id)
-        if audio_out_id: audio_special_tokens.update(audio_out_id)
-        
-        # Mask audio special tokens in text labels (but keep in input_tokens)
-        for i in range(len(label_tokens)):
-            if i < len(input_tokens) and input_tokens[i] in audio_special_tokens:
-                label_tokens[i] = -100  # Mask audio tokens
-    
-    return input_tokens, label_tokens, audio_contents, speaker_id
-
-
-def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000):
-    """Convert raw dict samples to ChatMLDatasetSample objects for the collator"""
+def custom_collate_fn(batch, tokenizer, audio_tokenizer, collator):
+    """Convert raw dict samples to ChatMLDatasetSample objects, then use HiggsAudioSampleCollator - PROVEN WORKING VERSION"""
     chatml_samples = []
     
     for sample in batch:
-        # Convert raw dict to proper chatml structure
-        messages = sample.get('messages', [])
-        chatml_dict = {"messages": []}
+        # Process each sample to create ChatMLDatasetSample - USE ORIGINAL prepare_chatml_sample (NO PATCHES!)
+        input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
         
-        for msg in messages:
-            role = msg.get('role')
-            content = msg.get('content')
-            
-            if role and content:
-                if isinstance(content, list):
-                    # Multi-modal content
-                    processed_content = []
-                    for item in content:
-                        if item.get('type') == 'text':
-                            processed_content.append({"type": "text", "text": item.get('text', '')})
-                        elif item.get('type') == 'audio':
-                            audio_url = item.get('audio_url', '')
-                            if audio_url:
-                                processed_content.append({"type": "audio", "audio_url": audio_url})
-                    chatml_dict["messages"].append({"role": role, "content": processed_content})
-                else:
-                    # Simple text content
-                    chatml_dict["messages"].append({"role": role, "content": content})
+        if input_tokens is None or label_tokens is None:
+            continue  # Skip invalid samples
         
-        # Use our fixed tokenization
-        try:
-            input_tokens, label_tokens, audio_contents, speaker_id = fixed_prepare_chatml_sample_minimal(
-                chatml_dict, tokenizer
-            )
-        except Exception as e:
-            logger.warning(f"Failed to prepare sample: {e}")
-            input_tokens = [tokenizer.pad_token_id]
-            label_tokens = [-100]
-            audio_contents = []
-            speaker_id = 0
-        
-        # Process audio
+        # Process audio using audio_tokenizer - EXACT SAME AS WORKING train_higgs_lora.py
         audio_ids_list = []
         audio_waveforms_list = []
         
@@ -139,52 +77,38 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
                     try:
                         # Tokenize audio
                         audio_codes = audio_tokenizer.encode(audio_path)
-                        if audio_codes.is_cuda:
-                            audio_codes = audio_codes.cpu()
-                        # Ensure 8 codebooks
-                        if audio_codes.shape[0] != 8:
-                            if audio_codes.shape[0] > 8:
-                                audio_codes = audio_codes[:8, :]
-                            else:
-                                padding = torch.zeros(8 - audio_codes.shape[0], audio_codes.shape[1])
-                                audio_codes = torch.cat([audio_codes, padding], dim=0)
-                        audio_ids_list.append(audio_codes)
                         
                         # Load waveform
-                        waveform, sr = torchaudio.load(audio_path)
-                        if sr != sample_rate:
-                            waveform = torchaudio.transforms.Resample(sr, sample_rate)(waveform)
-                        if waveform.shape[0] > 1:
-                            waveform = waveform.mean(dim=0, keepdim=True)
-                        waveform = waveform.squeeze(0)
+                        waveform, sr = librosa.load(audio_path, sr=24000, mono=True)
+                        waveform = torch.tensor(waveform, dtype=torch.float32)
+                        
+                        audio_ids_list.append(audio_codes)
                         audio_waveforms_list.append(waveform)
                         
                     except Exception as e:
                         logger.warning(f"Failed to process audio {audio_path}: {e}")
         
-        # Create tensors
+        # Create proper audio concatenation for ChatMLDatasetSample
         if audio_ids_list:
-            audio_ids_concat = torch.cat(audio_ids_list, dim=1)
-            audio_ids_start = torch.cumsum(
-                torch.tensor([0] + [ids.shape[1] for ids in audio_ids_list]), dim=0
-            )
-        else:
-            audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)
-            audio_ids_start = torch.tensor([0], dtype=torch.long)
-        
-        if audio_waveforms_list:
+            # Concatenate audio codes: shape (num_codebooks, total_length)
+            audio_ids_concat = torch.cat([audio_codes for audio_codes in audio_ids_list], dim=1)
+            audio_ids_start = torch.tensor([0] + [audio_codes.shape[1] for audio_codes in audio_ids_list[:-1]]).cumsum(dim=0)
+            
+            # Concatenate audio waveforms
             audio_waveforms_concat = torch.cat(audio_waveforms_list, dim=0)
-            lengths = [len(wv) for wv in audio_waveforms_list]
-            audio_waveforms_start = torch.tensor([0] + lengths[:-1]).cumsum(dim=0)
-            audio_sample_rate = torch.tensor([sample_rate] * len(audio_waveforms_list))
-            audio_speaker_indices = torch.zeros(len(audio_waveforms_list), dtype=torch.long)
+            audio_waveforms_start = torch.tensor([0] + [wv.shape[0] for wv in audio_waveforms_list[:-1]]).cumsum(dim=0)
+            audio_sample_rate = torch.tensor([24000] * len(audio_waveforms_list))
+            audio_speaker_indices = torch.tensor([speaker_id or 0] * len(audio_waveforms_list), dtype=torch.long)
         else:
-            audio_waveforms_concat = torch.tensor([])
-            audio_waveforms_start = torch.tensor([0], dtype=torch.long)
-            audio_sample_rate = torch.tensor([sample_rate])
-            audio_speaker_indices = torch.tensor([0], dtype=torch.long)
+            # Empty audio tensors - EXACT SAME AS WORKING SCRIPT
+            audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)  # 8 codebooks
+            audio_ids_start = torch.tensor([], dtype=torch.long)
+            audio_waveforms_concat = torch.zeros((0,), dtype=torch.float32)
+            audio_waveforms_start = torch.tensor([], dtype=torch.long)
+            audio_sample_rate = torch.tensor([24000])
+            audio_speaker_indices = torch.tensor([speaker_id or 0], dtype=torch.long)
         
-        # Create ChatMLDatasetSample object
+        # Create proper ChatMLDatasetSample for original collator
         chatml_sample = ChatMLDatasetSample(
             input_ids=torch.tensor(input_tokens, dtype=torch.long),
             label_ids=torch.tensor(label_tokens, dtype=torch.long),
@@ -198,8 +122,28 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
         
         chatml_samples.append(chatml_sample)
     
-    # Now call original collator with proper ChatMLDatasetSample objects
+    if not chatml_samples:
+        return None  # Skip empty batches
+        
+    # Now use the original HiggsAudioSampleCollator - THE PROVEN WORKING COLLATOR
     return collator(chatml_samples)
+
+
+def setup_collator(config, tokenizer, whisper_processor):
+    """Setup the original HiggsAudioSampleCollator with proper parameters - NO CUSTOM REPLACEMENTS"""
+    return HiggsAudioSampleCollator(
+        whisper_processor=whisper_processor,
+        audio_in_token_id=config.audio_in_token_idx,
+        audio_out_token_id=config.audio_out_token_idx,
+        audio_stream_bos_id=config.audio_stream_bos_id,
+        audio_stream_eos_id=config.audio_stream_eos_id,
+        encode_whisper_embed=config.encode_whisper_embed,
+        pad_token_id=config.pad_token_id,
+        return_audio_in_tokens=config.encode_audio_in_tokens,
+        use_delay_pattern=config.use_delay_pattern,
+        round_to=8,
+        audio_num_codebooks=8
+    )
 
 
 def main():
@@ -298,23 +242,7 @@ def main():
     logger.info("Initializing collator...")
     whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
     
-    collator = HiggsAudioSampleCollator(
-        whisper_processor=whisper_processor,
-        audio_in_token_id=config.audio_in_token_idx,
-        audio_out_token_id=config.audio_out_token_idx,
-        audio_stream_bos_id=config.audio_stream_bos_id,
-        audio_stream_eos_id=config.audio_stream_eos_id,
-        encode_whisper_embed=config.encode_whisper_embed,
-        pad_token_id=config.pad_token_id,
-        return_audio_in_tokens=config.encode_audio_in_tokens,
-        use_delay_pattern=config.use_delay_pattern,
-        round_to=8,
-        audio_num_codebooks=8
-    )
-    
-    # CRITICAL FIX: Monkey patch prepare_chatml_sample to use our fixed version
-    import boson_multimodal.dataset.chatml_dataset
-    boson_multimodal.dataset.chatml_dataset.prepare_chatml_sample = fixed_prepare_chatml_sample_minimal
+    collator = setup_collator(config, tokenizer, whisper_processor)
     
     # Load datasets
     logger.info("Loading datasets...")
@@ -329,7 +257,7 @@ def main():
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=lambda batch: simple_collate_fn(batch, tokenizer, audio_tokenizer, collator),
+        collate_fn=lambda batch: custom_collate_fn(batch, tokenizer, audio_tokenizer, collator),
         pin_memory=True,
         drop_last=True
     )
@@ -341,7 +269,7 @@ def main():
         num_workers=args.num_workers // 2,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=lambda batch: simple_collate_fn(batch, tokenizer, audio_tokenizer, collator),
+        collate_fn=lambda batch: custom_collate_fn(batch, tokenizer, audio_tokenizer, collator),
         pin_memory=True,
         drop_last=False
     )
