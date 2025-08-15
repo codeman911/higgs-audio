@@ -383,6 +383,18 @@ class HiggsAudioTrainer(Trainer):
             masked_labels[masked_labels == token_id] = -100
         
         return masked_labels
+    
+    def _prepare_inputs(self, inputs):
+        """Override to remove 'labels' that HuggingFace automatically adds"""
+        inputs = super()._prepare_inputs(inputs)
+        
+        # SIMPLE FIX: Remove 'labels' if HuggingFace added it
+        if hasattr(inputs, 'labels'):
+            delattr(inputs, 'labels')
+        elif isinstance(inputs, dict) and 'labels' in inputs:
+            inputs.pop('labels')
+        
+        return inputs
 
 
 def setup_lora_config(model: nn.Module, lora_config: Dict) -> nn.Module:
