@@ -83,9 +83,12 @@ class ExtendedHiggsAudioSampleCollator:
         # Convert to extended batch input for Trainer compatibility
         extended_batch = ExtendedHiggsAudioBatchInput()
         
-        # Copy all attributes from base batch
+        # Copy all attributes from base batch, but SKIP 'labels' completely
         for attr_name in dir(batch_input):
             if not attr_name.startswith('_') and not callable(getattr(batch_input, attr_name)):
+                # CRITICAL FIX: Skip 'labels' completely - HiggsAudio doesn't expect it
+                if attr_name == 'labels':
+                    continue  # Skip labels entirely
                 setattr(extended_batch, attr_name, getattr(batch_input, attr_name))
         
         return extended_batch
