@@ -65,7 +65,7 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
     
     chatml_samples = []
     
-    for sample in batch:
+    for sample_idx, sample in enumerate(batch):
         # Use the existing ChatML structure as-is (it's already correctly formatted)
         # The sample already contains proper messages structure from zero-shot processing
         
@@ -74,8 +74,23 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
         ref_transcript = misc.get('ref_transcript', '')
         target_text = misc.get('target_transcript', '')  # Updated to match corrected data processor
         
+        # Extract speaker info with robust fallback handling
+        misc_data = sample.get('misc', {})
+        speaker_id = sample.get('speaker', misc_data.get('sample_id', ''))
+        
+        # Convert string speaker_id to numeric hash for tensor compatibility
+        if isinstance(speaker_id, str) and speaker_id:
+            # Use hash of speaker string for numeric ID (consistent across runs)
+            speaker_numeric_id = abs(hash(speaker_id)) % 10000  # Keep it reasonable size
+        elif isinstance(speaker_id, (int, float)):
+            # If already numeric, use it directly
+            speaker_numeric_id = int(speaker_id)
+        else:
+            # Fallback: use sample index as speaker ID if no other info available
+            speaker_numeric_id = sample_idx if 'sample_idx' in locals() else 0
+        
         # Process sample and get inputs/labels
-        input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
+        input_tokens, label_tokens, audio_contents, _ = prepare_chatml_sample(sample, tokenizer)
         
         # CRITICAL FIX: Lower threshold to prevent empty batches (was 64, now 8)
         target_token_count = len([t for t in label_tokens if t != -100])
@@ -132,7 +147,7 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
             audio_waveforms_concat=audio_wv,
             audio_waveforms_start=audio_wv_start,
             audio_sample_rate=torch.tensor([sample_rate], dtype=torch.float32),
-            audio_speaker_indices=torch.tensor([speaker_id or 0], dtype=torch.long)
+            audio_speaker_indices=torch.tensor([speaker_numeric_id], dtype=torch.long)
         )
         
         chatml_samples.append(chatml_sample)
@@ -554,7 +569,52 @@ def main():
                 # Step 4: Use prepare_supervision for clean batch processing
                 sup = prepare_supervision(batch, tokenizer, device, logger)
                 
-                # Step 4: Enforce minimum assistant tokens
+                # Strategic ChatML verification logging every 50 steps
+                if global_step % 50 == 0 and global_step < 1000:  # Strategic - not every sample
+                    logger.info(f"🔍 STRATEGIC CHATML DEBUG - Step {global_step}")
+                    logger.info("=" * 80)
+                    
+                    # Log raw ChatML conversation structure from batch
+                    if hasattr(batch, '__len__') and len(batch) > 0:
+                        sample_item = batch[0] if hasattr(batch, '__getitem__') else batch
+                        if hasattr(sample_item, 'messages'):
+                            logger.info("📋 FULL CHATML CONVERSATION:")
+                            for i, message in enumerate(sample_item.messages):
+                                logger.info(f"  Message {i} - Role: {message.role}")
+                                if hasattr(message, 'content') and isinstance(message.content, list):
+                                    for j, content_item in enumerate(message.content):
+                                        if hasattr(content_item, 'type'):
+                                            if content_item.type == 'text':
+                                                text_preview = content_item.text[:100] if len(content_item.text) > 100 else content_item.text
+                                                logger.info(f"    Content {j} [text]: {text_preview}...")
+                                            elif content_item.type == 'audio':
+                                                audio_path = getattr(content_item, 'audio_url', 'No URL')
+                                                duration = getattr(content_item, 'duration', 'Unknown')
+                                                logger.info(f"    Content {j} [audio]: {Path(audio_path).name} (duration: {duration}s)")
+                    
+                    # Log tokenized conversation structure 
+                    logger.info(f"📊 TOKENIZED INPUT VERIFICATION:")
+                    logger.info(f"   input_ids shape: {sup['input_ids'].shape}")
+                    
+                    # Show sample of tokenized conversation (first sample only)
+                    if sup['input_ids'].size(0) > 0:
+                        input_sample = tokenizer.decode(sup['input_ids'][0], skip_special_tokens=False)
+                        logger.info(f"📝 TOKENIZED CONVERSATION (first 200 chars):")
+                        logger.info(f"   {input_sample[:200]}...")
+                    
+                    # Verify reference vs target audio separation
+                    if 'audio_in_ids' in sup and sup['audio_in_ids'] is not None:
+                        logger.info(f"🎵 REFERENCE AUDIO (conditioning): shape={sup['audio_in_ids'].shape}")
+                    if 'audio_labels' in sup and sup['audio_labels'] is not None:
+                        logger.info(f"🎯 TARGET AUDIO (for loss): shape={sup['audio_labels'].shape}")
+                        valid_audio_tokens = (sup['audio_labels'] != -100).sum().item()
+                        total_audio_tokens = sup['audio_labels'].numel()
+                        logger.info(f"   Valid audio tokens: {valid_audio_tokens}/{total_audio_tokens}")
+                    
+                    logger.info("✅ CHATML STRUCTURE VERIFIED")
+                    logger.info("=" * 80)
+
+                # Skip validation batches with insufficient text
                 B = sup["input_ids"].size(0)
                 valid_text = non_ignore_count(sup["text_labels"])
                 per_sample = valid_text / max(1, B)
@@ -563,7 +623,49 @@ def main():
                     logger.error(f" INSUFFICIENT TEXT SUPERVISION: {per_sample:.1f} tokens/sample < {MIN_ASSISTANT_TOKENS} required for Arabic!")
                     continue  # Skip starved batches
                 
-                # Complete debug logging after labels are extracted
+                # DEBUG: Show FULL ChatML conversation every 50 steps for validation
+                if global_step % 50 == 0 and global_step < 1000:  # Strategic logging - not every sample
+                    logger.info(f"🔍 STRATEGIC DEBUG - Step {global_step}")
+                    logger.info("=" * 80)
+                    
+                    # Log raw ChatML conversation structure
+                    sample_item = batch[0] if hasattr(batch, '__getitem__') and len(batch) > 0 else None
+                    if hasattr(sample_item, 'messages'):
+                        logger.info("📋 FULL CHATML CONVERSATION:")
+                        for i, message in enumerate(sample_item.messages):
+                            logger.info(f"  Message {i} - Role: {message.role}")
+                            if hasattr(message, 'content') and isinstance(message.content, list):
+                                for j, content_item in enumerate(message.content):
+                                    if hasattr(content_item, 'type'):
+                                        if content_item.type == 'text':
+                                            logger.info(f"    Content {j} [text]: {content_item.text[:100]}...")
+                                        elif content_item.type == 'audio':
+                                            audio_path = getattr(content_item, 'audio_url', 'No URL')
+                                            logger.info(f"    Content {j} [audio]: {Path(audio_path).name}")
+                    
+                    # Log tokenized input structure
+                    logger.info(f"📊 TOKENIZED INPUT STRUCTURE:")
+                    logger.info(f"   input_ids shape: {sup['input_ids'].shape}")
+                    
+                    # Show sample of actual input text (first sample only)
+                    input_sample = tokenizer.decode(sup['input_ids'][0], skip_special_tokens=False)
+                    logger.info(f"📝 TOKENIZED CONVERSATION (first 200 chars):")
+                    logger.info(f"   {input_sample[:200]}...")
+                    
+                    # Verify reference vs target audio separation
+                    if 'audio_in_ids' in sup and sup['audio_in_ids'] is not None:
+                        logger.info(f"🎵 REFERENCE AUDIO (for conditioning): shape={sup['audio_in_ids'].shape}")
+                    if 'audio_labels' in sup and sup['audio_labels'] is not None:
+                        logger.info(f"🎯 TARGET AUDIO (for loss): shape={sup['audio_labels'].shape}")
+                        # Count non-ignore audio tokens
+                        valid_audio_tokens = (sup['audio_labels'] != -100).sum().item()
+                        total_audio_tokens = sup['audio_labels'].numel()
+                        logger.info(f"   Valid audio tokens: {valid_audio_tokens}/{total_audio_tokens}")
+                    
+                    logger.info("✅ STRATEGIC DEBUG COMPLETE")
+                    logger.info("=" * 80)
+
+                # Existing debug logging for first step
                 if global_step == 0:
                     # 5. Verify labels are separate (not passed to model)
                     logger.info(f"✅ TEXT LABELS: shape={sup['text_labels'].shape} (separate from model)")
