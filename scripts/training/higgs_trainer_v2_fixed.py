@@ -393,14 +393,16 @@ def setup_lora_config(model: nn.Module, lora_config: Dict) -> nn.Module:
 
 def create_model_and_tokenizer(args):
     """
-    Create model and tokenizer - following official approach without wrapper
+    Create model and tokenizer - following OFFICIAL WORKING approach from train_v1.py
     """
-    # Load model and tokenizer
-    tokenizer = HiggsAudioTokenizer.from_pretrained(
+    # Load TEXT tokenizer using AutoTokenizer (CORRECT METHOD)
+    logger.info(f"Loading TEXT tokenizer from {args.tokenizer_path or args.model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer_path or args.model_path,
         trust_remote_code=True
     )
     
+    # Load model
     model = HiggsAudioModel.from_pretrained(
         args.model_path,
         trust_remote_code=True,
