@@ -191,11 +191,14 @@ class ChatMLDatasetForTrainer(Dataset):
             chatml_sample = ChatMLSample(messages=messages)
             
             # Process ChatML sample
-            input_tokens, label_tokens, audio_contents, audio_label_contents, _ = prepare_chatml_sample(
-                chatml_sample, self.tokenizer
-            )
+            result = prepare_chatml_sample(chatml_sample, self.tokenizer)
+            if result is None or len(result) != 4:
+                logger.error(f"Invalid result from prepare_chatml_sample: {result}")
+                return self.__getitem__((idx + 1) % len(self))
             
-            # Process context audio (reference audio)
+            input_tokens, label_tokens, audio_contents, speaker_id = result
+            
+            # Process context audio (reference audio for voice conditioning)
             context_audio_tokens = []
             for audio_content in (audio_contents or []):
                 if audio_content.audio_url:
@@ -203,13 +206,20 @@ class ChatMLDatasetForTrainer(Dataset):
                     if tokens is not None: 
                         context_audio_tokens.append(tokens)
             
-            # Process label audio (target audio)
+            # Handle your ChatML format - extract target audio from assistant messages
             label_audio_tokens = []
-            for audio_label_content in (audio_label_contents or []):
-                if audio_label_content.audio_url:
-                    tokens = self._encode_audio_tokens(audio_label_content.audio_url)
-                    if tokens is not None: 
-                        label_audio_tokens.append(tokens)
+            target_audio_path = None
+            
+            # Look for target audio in assistant messages (your zero-shot format)
+            for msg in sample.get("messages", []):
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", "")
+                    if isinstance(content, dict) and content.get("type") == "audio":
+                        target_audio_path = content.get("audio_url", "")
+                        if target_audio_path:
+                            tokens = self._encode_audio_tokens(target_audio_path)
+                            if tokens is not None:
+                                label_audio_tokens.append(tokens)
             
             # Concatenate audio tokens
             if context_audio_tokens:
@@ -221,9 +231,9 @@ class ChatMLDatasetForTrainer(Dataset):
             
             label_audio_ids = torch.cat(label_audio_tokens, dim=1) if label_audio_tokens else None
             
-            # Load reference audio waveform for Whisper
+            # Load reference audio waveform for Whisper (first audio in context)
             ref_audio_path = None
-            if audio_contents and audio_contents[0].audio_url:
+            if audio_contents and len(audio_contents) > 0 and audio_contents[0].audio_url:
                 ref_audio_path = audio_contents[0].audio_url
             
             if ref_audio_path:
