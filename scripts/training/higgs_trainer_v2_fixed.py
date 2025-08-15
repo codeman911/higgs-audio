@@ -452,13 +452,15 @@ def setup_lora_config(model: nn.Module, lora_config: Dict) -> nn.Module:
     
     model = model.to(device)
     
-    # Apply LoRA - use official pattern
-    if hasattr(model, 'model') and hasattr(model.model, 'text_model'):
-        model.model.text_model = get_peft_model(model.model.text_model, peft_config)
-    elif hasattr(model, 'model'):
+    # CRITICAL FIX: Apply LoRA to the underlying model, not the wrapper
+    # This avoids PEFT's automatic label handling
+    if hasattr(model, 'model'):
+        # Apply PEFT to the underlying HiggsAudioModel directly
         model.model = get_peft_model(model.model, peft_config)
+        logger.info("🔧 APPLIED PEFT TO: model.model (underlying HiggsAudioModel)")
     else:
         model = get_peft_model(model, peft_config)
+        logger.info("🔧 APPLIED PEFT TO: model (direct)")
     
     model = model.to(device)
     return model
