@@ -63,6 +63,35 @@ class SimpleDataset(Dataset):
         return self.samples[idx]
 
 
+def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator):
+    """SIMPLE collate function - convert dicts to ChatMLDatasetSample objects"""
+    chatml_samples = []
+    
+    for sample in batch:
+        # Process sample and get inputs/labels
+        input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
+        
+        # Create ChatMLDatasetSample with ALL required fields properly
+        chatml_sample = ChatMLDatasetSample(
+            input_ids=torch.tensor(input_tokens, dtype=torch.long),
+            label_ids=torch.tensor(label_tokens, dtype=torch.long),
+            # Proper dummy audio data
+            audio_ids_concat=torch.zeros((8, 10), dtype=torch.long),
+            audio_ids_start=torch.tensor([0], dtype=torch.long),
+            audio_waveforms_concat=torch.zeros(1000, dtype=torch.float32),
+            audio_waveforms_start=torch.tensor([0], dtype=torch.long), 
+            audio_sample_rate=torch.tensor([24000.0], dtype=torch.float32),
+            audio_speaker_indices=torch.tensor([0], dtype=torch.long),
+            # Add missing fields that collator might need
+            audio_label_ids_concat=None,
+            reward=None
+        )
+        chatml_samples.append(chatml_sample)
+    
+    # Now call original collator with proper objects
+    return collator(chatml_samples)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Higgs-Audio LoRA Training")
     
@@ -280,7 +309,7 @@ def main():
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=collator,  # Use original collator, not custom function
+        collate_fn=lambda batch: simple_collate_fn(batch, tokenizer, audio_tokenizer, collator),  # Use custom collate function
         pin_memory=True,  # H200 optimization
         drop_last=True    # Consistent batch sizes for speed
     )
@@ -292,7 +321,7 @@ def main():
         num_workers=args.num_workers // 2,  # Less workers for validation
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=collator,  # Use original collator, not custom function
+        collate_fn=lambda batch: simple_collate_fn(batch, tokenizer, audio_tokenizer, collator),  # Use custom collate function
         pin_memory=True,
         drop_last=False
     )
@@ -509,7 +538,7 @@ def main():
                     
                     # Log raw ChatML conversation structure from batch
                     if hasattr(batch, '__len__') and len(batch) > 0:
-                        sample_item = batch[0] if hasattr(batch, '__getitem__') else batch
+                        sample_item = batch[0] if hasattr(batch, '__getitem__') and len(batch) > 0 else batch
                         if hasattr(sample_item, 'messages'):
                             logger.info("📋 FULL CHATML CONVERSATION:")
                             for i, message in enumerate(sample_item.messages):
@@ -614,7 +643,7 @@ def main():
                     logger.info("=" * 80)
                     
                     # Log raw ChatML conversation structure
-                    sample_item = batch[0] if hasattr(batch, '__getitem__') and len(batch) > 0 else None
+                    sample_item = batch[0] if hasattr(batch, '__getitem__') and len(batch) > 0 else batch
                     if hasattr(sample_item, 'messages'):
                         logger.info("📋 FULL CHATML CONVERSATION:")
                         for i, message in enumerate(sample_item.messages):

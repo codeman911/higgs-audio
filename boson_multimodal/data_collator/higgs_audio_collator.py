@@ -154,46 +154,91 @@ class HiggsAudioSampleCollator:
         label_ids = None
         label_audio_ids = None
         
-        # ROBUST FIX: Convert all dict inputs to ChatMLDatasetSample objects
-        converted_batch = []
-        for item in batch:
-            if isinstance(item, dict):
-                # Convert dict to ChatMLDatasetSample
-                from boson_multimodal.dataset.chatml_dataset import prepare_chatml_sample
-                try:
-                    # Get tokenizer from somewhere - this is a hack but necessary
-                    # We'll need to pass tokenizer properly, but for now use a default
-                    input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(item, None)
-                    
-                    # Create minimal ChatMLDatasetSample
-                    sample = ChatMLDatasetSample(
-                        input_ids=torch.tensor(input_tokens, dtype=torch.long),
-                        label_ids=torch.tensor(label_tokens, dtype=torch.long) if label_tokens else None,
-                        audio_ids_concat=torch.zeros((8, 10), dtype=torch.long),
-                        audio_ids_start=torch.tensor([0], dtype=torch.long),
-                        audio_waveforms_concat=torch.zeros(1000, dtype=torch.float32),
-                        audio_waveforms_start=torch.tensor([0], dtype=torch.long),
-                        audio_sample_rate=torch.tensor([24000.0], dtype=torch.float32),
-                        audio_speaker_indices=torch.tensor([0], dtype=torch.long)
-                    )
-                    converted_batch.append(sample)
-                except:
-                    # If conversion fails, skip this sample
-                    continue
-            else:
-                # Already a ChatMLDatasetSample
-                converted_batch.append(item)
-        
-        # Use converted batch for the rest of processing
-        batch = converted_batch
-        
         if all([ele.label_ids is None for ele in batch]):
             return_labels = False
         else:
             return_labels = True
 
+        if self.encode_whisper_embed:
+            # Process each sample in the batch to handle long audio
+            # TODO(?) The implementation here can be optimized.
+            processed_batch = []
+            for i in range(len(batch)):
+                sample = batch[i]
+                audio_in_mask = sample.input_ids == self.audio_in_token_id
+                audio_in_indices = torch.where(audio_in_mask)[0]
+                audio_out_mask = sample.input_ids == self.audio_out_token_id
+
+                # Process each audio token and duplicate if needed
+                modified_input_ids = sample.input_ids
+                modified_labels = sample.label_ids if return_labels else None
+                modified_waveforms_concat = []
+                modified_waveforms_start = []
+                modified_sample_rate = []
+                offset = 0  # Track position changes from duplicating tokens
+                curr_wv_offset = 0
+
+                # Process input audio tokens
+                for idx, audio_idx in enumerate(audio_in_indices):
+                    # Get the audio for this token
+                    wv, sr = sample.get_wv(idx)  # Use idx since we want the original audio index
+                    if sr != self.whisper_processor.feature_extractor.sampling_rate:
+                        resampled_wv = librosa.resample(
+                            wv.cpu().numpy(),
+                            orig_sr=sr,
+                            target_sr=self.whisper_processor.feature_extractor.sampling_rate,
+                        )
+                    else:
+                        resampled_wv = wv.cpu().numpy()
+                    wv = torch.tensor(resampled_wv, device=wv.device)
+                    sr = self.whisper_processor.feature_extractor.sampling_rate
+
+                    # Process and duplicate tokens if necessary
+                    token_pos = audio_idx + offset
+                    modified_input_ids, modified_labels, num_chunks = self._process_and_duplicate_audio_tokens(
+                        modified_input_ids, token_pos, wv, sr, modified_labels
+                    )
+
+                    # Update audio data
+                    for chunk_idx in range(num_chunks):
+                        chunk_start = chunk_idx * self.chunk_size_samples
+                        chunk_end = min((chunk_idx + 1) * self.chunk_size_samples, len(wv))
+                        chunk_wv = wv[chunk_start:chunk_end]
+                        modified_waveforms_concat.append(chunk_wv)
+                        modified_waveforms_start.append(curr_wv_offset)
+                        curr_wv_offset += len(chunk_wv)
+                        modified_sample_rate.append(sr)
+
+                    # Update offset for next iteration
+                    offset += (num_chunks - 1) * 3  # Each new chunk adds 3 more tokens
+
+                # Create new sample with modified tokens and audio data
+                processed_sample = ChatMLDatasetSample(
+                    input_ids=modified_input_ids,
+                    label_ids=modified_labels if return_labels else sample.label_ids,
+                    audio_ids_concat=sample.audio_ids_concat,
+                    audio_ids_start=sample.audio_ids_start,
+                    audio_waveforms_concat=torch.cat(modified_waveforms_concat)
+                    if modified_waveforms_concat
+                    else sample.audio_waveforms_concat,
+                    audio_waveforms_start=torch.tensor(modified_waveforms_start, dtype=torch.long)
+                    if modified_waveforms_start
+                    else sample.audio_waveforms_start,
+                    audio_sample_rate=torch.tensor(modified_sample_rate)
+                    if modified_sample_rate
+                    else sample.audio_sample_rate,
+                    audio_speaker_indices=torch.tensor([]),
+                    # FIXME(sxjscience): The logic here is not correct for audio_label_ids_concat.
+                    audio_label_ids_concat=sample.audio_label_ids_concat,
+                )
+                # audio_in_chunk_len = len(torch.where(modified_input_ids == self.audio_in_token_id)[0])
+                # assert audio_in_chunk_len == processed_sample.num_audios(), f"Mismatch: audio_in_chunk_len={audio_in_chunk_len}, processed_sample.num_audios()={processed_sample.num_audios()}"
+                processed_batch.append(processed_sample)
+        else:
+            processed_batch = batch
+
         # Get the max sequence length based on processed batch
-        max_seq_length = _ceil_to_nearest(max([len(sample.input_ids) for sample in batch]), self.round_to)
+        max_seq_length = _ceil_to_nearest(max([len(sample.input_ids) for sample in processed_batch]), self.round_to)
 
         # Get the ids for audio-in and audio-out for each batch
         audio_in_wv_l = []
