@@ -571,10 +571,19 @@ def main():
                     # CRITICAL: Verify data flow for zero-shot TTS
                     logger.info("🔍 VERIFYING DATA FLOW FOR ZERO-SHOT TTS:")
                     
-                    # 1. Check reference text + target text in input_ids
+                    # 1. Check reference text + target text in input_ids - COMPLETE VERSION
                     if "input_ids" in model_inputs:
                         input_text = tokenizer.decode(model_inputs["input_ids"][0], skip_special_tokens=False)
-                        logger.info(f"📝 INPUT_IDS CONTENT (sample): {input_text[:200]}...")
+                        logger.info("📝 INPUT_IDS COMPLETE CONTENT:")
+                        logger.info("="*100)
+                        logger.info(f"{input_text}")
+                        logger.info("="*100)
+                        
+                        # Also decode a few samples to check consistency
+                        logger.info("📝 BATCH INPUT SAMPLES:")
+                        for i in range(min(3, model_inputs["input_ids"].shape[0])):
+                            sample_text = tokenizer.decode(model_inputs["input_ids"][i], skip_special_tokens=False)
+                            logger.info(f"SAMPLE {i}: {sample_text[:150]}...")  # First 150 chars of each sample
                     
                     # 2. Check reference audio conditioning
                     if "audio_in_ids" in model_inputs:
@@ -592,12 +601,6 @@ def main():
                     if "audio_features" in model_inputs:
                         audio_feat = model_inputs["audio_features"]
                         logger.info(f"🎵 AUDIO FEATURES: shape={audio_feat.shape}, mean={audio_feat.mean().item():.4f}")
-                    
-                    # 5. Verify labels are separate (not passed to model)
-                    logger.info(f"✅ TEXT LABELS: shape={text_labels.shape} (separate from model)")
-                    logger.info(f"✅ AUDIO LABELS: shape={audio_labels.shape} (separate from model)")
-                    
-                    logger.info("🔍 DATA FLOW VERIFICATION COMPLETE")
                 
                 # Get the underlying model (handle PEFT wrapping) - CRITICAL FIX!
                 if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
