@@ -153,7 +153,17 @@ class HiggsAudioSampleCollator:
 
         label_ids = None
         label_audio_ids = None
-        if all([ele.label_ids is None for ele in batch]):
+        
+        # ROBUST FIX: Handle both dict and ChatMLDatasetSample inputs
+        def get_label_ids(ele):
+            if hasattr(ele, 'label_ids'):
+                return ele.label_ids
+            elif isinstance(ele, dict) and 'label_ids' in ele:
+                return ele['label_ids']
+            else:
+                return None
+        
+        if all([get_label_ids(ele) is None for ele in batch]):
             return_labels = False
         else:
             return_labels = True
