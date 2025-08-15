@@ -199,7 +199,7 @@ class InferenceStyleDatasetForTrainer(Dataset):
                 label_ids=torch.tensor(label_tokens, dtype=torch.long),
                 audio_ids_concat=audio_ids_concat,
                 audio_ids_start=audio_ids_start,
-                label_audio_ids=None,  # Will be extracted during training
+                audio_label_ids_concat=None,  # FIXED: Correct field name (was label_audio_ids)
                 audio_waveforms_concat=audio_waveforms_concat,
                 audio_waveforms_start=audio_waveforms_start,
                 audio_sample_rate=torch.tensor([24000], dtype=torch.float32),
