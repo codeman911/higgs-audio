@@ -685,46 +685,11 @@ def main():
                 # Remove None values for clean forward pass
                 model_inputs = {k: v for k, v in sup.items() if v is not None}
                 
-                # DEBUG: Log model inputs and COMPLETE content verification
-                if global_step == 0:
-                    logger.info(f"DEBUG: Model input keys: {list(model_inputs.keys())}")
-                    for key, value in model_inputs.items():
-                        if hasattr(value, 'shape'):
-                            logger.info(f"DEBUG: {key} shape: {value.shape}")
-                    
-                    # CRITICAL: Verify data flow for zero-shot TTS
-                    logger.info("🔍 VERIFYING DATA FLOW FOR ZERO-SHOT TTS:")
-                    
-                    # 1. Check reference text + target text in input_ids - COMPLETE VERSION
-                    if "input_ids" in model_inputs:
-                        input_text = tokenizer.decode(model_inputs["input_ids"][0], skip_special_tokens=False)
-                        logger.info("📝 INPUT_IDS COMPLETE CONTENT:")
-                        logger.info("="*100)
-                        logger.info(f"{input_text}")
-                        logger.info("="*100)
-                        
-                        # Also decode a few samples to check consistency
-                        logger.info("📝 BATCH INPUT SAMPLES:")
-                        for i in range(min(3, model_inputs["input_ids"].shape[0])):
-                            sample_text = tokenizer.decode(model_inputs["input_ids"][i], skip_special_tokens=False)
-                            logger.info(f"SAMPLE {i}: {sample_text[:150]}...")  # First 150 chars of each sample
-                    
-                    # 2. Check reference audio conditioning
-                    if "audio_in_ids" in model_inputs:
-                        ref_audio = model_inputs["audio_in_ids"]
-                        logger.info(f"🎤 REFERENCE AUDIO: shape={ref_audio.shape}, non_zero={((ref_audio != 0).sum().item())}/{ref_audio.numel()}")
-                        logger.info(f"🎤 REFERENCE AUDIO TOKENS: {ref_audio[:, :10].tolist()}")
-                    
-                    # 3. Check target audio for prediction
-                    if "audio_out_ids" in model_inputs:
-                        target_audio = model_inputs["audio_out_ids"] 
-                        logger.info(f"🎯 TARGET AUDIO: shape={target_audio.shape}, non_zero={((target_audio != 0).sum().item())}/{target_audio.numel()}")
-                        logger.info(f"🎯 TARGET AUDIO TOKENS: {target_audio[:, :10].tolist()}")
-                    
-                    # 4. Check if we have audio features for Whisper
-                    if "audio_features" in model_inputs:
-                        audio_feat = model_inputs["audio_features"]
-                        logger.info(f"🎵 AUDIO FEATURES: shape={audio_feat.shape}, mean={audio_feat.mean().item():.4f}")
+                # CRITICAL FIX: Map parameter names to what HiggsAudioModel.forward() expects
+                if "text_labels" in model_inputs:
+                    model_inputs["label_ids"] = model_inputs.pop("text_labels")  # Model expects 'label_ids'
+                if "audio_labels" in model_inputs:
+                    model_inputs["label_audio_ids"] = model_inputs.pop("audio_labels")  # Model expects 'label_audio_ids'
                 
                 # Get the underlying model (handle PEFT wrapping) - CRITICAL FIX!
                 if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
@@ -906,6 +871,12 @@ def main():
                     
                     # Remove None values for clean forward pass
                     model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
+                    
+                    # CRITICAL FIX: Map parameter names to what HiggsAudioModel.forward() expects
+                    if "text_labels" in model_inputs:
+                        model_inputs["label_ids"] = model_inputs.pop("text_labels")  # Model expects 'label_ids'
+                    if "audio_labels" in model_inputs:
+                        model_inputs["label_audio_ids"] = model_inputs.pop("audio_labels")  # Model expects 'label_audio_ids'
                     
                     # Get the underlying model (handle PEFT wrapping) - CRITICAL FIX!
                     if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
