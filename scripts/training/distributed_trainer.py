@@ -139,7 +139,9 @@ def custom_collate_fn(batch, tokenizer, audio_tokenizer, collator):
             audio_waveforms_concat = torch.cat([item['waveform'] for item in all_audio_list], dim=0)
             audio_waveforms_start = torch.tensor([0] + [item['waveform'].shape[0] for item in all_audio_list[:-1]]).cumsum(dim=0)
             audio_sample_rate = torch.tensor([24000] * len(all_audio_list))
-            audio_speaker_indices = torch.tensor([speaker_id or 0] * len(all_audio_list), dtype=torch.long)
+            # FIX: Handle string speaker_id from zero-shot data
+            numeric_speaker_id = 0 if isinstance(speaker_id, str) or speaker_id is None else int(speaker_id)
+            audio_speaker_indices = torch.tensor([numeric_speaker_id] * len(all_audio_list), dtype=torch.long)
         else:
             # Empty audio tensors
             audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)
@@ -147,7 +149,9 @@ def custom_collate_fn(batch, tokenizer, audio_tokenizer, collator):
             audio_waveforms_concat = torch.zeros((0,), dtype=torch.float32)
             audio_waveforms_start = torch.tensor([], dtype=torch.long)
             audio_sample_rate = torch.tensor([24000])
-            audio_speaker_indices = torch.tensor([speaker_id or 0], dtype=torch.long)
+            # FIX: Handle string speaker_id from zero-shot data
+            numeric_speaker_id = 0 if isinstance(speaker_id, str) or speaker_id is None else int(speaker_id)
+            audio_speaker_indices = torch.tensor([numeric_speaker_id], dtype=torch.long)
         
         # Create ZERO-SHOT COMPATIBLE ChatMLDatasetSample
         chatml_sample = ChatMLDatasetSample(
