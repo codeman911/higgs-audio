@@ -186,42 +186,88 @@ def main():
     logger.info("Initializing collator...")
     whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
     
-    # Use the original HiggsAudioSampleCollator instead of custom collate function
+    # Use the original HiggsAudioSampleCollator with CORRECT constructor parameters
     # This handles all audio indexing automatically and correctly
     collator = HiggsAudioSampleCollator(
-        tokenizer=tokenizer,
-        processor=whisper_processor,
-        audio_tokenizer=audio_tokenizer,
-        audio_num_codebooks=8,  # Match the tokenizer
+        whisper_processor=whisper_processor,
+        audio_in_token_id=config.audio_in_token_idx,
+        audio_out_token_id=config.audio_out_token_idx,
+        audio_stream_bos_id=config.audio_stream_bos_id,
+        audio_stream_eos_id=config.audio_stream_eos_id,
+        encode_whisper_embed=config.encode_whisper_embed,
+        pad_token_id=config.pad_token_id,
+        return_audio_in_tokens=config.encode_audio_in_tokens,
+        use_delay_pattern=config.use_delay_pattern,
+        round_to=8,  # Documentation recommends round_to=8 for optimal batching
+        audio_num_codebooks=8
     )
     
     # Load datasets
-    train_file = os.path.join(args.dataset_path, "train_chatml_samples.json")
-    val_file = os.path.join(args.dataset_path, "val_chatml_samples.json")
+    logger.info("Loading datasets...")
+    train_dataset = SimpleDataset(os.path.join(args.dataset_path, "train.json"))[:args.debug_samples]
+    val_dataset = SimpleDataset(os.path.join(args.dataset_path, "val.json"))[:args.debug_val_samples]
     
-    train_path = train_file
-    val_path = val_file
+    # ========== STRATEGIC LOGGING: DATA PIPELINE ANALYSIS ==========
+    logger.info("🔍 STRATEGIC ANALYSIS: ChatML Data Format")
+    logger.info("=" * 80)
     
-    logger.info(f"Loading training data from {train_path}")
-    train_dataset = SimpleDataset(train_path)
-    logger.info(f"Loaded {len(train_dataset)} samples from {train_path}")
-    
-    if args.debug_samples is not None:
-        original_size = len(train_dataset)
-        train_dataset.samples = train_dataset.samples[:args.debug_samples]
-        logger.info(f"🐛 DEBUG MODE: Limited training from {original_size} → {len(train_dataset)} samples")
-        logger.info(f"🚀 SPEEDUP: ~{original_size//len(train_dataset)}x faster training for debugging")
-    
-    val_dataset = None
-    if os.path.exists(val_path):
-        logger.info(f"Loading validation data from {val_path}")
-        val_dataset = SimpleDataset(val_path)
-        logger.info(f"Loaded {len(val_dataset)} samples from {val_path}")
+    # Analyze first sample to understand exact data format
+    if len(train_dataset) > 0:
+        sample = train_dataset[0]
+        logger.info("📋 RAW CHATML SAMPLE STRUCTURE:")
+        logger.info(f"   Sample keys: {list(sample.keys())}")
         
-        if args.debug_val_samples is not None:
-            original_val_size = len(val_dataset)
-            val_dataset.samples = val_dataset.samples[:args.debug_val_samples]
-            logger.info(f"🐛 DEBUG MODE: Limited validation from {original_val_size} → {len(val_dataset)} samples")
+        if 'messages' in sample:
+            logger.info(f"   Messages count: {len(sample['messages'])}")
+            for i, msg in enumerate(sample['messages']):
+                role = msg.get('role', 'unknown')
+                content = msg.get('content', [])
+                logger.info(f"   Message {i} - Role: {role}")
+                
+                if isinstance(content, list):
+                    for j, item in enumerate(content):
+                        item_type = item.get('type', 'unknown')
+                        if item_type == 'text':
+                            text_preview = item.get('text', '')[:80] + ('...' if len(item.get('text', '')) > 80 else '')
+                            logger.info(f"     Content {j} [text]: {text_preview}")
+                        elif item_type == 'audio':
+                            audio_path = item.get('audio_url', 'No URL')
+                            logger.info(f"     Content {j} [audio]: {Path(audio_path).name}")
+                elif isinstance(content, str):
+                    content_preview = content[:80] + ('...' if len(content) > 80 else '')
+                    logger.info(f"     Content [text]: {content_preview}")
+        
+        # Test prepare_chatml_sample to see what it produces
+        logger.info("� TESTING prepare_chatml_sample OUTPUT:")
+        try:
+            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
+            
+            logger.info(f"   input_tokens length: {len(input_tokens)}")
+            logger.info(f"   label_tokens length: {len(label_tokens)}")
+            logger.info(f"   audio_contents count: {len(audio_contents)}")
+            logger.info(f"   speaker_id: {speaker_id}")
+            
+            # Analyze label masking pattern
+            supervised_tokens = len([t for t in label_tokens if t != -100])
+            ignored_tokens = len([t for t in label_tokens if t == -100])
+            logger.info(f"   Supervised tokens: {supervised_tokens}")
+            logger.info(f"   Ignored tokens: {ignored_tokens}")
+            
+            # Show tokenized conversation preview
+            input_text_preview = tokenizer.decode(input_tokens[:200], skip_special_tokens=False)
+            logger.info(f"   Input text preview: {input_text_preview}")
+            
+            # Show what gets supervised (labels != -100)
+            supervised_token_ids = [input_tokens[i] for i, label in enumerate(label_tokens) if label != -100 and i < len(input_tokens)]
+            if supervised_token_ids:
+                supervised_text = tokenizer.decode(supervised_token_ids[:100], skip_special_tokens=False)
+                logger.info(f"   Supervised text preview: {supervised_text}")
+            
+        except Exception as e:
+            logger.error(f"   Error in prepare_chatml_sample: {e}")
+    
+    logger.info("✅ STRATEGIC ANALYSIS COMPLETE")
+    logger.info("=" * 80)
     
     # Create data loaders - OPTIMIZED FOR H200
     train_dataloader = DataLoader(
