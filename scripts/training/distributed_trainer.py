@@ -204,8 +204,8 @@ def main():
     
     # Load datasets
     logger.info("Loading datasets...")
-    train_dataset = SimpleDataset(os.path.join(args.dataset_path, "train.json"))[:args.debug_samples]
-    val_dataset = SimpleDataset(os.path.join(args.dataset_path, "val.json"))[:args.debug_val_samples]
+    train_dataset = SimpleDataset(os.path.join(args.dataset_path, "train_chatml_samples.json"))[:args.debug_samples]
+    val_dataset = SimpleDataset(os.path.join(args.dataset_path, "val_chatml_samples.json"))[:args.debug_val_samples]
     
     # ========== STRATEGIC LOGGING: DATA PIPELINE ANALYSIS ==========
     logger.info("🔍 STRATEGIC ANALYSIS: ChatML Data Format")
@@ -544,6 +544,58 @@ def main():
                     logger.info("✅ CHATML STRUCTURE VERIFIED")
                     logger.info("=" * 80)
 
+                if global_step % args.log_steps == 0 or global_step < 5:
+                    logger.info(f"🔍 STEP {global_step} - COMPREHENSIVE DATA FLOW ANALYSIS")
+                    logger.info("=" * 100)
+                    
+                    # ========== 1. COLLATOR OUTPUT ANALYSIS ==========
+                    logger.info("📦 COLLATOR OUTPUT STRUCTURE:")
+                    logger.info(f"   Batch type: {type(batch)}")
+                    if hasattr(batch, '__dict__'):
+                        for attr_name in dir(batch):
+                            if not attr_name.startswith('_'):
+                                attr_value = getattr(batch, attr_name, None)
+                                if torch.is_tensor(attr_value):
+                                    logger.info(f"   {attr_name}: {attr_value.shape} {attr_value.dtype}")
+                                elif attr_value is not None:
+                                    logger.info(f"   {attr_name}: {type(attr_value)}")
+                    
+                    # ========== 2. MODEL INPUT PREPARATION ==========
+                    logger.info("🔧 MODEL INPUT PREPARATION:")
+                    logger.info(f"   Supervision keys: {list(sup.keys())}")
+                    for key, value in sup.items():
+                        if torch.is_tensor(value):
+                            logger.info(f"   {key}: {value.shape} {value.dtype}")
+                            if key == 'input_ids' and global_step < 3:
+                                # Show actual tokenized conversation
+                                decoded_text = tokenizer.decode(value[0], skip_special_tokens=False)
+                                logger.info(f"     Sample decoded: {decoded_text[:300]}...")
+                            elif key in ['text_labels', 'audio_labels'] and global_step < 3:
+                                non_ignore = (value != -100).sum().item()
+                                total = value.numel()
+                                logger.info(f"     Valid tokens: {non_ignore}/{total} ({100*non_ignore/total:.1f}%)")
+                        else:
+                            logger.info(f"   {key}: {type(value)}")
+                    
+                    # ========== 3. DUAL FFN INPUT ANALYSIS ==========
+                    logger.info("🧠 DUAL FFN MODEL INPUT ANALYSIS:")
+                    model_input_keys = [k for k, v in sup.items() if v is not None and k not in ['text_labels', 'audio_labels']]
+                    logger.info(f"   Model input keys: {model_input_keys}")
+                    
+                    # Analyze reference audio conditioning
+                    if 'audio_in_ids' in sup and sup['audio_in_ids'] is not None:
+                        audio_in_shape = sup['audio_in_ids'].shape
+                        logger.info(f"   🎵 REFERENCE AUDIO: {audio_in_shape} (conditioning for zero-shot cloning)")
+                        if len(audio_in_shape) >= 2:
+                            logger.info(f"     Codebooks: {audio_in_shape[0]}, Time steps: {audio_in_shape[1]}")
+                    
+                    # Analyze text input structure  
+                    if 'input_ids' in sup and sup['input_ids'] is not None:
+                        text_shape = sup['input_ids'].shape
+                        logger.info(f"   📝 TEXT INPUT: {text_shape} (contains system+user+assistant text)")
+                    
+                    logger.info("=" * 100)
+                
                 # Skip validation batches with insufficient text
                 B = sup["input_ids"].size(0)
                 valid_text = non_ignore_count(sup["text_labels"])
