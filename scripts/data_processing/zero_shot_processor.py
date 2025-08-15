@@ -132,10 +132,10 @@ class ZeroShotDataProcessor:
         """
         Convert a single sample to ChatML format for zero-shot voice cloning
         
-        ChatML Structure:
+        CORRECTED ChatML Structure for DualFFN:
         - System: Instructions for voice cloning
-        - User: Target text + Reference audio (voice to clone)
-        - Assistant: Target audio (what model should generate)
+        - User: Reference transcript + Reference audio + Request for target text
+        - Assistant: Target text + Target audio (enables DualFFN learning)
         """
         
         # Read target text from file
@@ -143,8 +143,11 @@ class ZeroShotDataProcessor:
         if not target_text:
             return None
         
-        # Get reference transcript (already in metadata)
+        # Get reference transcript (what's actually spoken in reference audio)
         ref_transcript = sample.get('ref_transcript', '')
+        if not ref_transcript:
+            self.logger.warning(f"Missing ref_transcript for sample {sample['id']}")
+            return None
         
         # Validate audio files exist
         ref_audio_path = self.dataset_path / sample['ref_audio_file']
@@ -154,35 +157,37 @@ class ZeroShotDataProcessor:
             self.logger.warning(f"Missing audio files for sample {sample['id']}")
             return None
         
-        # Create ChatML messages
+        # Create ChatML messages - CORRECTED STRUCTURE
         messages = [
             # System message: Instructions for voice cloning
             Message(
                 role="system",
-                content="You are a voice cloning assistant. Generate speech in the target voice using the provided reference audio."
+                content="You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
             ),
             
-            # User message: Target text + Reference audio
+            # User message: Reference transcript + Reference audio + Request for target text
             Message(
                 role="user", 
                 content=[
-                    TextContent(text=target_text),
+                    TextContent(text=ref_transcript),  # What's spoken in reference audio
                     AudioContent(
                         audio_url=str(ref_audio_path),
                         raw_audio="",  # Will be loaded during training
                         duration=None  # Will be computed during training
-                    )
+                    ),
+                    TextContent(text=f"Please generate speech for given text in reference audio's voice: {target_text}")
                 ]
             ),
             
-            # Assistant message: Target audio (what model should generate)
+            # Assistant message: Target text + Target audio (CRITICAL FOR DUALFFN!)
             Message(
                 role="assistant",
                 content=[
+                    TextContent(text=target_text),  # Text MLP learns to predict this
                     AudioContent(
                         audio_url=str(target_audio_path),
                         raw_audio="",  # Will be loaded during training
-                        duration=sample.get('duration')
+                        duration=sample.get('duration')  # Audio MLP learns to predict this
                     )
                 ]
             )
@@ -196,7 +201,7 @@ class ZeroShotDataProcessor:
             misc={
                 'sample_id': sample['id'],
                 'ref_transcript': ref_transcript,
-                'target_text': target_text,
+                'target_transcript': target_text,  # Store both for clarity
                 'duration': sample.get('duration', 0.0)
             }
         )
