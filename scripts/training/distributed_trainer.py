@@ -68,8 +68,45 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
     chatml_samples = []
     
     for sample in batch:
-        # Process sample and get inputs/labels
-        input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
+        # CRITICAL FIX: Convert to proper chatml_dict structure first (like backup trainer)
+        messages = sample.get('messages', [])
+        
+        # Build ChatML dict (exactly like backup trainer)
+        chatml_dict = {"messages": []}
+        
+        for msg in messages:
+            role = msg.get('role')
+            content = msg.get('content')
+            
+            if role and content:
+                # Handle different content formats
+                if isinstance(content, list):
+                    # Multi-modal content
+                    processed_content = []
+                    for item in content:
+                        if item.get('type') == 'text':
+                            processed_content.append({"type": "text", "text": item.get('text', '')})
+                        elif item.get('type') == 'audio':
+                            audio_url = item.get('audio_url', '')
+                            if audio_url:
+                                processed_content.append({"type": "audio", "audio_url": audio_url})
+                    chatml_dict["messages"].append({"role": role, "content": processed_content})
+                else:
+                    # Simple text content
+                    chatml_dict["messages"].append({"role": role, "content": content})
+        
+        # Tokenize with prepare_chatml_sample (exactly like backup trainer)
+        try:
+            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
+                chatml_dict, tokenizer
+            )
+        except Exception as e:
+            logger.warning(f"Failed to prepare sample: {e}")
+            # Create empty sample
+            input_tokens = [tokenizer.pad_token_id]
+            label_tokens = [-100]
+            audio_contents = []
+            speaker_id = 0
         
         # Process audio properly using audio_tokenizer (like backup trainer)
         audio_ids_list = []
@@ -106,7 +143,7 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
                     except Exception as e:
                         logger.warning(f"Failed to process audio {audio_path}: {e}")
         
-        # Create tensors (like backup trainer)
+        # Create tensors (exactly like backup trainer)
         if audio_ids_list:
             audio_ids_concat = torch.cat(audio_ids_list, dim=1)
             audio_ids_start = torch.cumsum(
@@ -139,6 +176,21 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
             audio_sample_rate=audio_sample_rate,
             audio_speaker_indices=audio_speaker_indices
         )
+        
+        # DEBUG: Log audio structure for first sample
+        if len(chatml_samples) == 0:  # Only log first sample
+            logger.info(f"🔍 AUDIO STRUCTURE DEBUG for sample 0:")
+            logger.info(f"   input_tokens length: {len(input_tokens)}")
+            logger.info(f"   audio_ids_concat shape: {audio_ids_concat.shape}")
+            logger.info(f"   audio_ids_start: {audio_ids_start}")
+            logger.info(f"   audio_waveforms_concat length: {len(audio_waveforms_concat) if len(audio_waveforms_concat) > 0 else 0}")
+            logger.info(f"   Number of audio segments: {len(audio_ids_list)}")
+            if len(audio_contents) > 0:
+                logger.info(f"   Audio contents found: {len(audio_contents)} items")
+                for i, content in enumerate(audio_contents[:2]):  # First 2 audio items
+                    if hasattr(content, 'audio_url'):
+                        logger.info(f"     Audio {i}: {content.audio_url}")
+        
         chatml_samples.append(chatml_sample)
     
     # Now call original collator with proper objects
