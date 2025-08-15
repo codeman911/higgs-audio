@@ -184,10 +184,12 @@ class InferenceStyleDatasetForTrainer(Dataset):
             if audio_ids_list:
                 # Use .detach().clone() to avoid tensor creation warning
                 audio_ids_concat = torch.cat([codes.detach().clone() for codes in audio_ids_list], dim=1)
-                audio_ids_start = torch.tensor([0] + [codes.shape[1] for codes in audio_ids_list[:-1]], dtype=torch.long).cumsum(0)
+                # FIXED: Use exact working approach for proper cumulative indexing
+                audio_ids_start = torch.tensor([0] + [codes.shape[1] for codes in audio_ids_list[:-1]], dtype=torch.long).cumsum(dim=0)
                 
                 audio_waveforms_concat = torch.cat(audio_waveforms_list, dim=0) if audio_waveforms_list else torch.zeros(1)
-                audio_waveforms_start = torch.tensor([0], dtype=torch.long)
+                # FIXED: Use exact working approach for proper cumulative indexing
+                audio_waveforms_start = torch.tensor([0] + [wv.shape[0] for wv in audio_waveforms_list[:-1]], dtype=torch.long).cumsum(dim=0)
             else:
                 # Dummy values (matches your approach)
                 audio_ids_concat = torch.zeros((8, 10), dtype=torch.long)  # 8 codebooks, 10 dummy tokens
