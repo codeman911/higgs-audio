@@ -87,6 +87,121 @@ def fixed_prepare_chatml_sample_minimal(sample, tokenizer):
     return input_tokens, label_tokens, audio_contents, speaker_id
 
 
+def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000):
+    """Convert raw dict samples to ChatMLDatasetSample objects for the collator"""
+    chatml_samples = []
+    
+    for sample in batch:
+        # Convert raw dict to proper chatml structure
+        messages = sample.get('messages', [])
+        chatml_dict = {"messages": []}
+        
+        for msg in messages:
+            role = msg.get('role')
+            content = msg.get('content')
+            
+            if role and content:
+                if isinstance(content, list):
+                    # Multi-modal content
+                    processed_content = []
+                    for item in content:
+                        if item.get('type') == 'text':
+                            processed_content.append({"type": "text", "text": item.get('text', '')})
+                        elif item.get('type') == 'audio':
+                            audio_url = item.get('audio_url', '')
+                            if audio_url:
+                                processed_content.append({"type": "audio", "audio_url": audio_url})
+                    chatml_dict["messages"].append({"role": role, "content": processed_content})
+                else:
+                    # Simple text content
+                    chatml_dict["messages"].append({"role": role, "content": content})
+        
+        # Use our fixed tokenization
+        try:
+            input_tokens, label_tokens, audio_contents, speaker_id = fixed_prepare_chatml_sample_minimal(
+                chatml_dict, tokenizer
+            )
+        except Exception as e:
+            logger.warning(f"Failed to prepare sample: {e}")
+            input_tokens = [tokenizer.pad_token_id]
+            label_tokens = [-100]
+            audio_contents = []
+            speaker_id = 0
+        
+        # Process audio
+        audio_ids_list = []
+        audio_waveforms_list = []
+        
+        for audio_content in audio_contents:
+            if audio_content and hasattr(audio_content, 'audio_url'):
+                audio_path = audio_content.audio_url
+                if audio_path and os.path.exists(audio_path):
+                    try:
+                        # Tokenize audio
+                        audio_codes = audio_tokenizer.encode(audio_path)
+                        if audio_codes.is_cuda:
+                            audio_codes = audio_codes.cpu()
+                        # Ensure 8 codebooks
+                        if audio_codes.shape[0] != 8:
+                            if audio_codes.shape[0] > 8:
+                                audio_codes = audio_codes[:8, :]
+                            else:
+                                padding = torch.zeros(8 - audio_codes.shape[0], audio_codes.shape[1])
+                                audio_codes = torch.cat([audio_codes, padding], dim=0)
+                        audio_ids_list.append(audio_codes)
+                        
+                        # Load waveform
+                        waveform, sr = torchaudio.load(audio_path)
+                        if sr != sample_rate:
+                            waveform = torchaudio.transforms.Resample(sr, sample_rate)(waveform)
+                        if waveform.shape[0] > 1:
+                            waveform = waveform.mean(dim=0, keepdim=True)
+                        waveform = waveform.squeeze(0)
+                        audio_waveforms_list.append(waveform)
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to process audio {audio_path}: {e}")
+        
+        # Create tensors
+        if audio_ids_list:
+            audio_ids_concat = torch.cat(audio_ids_list, dim=1)
+            audio_ids_start = torch.cumsum(
+                torch.tensor([0] + [ids.shape[1] for ids in audio_ids_list]), dim=0
+            )
+        else:
+            audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)
+            audio_ids_start = torch.tensor([0], dtype=torch.long)
+        
+        if audio_waveforms_list:
+            audio_waveforms_concat = torch.cat(audio_waveforms_list, dim=0)
+            lengths = [len(wv) for wv in audio_waveforms_list]
+            audio_waveforms_start = torch.tensor([0] + lengths[:-1]).cumsum(dim=0)
+            audio_sample_rate = torch.tensor([sample_rate] * len(audio_waveforms_list))
+            audio_speaker_indices = torch.zeros(len(audio_waveforms_list), dtype=torch.long)
+        else:
+            audio_waveforms_concat = torch.tensor([])
+            audio_waveforms_start = torch.tensor([0], dtype=torch.long)
+            audio_sample_rate = torch.tensor([sample_rate])
+            audio_speaker_indices = torch.tensor([0], dtype=torch.long)
+        
+        # Create ChatMLDatasetSample object
+        chatml_sample = ChatMLDatasetSample(
+            input_ids=torch.tensor(input_tokens, dtype=torch.long),
+            label_ids=torch.tensor(label_tokens, dtype=torch.long),
+            audio_ids_concat=audio_ids_concat,
+            audio_ids_start=audio_ids_start,
+            audio_waveforms_concat=audio_waveforms_concat,
+            audio_waveforms_start=audio_waveforms_start,
+            audio_sample_rate=audio_sample_rate,
+            audio_speaker_indices=audio_speaker_indices
+        )
+        
+        chatml_samples.append(chatml_sample)
+    
+    # Now call original collator with proper ChatMLDatasetSample objects
+    return collator(chatml_samples)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Higgs-Audio LoRA Training")
     
@@ -214,7 +329,7 @@ def main():
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=collator,
+        collate_fn=lambda batch: simple_collate_fn(batch, tokenizer, audio_tokenizer, collator),
         pin_memory=True,
         drop_last=True
     )
@@ -226,7 +341,7 @@ def main():
         num_workers=args.num_workers // 2,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=collator,
+        collate_fn=lambda batch: simple_collate_fn(batch, tokenizer, audio_tokenizer, collator),
         pin_memory=True,
         drop_last=False
     )
