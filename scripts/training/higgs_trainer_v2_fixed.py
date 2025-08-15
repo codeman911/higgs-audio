@@ -268,18 +268,29 @@ class HiggsAudioModelWrapper(nn.Module):
         logger.info(f"✅ CROSS-MODAL CONDITIONING: Rebuilt {len(new_layers)} layers with audio attention")
     
     def forward(self, **kwargs):
+        # AGGRESSIVE DEBUG: Log everything we receive
+        logger.warning(f"🔍 MODEL WRAPPER RECEIVED: {list(kwargs.keys())}")
+        
         # CRITICAL SAFETY CHECK: DataParallel bypasses compute_loss and calls this directly
         if 'labels' in kwargs:
-            logger.warning(f"🚨 MODEL WRAPPER SAFETY: Found 'labels'! Converting to 'label_ids'")
+            logger.error(f"🚨 MODEL WRAPPER SAFETY: Found 'labels'! Converting to 'label_ids'")
+            logger.error(f"🚨 BEFORE CONVERSION: {list(kwargs.keys())}")
             kwargs['label_ids'] = kwargs.pop('labels')
+            logger.error(f"🚨 AFTER CONVERSION: {list(kwargs.keys())}")
         
         # Debug: Log what we're passing to the underlying model
-        logger.debug(f"🔍 MODEL WRAPPER → PEFT INPUT KEYS: {list(kwargs.keys())}")
+        logger.warning(f"🔍 MODEL WRAPPER → PEFT INPUT KEYS: {list(kwargs.keys())}")
         
         # Verify no labels exist before calling model
         if 'labels' in kwargs:
+            logger.error(f"❌ CRITICAL ERROR: 'labels' still in kwargs: {list(kwargs.keys())}")
             raise ValueError(f"CRITICAL ERROR: 'labels' still in kwargs: {list(kwargs.keys())}")
         
+        # FINAL CHECK: Ensure label_ids exists if we had labels
+        if 'label_ids' not in kwargs:
+            logger.error(f"❌ WARNING: No 'label_ids' found in kwargs: {list(kwargs.keys())}")
+        
+        logger.warning(f"🚀 CALLING UNDERLYING MODEL WITH: {list(kwargs.keys())}")
         return self.model(**kwargs)
 
 
