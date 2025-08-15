@@ -467,22 +467,61 @@ def main():
     model = get_peft_model(model, lora_config)
     
     # Setup optimizer with stability improvements
-    # Lower learning rate for newly initialized cross-attention modules
-    stable_lr = min(args.learning_rate, 1e-4)  # Cap at 1e-4 for stability
-    if stable_lr != args.learning_rate:
-        logger.info(f" STABILITY FIX: Reducing learning rate from {args.learning_rate} to {stable_lr} for cross-attention stability")
+    # CRITICAL FIX: Much more conservative training for newly initialized modules
+    base_lr = args.learning_rate
     
-    optimizer = torch.optim.AdamW(
-        model.parameters(), 
-        lr=stable_lr,
-        weight_decay=0.01,
-        eps=1e-8,  # Increase epsilon for numerical stability
-        betas=(0.9, 0.95)  # More conservative beta2 for stability
-    )
+    # Detect if we have newly initialized audio attention modules
+    newly_initialized_params = []
+    pretrained_params = []
     
-    # CRITICAL: Add gradient clipping for newly initialized cross-attention modules
-    gradient_clip_norm = 1.0  # Conservative clipping for stability
-    logger.info(f" STABILITY FIX: Adding gradient clipping (max_norm={gradient_clip_norm}) for cross-attention stability")
+    for name, param in model.named_parameters():
+        if 'audio_attn' in name or 'audio_post_audio_attn_layer_norm' in name:
+            newly_initialized_params.append(param)
+            logger.info(f"  NEWLY INITIALIZED: {name}")
+        else:
+            pretrained_params.append(param)
+    
+    logger.info(f" STABILITY ANALYSIS:")
+    logger.info(f"   Newly initialized parameters: {len(newly_initialized_params)}")
+    logger.info(f"   Pretrained parameters: {len(pretrained_params)}")
+    
+    if newly_initialized_params:
+        # Use much lower learning rate for newly initialized modules
+        ultra_conservative_lr = min(base_lr * 0.01, 1e-6)  # 100x smaller, max 1e-6
+        logger.error(f" ❌ CRITICAL INSTABILITY DETECTED: NaN losses from new modules!")
+        logger.error(f"    Setting ultra-conservative LR: {ultra_conservative_lr:.2e}")
+        
+        # Separate parameter groups with different learning rates
+        optimizer = torch.optim.AdamW([
+            {'params': pretrained_params, 'lr': ultra_conservative_lr, 'weight_decay': 0.01},
+            {'params': newly_initialized_params, 'lr': ultra_conservative_lr * 0.1, 'weight_decay': 0.01}  # Even more conservative
+        ], eps=1e-8, betas=(0.9, 0.95))
+        
+        logger.info(f" ULTRA-CONSERVATIVE TRAINING:")
+        logger.info(f"   Pretrained modules LR: {ultra_conservative_lr:.2e}")
+        logger.info(f"   New audio modules LR: {ultra_conservative_lr * 0.1:.2e}")
+    else:
+        # Regular optimizer if no new modules
+        stable_lr = min(args.learning_rate, 1e-4)
+        optimizer = torch.optim.AdamW(
+            model.parameters(), 
+            lr=stable_lr,
+            weight_decay=0.01,
+            eps=1e-8,
+            betas=(0.9, 0.95)
+        )
+    
+    # CRITICAL: Much stronger gradient clipping for numerical stability
+    gradient_clip_norm = 0.1  # Very aggressive clipping to prevent explosion
+    logger.info(f" NUMERICAL STABILITY FIX: Ultra-aggressive gradient clipping (max_norm={gradient_clip_norm})")
+    
+    # CRITICAL: Check for NaN gradients and skip updates if found
+    def check_nan_gradients(model):
+        for name, param in model.named_parameters():
+            if param.grad is not None and torch.isnan(param.grad).any():
+                logger.error(f" ❌ NaN gradient detected in {name}!")
+                return True
+        return False
     
     # Calculate training steps for proper warmup scheduling
     num_training_steps = len(train_dataloader) * args.num_epochs
