@@ -33,19 +33,18 @@ logger = logging.getLogger(__name__)
 
 
 class SimpleDataset(Dataset):
-    """Simple dataset that loads ChatML JSON files"""
+    """Simple dataset for loading JSON samples"""
     
     def __init__(self, json_path):
-        with open(json_path, 'r') as f:
+        with open(json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        # Handle both list and dict formats
-        if isinstance(data, list):
+        if isinstance(data, dict) and 'samples' in data:
+            self.samples = data['samples']
+        elif isinstance(data, list):
             self.samples = data
-        elif isinstance(data, dict):
-            self.samples = data.get('samples', data.get('data', []))
         else:
-            self.samples = []
+            raise ValueError(f"Unexpected data format in {json_path}")
         
         logger.info(f"Loaded {len(self.samples)} samples from {json_path}")
     
@@ -54,6 +53,38 @@ class SimpleDataset(Dataset):
     
     def __getitem__(self, idx):
         return self.samples[idx]
+
+
+# CRITICAL FIX: Patch original prepare_chatml_sample to mask audio tokens in text labels
+def fixed_prepare_chatml_sample_minimal(sample, tokenizer):
+    """
+    MINIMAL FIX: Use original prepare_chatml_sample but post-process to mask audio tokens
+    This prevents <|audio_eos|> contamination without breaking the working architecture
+    """
+    # Call original function
+    input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
+    
+    if input_tokens and label_tokens:
+        # Get audio special token IDs
+        audio_eos_id = tokenizer.encode("<|audio_eos|>", add_special_tokens=False)
+        audio_bos_id = tokenizer.encode("<|audio_bos|>", add_special_tokens=False)  
+        audio_out_bos_id = tokenizer.encode("<|audio_out_bos|>", add_special_tokens=False)
+        audio_id = tokenizer.encode("<|AUDIO|>", add_special_tokens=False)
+        audio_out_id = tokenizer.encode("<|AUDIO_OUT|>", add_special_tokens=False)
+        
+        audio_special_tokens = set()
+        if audio_eos_id: audio_special_tokens.update(audio_eos_id)
+        if audio_bos_id: audio_special_tokens.update(audio_bos_id)
+        if audio_out_bos_id: audio_special_tokens.update(audio_out_bos_id)
+        if audio_id: audio_special_tokens.update(audio_id)
+        if audio_out_id: audio_special_tokens.update(audio_out_id)
+        
+        # Mask audio special tokens in text labels (but keep in input_tokens)
+        for i in range(len(label_tokens)):
+            if i < len(input_tokens) and input_tokens[i] in audio_special_tokens:
+                label_tokens[i] = -100  # Mask audio tokens
+    
+    return input_tokens, label_tokens, audio_contents, speaker_id
 
 
 def main():
@@ -65,19 +96,19 @@ def main():
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Output directory for model and checkpoints")
     
-    # Model arguments
+    # Model arguments  
     parser.add_argument("--model_path", type=str, 
                         default="bosonai/higgs-audio-v2-generation-3B-base",
                         help="Path to base model")
     parser.add_argument("--audio_tokenizer_path", type=str,
-                        default="bosonai/higgs-audio-v2-tokenizer",
+                        default="bosonai/higgs-audio-v2-tokenizer", 
                         help="Path to audio tokenizer")
     
     # Training arguments
     parser.add_argument("--batch_size", type=int, default=12,
-                        help="Batch size per device (increased for H200)")
+                        help="Batch size per device")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
-                        help="Gradient accumulation steps (reduced with larger batch)")
+                        help="Gradient accumulation steps")
     parser.add_argument("--learning_rate", type=float, default=5e-4,
                         help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=3,
@@ -88,41 +119,27 @@ def main():
                         help="Max gradient norm")
     
     # LoRA arguments
-    parser.add_argument('--lora_r', type=int, default=32, help='LoRA rank (increased for Arabic learning)')
-    parser.add_argument('--lora_alpha', type=int, default=64, help='LoRA alpha (increased for Arabic learning)')
+    parser.add_argument('--lora_r', type=int, default=32, help='LoRA rank')
+    parser.add_argument('--lora_alpha', type=int, default=64, help='LoRA alpha') 
     parser.add_argument('--lora_dropout', type=float, default=0.05, help='LoRA dropout')
     parser.add_argument('--text_loss_weight', type=float, default=1.0, help='Text loss weight')
     
-    # Other arguments - OPTIMIZED FOR H200
-    parser.add_argument("--num_workers", type=int, default=64,
-                        help="DataLoader workers per GPU (optimized for H200)")
-    parser.add_argument("--prefetch_factor", type=int, default=4,
-                        help="DataLoader prefetch factor (optimized)")
-    parser.add_argument("--persistent_workers", action="store_true", default=True,
-                        help="Keep workers alive across epochs for speed")
-    parser.add_argument("--audio_label_smoothing", type=float, default=0.05,
-                        help="Label smoothing for audio CE over codebooks")
-    parser.add_argument("--compile_model", action="store_true", default=True,
-                        help="Enable torch.compile for H200 speed")
-    parser.add_argument("--use_cached_codes", action="store_true", default=False,
-                        help="Use <audio_path>.codes.pt if present (faster training)")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed")
-    parser.add_argument("--log_steps", type=int, default=50,
-                        help="Log every N steps (reduced for speed)")
-    parser.add_argument("--val_steps", type=int, default=100,
-                        help="Run validation every N steps")
-    parser.add_argument("--save_steps", type=int, default=1000,
-                        help="Save checkpoint every N steps")
-    parser.add_argument("--mixed_precision", type=str, default="bf16",
-                        choices=["no", "fp16", "bf16"],
-                        help="Mixed precision training")
+    # Other arguments
+    parser.add_argument("--num_workers", type=int, default=64, help="DataLoader workers")
+    parser.add_argument("--prefetch_factor", type=int, default=4, help="DataLoader prefetch")
+    parser.add_argument("--persistent_workers", action="store_true", default=True, help="Keep workers alive")
+    parser.add_argument("--audio_label_smoothing", type=float, default=0.05, help="Audio label smoothing")
+    parser.add_argument("--compile_model", action="store_true", default=True, help="Enable torch.compile")
+    parser.add_argument("--use_cached_codes", action="store_true", default=False, help="Use cached audio codes")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--log_steps", type=int, default=50, help="Log every N steps")
+    parser.add_argument("--val_steps", type=int, default=100, help="Validation every N steps")
+    parser.add_argument("--save_steps", type=int, default=1000, help="Save every N steps")
+    parser.add_argument("--mixed_precision", type=str, default="bf16", choices=["no", "fp16", "bf16"], help="Mixed precision")
     
-    # DEBUG arguments
-    parser.add_argument("--debug_samples", type=int, default=None,
-                        help="Limit training to N samples for debugging (default: use full dataset)")
-    parser.add_argument("--debug_val_samples", type=int, default=None,
-                        help="Limit validation to N samples for debugging (default: use full dataset)")
+    # DEBUG arguments  
+    parser.add_argument("--debug_samples", type=int, default=None, help="Limit training samples")
+    parser.add_argument("--debug_val_samples", type=int, default=None, help="Limit validation samples")
     
     args = parser.parse_args()
     
@@ -132,14 +149,10 @@ def main():
         mixed_precision=args.mixed_precision
     )
     
-    # Set seed
     torch.manual_seed(args.seed)
-    
-    # Fast + stable matmul on Hopper; keep BF16 for mixed precision
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     
-    # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
     logger.info(f"Loading data from {args.dataset_path}")
@@ -147,18 +160,16 @@ def main():
     
     # Load tokenizers
     logger.info("Loading tokenizers...")
-    # Text tokenizer from model path
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Audio tokenizer - load on CPU, accelerator will handle device placement
     audio_tokenizer = load_higgs_audio_tokenizer(args.audio_tokenizer_path, device="cpu")
     
-    # Load model config
+    # Load model config (REVERT: Keep original config)
     config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
     
-    # Load model
+    # Load model (REVERT: Use original architecture)
     logger.info("Loading model...")
     model = HiggsAudioModel.from_pretrained(
         args.model_path,
@@ -168,12 +179,10 @@ def main():
         device_map={"": accelerator.device}
     )
     
-    # Initialize collator using WhisperProcessor
+    # Initialize collator
     logger.info("Initializing collator...")
     whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
     
-    # Use the original HiggsAudioSampleCollator with CORRECT constructor parameters
-    # This handles all audio indexing automatically and correctly
     collator = HiggsAudioSampleCollator(
         whisper_processor=whisper_processor,
         audio_in_token_id=config.audio_in_token_idx,
@@ -184,16 +193,20 @@ def main():
         pad_token_id=config.pad_token_id,
         return_audio_in_tokens=config.encode_audio_in_tokens,
         use_delay_pattern=config.use_delay_pattern,
-        round_to=8,  # Documentation recommends round_to=8 for optimal batching
+        round_to=8,
         audio_num_codebooks=8
     )
+    
+    # CRITICAL FIX: Monkey patch prepare_chatml_sample to use our fixed version
+    import boson_multimodal.dataset.chatml_dataset
+    boson_multimodal.dataset.chatml_dataset.prepare_chatml_sample = fixed_prepare_chatml_sample_minimal
     
     # Load datasets
     logger.info("Loading datasets...")
     train_dataset = SimpleDataset(os.path.join(args.dataset_path, "train_chatml_samples.json"))[:args.debug_samples]
     val_dataset = SimpleDataset(os.path.join(args.dataset_path, "val_chatml_samples.json"))[:args.debug_val_samples]
     
-    # Create data loaders - OPTIMIZED FOR H200
+    # Create data loaders (REVERT: Use original collator)
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -201,19 +214,19 @@ def main():
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=collator,  # Use original collator
-        pin_memory=True,  # H200 optimization
-        drop_last=True    # Consistent batch sizes for speed
+        collate_fn=collator,
+        pin_memory=True,
+        drop_last=True
     )
     
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.num_workers // 2,  # Less workers for validation
+        num_workers=args.num_workers // 2,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=collator,  # Use original collator
+        collate_fn=collator,
         pin_memory=True,
         drop_last=False
     )
