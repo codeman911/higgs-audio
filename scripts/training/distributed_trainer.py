@@ -711,33 +711,56 @@ def main():
                     if hasattr(args, 'text_loss_weight'):
                         logger.info(f"   Text Weight: {args.text_loss_weight}")
                     
-                    # Text predictions vs labels analysis
+                    # MODEL INPUT LOGGING (as requested)
+                    logger.info(f"🔍 MODEL INPUTS:")
+                    for key, value in model_inputs.items():
+                        if torch.is_tensor(value):
+                            logger.info(f"   {key}: shape={value.shape}, dtype={value.dtype}")
+                            if key == 'input_ids' and value.numel() <= 50:  # Log small input_ids
+                                logger.info(f"   {key} values: {value.flatten()[:50].tolist()}")
+                    
+                    # Text predictions vs labels analysis (FIXED: use adjusted tensors)
                     if "logits" in outputs and outputs["logits"] is not None and text_labels is not None:
-                        text_logits = outputs["logits"][:, :-1, :].contiguous()
-                        shift_labels = text_labels[:, 1:].contiguous()
+                        # Use the SAME adjusted tensors as loss computation to avoid shape mismatch
+                        adjusted_text_logits = outputs["logits"][:, :-1, :].contiguous()
+                        adjusted_shift_labels = text_labels[:, 1:].contiguous()
                         
-                        # Get predictions
-                        text_preds = text_logits.argmax(dim=-1)  # [B, T]
+                        # Apply same shape adjustment as loss computation
+                        B, T, V = adjusted_text_logits.shape
+                        B_lbl, T_lbl = adjusted_shift_labels.shape
                         
-                        # Find valid positions (not -100)
-                        valid_mask = (shift_labels != -100)
+                        if T != T_lbl:
+                            min_T = min(T, T_lbl)
+                            adjusted_text_logits = adjusted_text_logits[:, :min_T, :].contiguous()
+                            adjusted_shift_labels = adjusted_shift_labels[:, :min_T].contiguous()
+                        
+                        # Get predictions from ADJUSTED tensors
+                        text_preds = adjusted_text_logits.argmax(dim=-1)  # [B, T]
+                        
+                        # Find valid positions (not -100) - now shapes match!
+                        valid_mask = (adjusted_shift_labels != -100)
                         if valid_mask.any():
                             text_preds_flat = text_preds[valid_mask]
-                            text_labels_flat = shift_labels[valid_mask]
+                            text_labels_flat = adjusted_shift_labels[valid_mask]
                             
                             # Accuracy
                             accuracy = (text_preds_flat == text_labels_flat).float().mean().item()
                             logger.info(f"📝 TEXT ANALYSIS:")
                             logger.info(f"   Accuracy: {accuracy:.1%}")
                             logger.info(f"   Valid tokens: {valid_mask.sum().item()}")
+                            logger.info(f"   Text logits shape: {adjusted_text_logits.shape}")
+                            logger.info(f"   Text labels shape: {adjusted_shift_labels.shape}")
                             
-                            # First and last 10 predictions vs labels
+                            # First and last 10 predictions vs labels (FULL VALUES as requested)
                             if len(text_preds_flat) >= 10:
                                 logger.info(f"   FIRST 10 - Pred: {text_preds_flat[:10].tolist()}")
                                 logger.info(f"   FIRST 10 - Label: {text_labels_flat[:10].tolist()}")
                                 if len(text_preds_flat) >= 20:
                                     logger.info(f"   LAST 10 - Pred: {text_preds_flat[-10:].tolist()}")
                                     logger.info(f"   LAST 10 - Label: {text_labels_flat[-10:].tolist()}")
+                            
+                            # FULL PREDICTIONS LOGGING (as requested)
+                            logger.info(f"   ALL TEXT PREDICTIONS (first 50): {text_preds.flatten()[:50].tolist()}")
                     
                     # Audio predictions vs labels analysis
                     if "audio_logits" in outputs and outputs["audio_logits"] is not None and audio_labels is not None:
@@ -762,15 +785,19 @@ def main():
                             logger.info(f"🎵 AUDIO ANALYSIS:")
                             logger.info(f"   Accuracy: {accuracy:.1%}")
                             logger.info(f"   Valid tokens: {valid_mask.sum().item()}")
-                            logger.info(f"   Audio shape: {audio_labels.shape}")
+                            logger.info(f"   Audio logits shape: {audio_logits.shape}")
+                            logger.info(f"   Audio labels shape: {audio_labels.shape}")
                             
-                            # First and last 10 predictions vs labels
+                            # First and last 10 predictions vs labels (FULL VALUES as requested)
                             if len(audio_preds_flat) >= 10:
                                 logger.info(f"   FIRST 10 - Pred: {audio_preds_flat[:10].tolist()}")
                                 logger.info(f"   FIRST 10 - Label: {audio_labels_flat[:10].tolist()}")
                                 if len(audio_preds_flat) >= 20:
                                     logger.info(f"   LAST 10 - Pred: {audio_preds_flat[-10:].tolist()}")
                                     logger.info(f"   LAST 10 - Label: {audio_labels_flat[-10:].tolist()}")
+                            
+                            # FULL PREDICTIONS LOGGING (as requested)
+                            logger.info(f"   ALL AUDIO PREDICTIONS (first 50): {audio_preds.flatten()[:50].tolist()}")
                     
                     logger.info(f"🚀 TRAINING STATUS: LR={scheduler.get_last_lr()[0]:.2e}")
                     logger.info("=" * 100)
