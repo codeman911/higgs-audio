@@ -268,13 +268,17 @@ class HiggsAudioModelWrapper(nn.Module):
         logger.info(f"✅ CROSS-MODAL CONDITIONING: Rebuilt {len(new_layers)} layers with audio attention")
     
     def forward(self, **kwargs):
-        # FINAL SAFETY CHECK: Remove any 'labels' that slip through
+        # CRITICAL SAFETY CHECK: DataParallel bypasses compute_loss and calls this directly
         if 'labels' in kwargs:
-            logger.warning(f"🚨 FINAL SAFETY: Found 'labels' in model wrapper! Converting to 'label_ids'")
+            logger.warning(f"🚨 MODEL WRAPPER SAFETY: Found 'labels'! Converting to 'label_ids'")
             kwargs['label_ids'] = kwargs.pop('labels')
         
-        # Debug: Log what we're passing to the model
-        logger.debug(f"🔍 MODEL WRAPPER INPUT KEYS: {list(kwargs.keys())}")
+        # Debug: Log what we're passing to the underlying model
+        logger.debug(f"🔍 MODEL WRAPPER → PEFT INPUT KEYS: {list(kwargs.keys())}")
+        
+        # Verify no labels exist before calling model
+        if 'labels' in kwargs:
+            raise ValueError(f"CRITICAL ERROR: 'labels' still in kwargs: {list(kwargs.keys())}")
         
         return self.model(**kwargs)
 
