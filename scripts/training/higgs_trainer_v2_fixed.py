@@ -315,7 +315,8 @@ class HiggsAudioTrainer(Trainer):
                 'input_ids': inputs.input_ids,
                 'attention_mask': inputs.attention_mask,
                 'audio_in_ids': inputs.audio_in_ids,
-                'audio_in_wv': inputs.audio_in_wv,
+                'audio_features': inputs.audio_features,  # FIXED: Use correct attribute name
+                'audio_feature_attention_mask': inputs.audio_feature_attention_mask,  # FIXED: Add missing attribute
                 'audio_in_ids_start': inputs.audio_in_ids_start,
                 'audio_out_ids': inputs.audio_out_ids,
                 'audio_out_ids_start': inputs.audio_out_ids_start,
