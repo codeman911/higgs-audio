@@ -153,7 +153,6 @@ class HiggsAudioSampleCollator:
 
         label_ids = None
         label_audio_ids = None
-        
         if all([ele.label_ids is None for ele in batch]):
             return_labels = False
         else:
@@ -253,54 +252,54 @@ class HiggsAudioSampleCollator:
             audio_out_no_train_flag = []  # Whether the audio-out data should be trained on or not.
 
         # Process the audio inputs and outputs
-        for i in range(len(batch)):
-            audio_in_mask = batch[i].input_ids == self.audio_in_token_id
-            audio_out_mask = batch[i].input_ids == self.audio_out_token_id
-            audio_ids = torch.ones_like(batch[i].input_ids)
+        for i in range(len(processed_batch)):
+            audio_in_mask = processed_batch[i].input_ids == self.audio_in_token_id
+            audio_out_mask = processed_batch[i].input_ids == self.audio_out_token_id
+            audio_ids = torch.ones_like(processed_batch[i].input_ids)
             audio_ids[audio_in_mask ^ audio_out_mask] = torch.cumsum(audio_ids[audio_in_mask ^ audio_out_mask], 0) - 1
             audio_in_ids = audio_ids[audio_in_mask]
             audio_out_ids = audio_ids[audio_out_mask]
 
             if return_labels:
-                audio_out_no_train_flag.append(batch[i].label_ids[audio_out_mask] < 0)
+                audio_out_no_train_flag.append(processed_batch[i].label_ids[audio_out_mask] < 0)
                 if self.mask_audio_out_token_label:
-                    batch[i].label_ids[audio_out_mask] = -100
+                    processed_batch[i].label_ids[audio_out_mask] = -100
 
             # Process audio inputs
             if self.return_audio_in_tokens:
                 audio_in_ids_l.extend(
-                    [batch[i].get_audio_codes(idx)[: self.audio_num_codebooks, :] for idx in audio_in_ids]
+                    [processed_batch[i].get_audio_codes(idx)[: self.audio_num_codebooks, :] for idx in audio_in_ids]
                 )
-                if batch[i].audio_label_ids_concat is not None:
+                if processed_batch[i].audio_label_ids_concat is not None:
                     if audio_in_label_ids_l is None:
                         audio_in_label_ids_l = []
                     audio_in_label_ids_l.extend(
                         [
-                            batch[i].get_audio_codes_labels(idx)[: self.audio_num_codebooks, :]
+                            processed_batch[i].get_audio_codes_labels(idx)[: self.audio_num_codebooks, :]
                             for idx in audio_in_ids
                         ]
                     )
 
             audio_out_ids_l.extend(
-                [batch[i].get_audio_codes(idx)[: self.audio_num_codebooks, :] for idx in audio_out_ids]
+                [processed_batch[i].get_audio_codes(idx)[: self.audio_num_codebooks, :] for idx in audio_out_ids]
             )
             audio_out_ids_group_loc_l.append(i)
-            if batch[i].reward is not None:
-                reward_l.append(batch[i].reward)
+            if processed_batch[i].reward is not None:
+                reward_l.append(processed_batch[i].reward)
 
-            if batch[i].audio_label_ids_concat is not None:
+            if processed_batch[i].audio_label_ids_concat is not None:
                 if audio_out_label_ids_l is None:
                     audio_out_label_ids_l = []
                 audio_out_label_ids_l.extend(
                     [
-                        batch[i].get_audio_codes_labels(idx)[: self.audio_num_codebooks, :]
+                        processed_batch[i].get_audio_codes_labels(idx)[: self.audio_num_codebooks, :]
                         for idx in audio_out_ids
                     ]
                 )
 
             if self.encode_whisper_embed:
                 for idx in audio_in_ids:
-                    wv, sr = batch[i].get_wv(idx)
+                    wv, sr = processed_batch[i].get_wv(idx)
                     resampled_wv = wv.cpu().numpy()
                     # Split long audio into chunks
                     total_samples = len(resampled_wv)
@@ -308,9 +307,9 @@ class HiggsAudioSampleCollator:
                         chunk_end = min(chunk_start + self.chunk_size_samples, total_samples)
                         chunk = resampled_wv[chunk_start:chunk_end]
                         audio_in_wv_l.append(chunk)
-            # assert len(audio_in_wv_l) == batch[i].num_audios(), \
+            # assert len(audio_in_wv_l) == processed_batch[i].num_audios(), \
             #     f"Assertion failed: Mismatch in number of audios. " \
-            #     f"Expected {batch[i].num_audios()}, but got {len(audio_in_wv_l)} at index {i}."
+            #     f"Expected {processed_batch[i].num_audios()}, but got {len(audio_in_wv_l)} at index {i}."
 
         if return_labels:
             audio_out_no_train_flag = torch.cat(audio_out_no_train_flag, dim=0)
@@ -444,40 +443,40 @@ class HiggsAudioSampleCollator:
             input_ids = torch.stack(
                 [
                     F.pad(ele.input_ids, (max_seq_length - len(ele.input_ids), 0), value=self.pad_token_id)
-                    for ele in batch
+                    for ele in processed_batch
                 ]
             )
             if return_labels:
                 label_ids = torch.stack(
                     [
                         F.pad(ele.label_ids, (max_seq_length - len(ele.label_ids), 0), value=-100)
-                        for ele in batch
+                        for ele in processed_batch
                     ]
                 )
             attention_mask = torch.stack(
                 [
                     F.pad(torch.ones_like(ele.input_ids), (max_seq_length - len(ele.input_ids), 0), value=0)
-                    for ele in batch
+                    for ele in processed_batch
                 ]
             )
         else:
             input_ids = torch.stack(
                 [
                     F.pad(ele.input_ids, (0, max_seq_length - len(ele.input_ids)), value=self.pad_token_id)
-                    for ele in batch
+                    for ele in processed_batch
                 ]
             )
             if return_labels:
                 label_ids = torch.stack(
                     [
                         F.pad(ele.label_ids, (0, max_seq_length - len(ele.label_ids)), value=-100)
-                        for ele in batch
+                        for ele in processed_batch
                     ]
                 )
             attention_mask = torch.stack(
                 [
                     F.pad(torch.ones_like(ele.input_ids), (0, max_seq_length - len(ele.input_ids)), value=0)
-                    for ele in batch
+                    for ele in processed_batch
                 ]
             )
 

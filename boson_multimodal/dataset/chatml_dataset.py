@@ -366,7 +366,6 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                 speaker_id = sample.misc["speaker"]
 
         total_m = len(sample.messages)
-        
         for turn_id, message in enumerate(sample.messages):
             role = message.role
             recipient = message.recipient
@@ -383,11 +382,8 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                 for ele in content:
                     if isinstance(ele, str):
                         content_l.append(TextContent(text=ele))
-                    elif hasattr(ele, 'type'):
-                        content_l.append(ele)
                     else:
                         content_l.append(ele)
-            
             if turn_id == 0:
                 prefix = f"<|begin_of_text|><|start_header_id|>{role}<|end_header_id|>\n\n"
             else:
@@ -405,20 +401,18 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                 input_tokens.extend(recipient_tokens)
                 label_tokens.extend(recipient_tokens)
 
-            # Process all content items for current message
             for content in content_l:
-                if hasattr(content, 'type') and content.type == "text":
+                if content.type == "text":
                     text_tokens = tokenizer.encode(content.text, add_special_tokens=False)
                     input_tokens.extend(text_tokens)
                     if role == "assistant" and (sample.start_index is None or turn_id >= sample.start_index):
-                        label_tokens.extend(text_tokens)  
+                        label_tokens.extend(text_tokens)
                     else:
-                        label_tokens.extend([-100 for _ in text_tokens])  
+                        label_tokens.extend([-100 for _ in text_tokens])
 
-                elif hasattr(content, 'type') and content.type == "audio":
+                elif content.type == "audio":
                     # Generate the text-part of the audio tokens
                     audio_contents.append(content)
-                    
                     if role == "user" or role == "system":
                         # Add the text tokens
                         text_tokens = tokenizer.encode(
@@ -426,7 +420,7 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                             add_special_tokens=False,
                         )
                         input_tokens.extend(text_tokens)
-                        label_tokens.extend([-100 for _ in text_tokens])  
+                        label_tokens.extend([-100 for _ in text_tokens])
                     elif role == "assistant":
                         # Add the text tokens for audio-out part.
                         text_tokens = tokenizer.encode(
@@ -435,10 +429,9 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                         )
                         input_tokens.extend(text_tokens)
                         if sample.start_index is None or turn_id >= sample.start_index:
-                            label_tokens.extend(text_tokens)  
+                            label_tokens.extend(text_tokens)
                         else:
-                            label_tokens.extend([-100 for _ in text_tokens])  
-
+                            label_tokens.extend([-100 for _ in text_tokens])
             next_id = turn_id + 1
             if role == "assistant" and next_id != total_m and sample.messages[next_id].role == "assistant":
                 postfix_tokens = tokenizer.encode(eom_postfix, add_special_tokens=False)
