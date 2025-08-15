@@ -63,28 +63,68 @@ class SimpleDataset(Dataset):
         return self.samples[idx]
 
 
-def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator):
-    """SIMPLE collate function - convert dicts to ChatMLDatasetSample objects"""
+def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=24000):
+    """SIMPLE collate function - properly process audio like the backup trainer"""
     chatml_samples = []
     
     for sample in batch:
         # Process sample and get inputs/labels
         input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
         
-        # Create ChatMLDatasetSample with ALL required fields properly
+        # Process audio properly using audio_tokenizer (like backup trainer)
+        audio_ids_list = []
+        audio_waveforms_list = []
+        
+        for audio_content in audio_contents:
+            if audio_content and hasattr(audio_content, 'audio_url'):
+                audio_path = audio_content.audio_url
+                if audio_path and os.path.exists(audio_path):
+                    try:
+                        # Tokenize audio
+                        audio_codes = audio_tokenizer.encode(audio_path)
+                        
+                        # Load waveform
+                        waveform, sr = librosa.load(audio_path, sr=sample_rate, mono=True)
+                        waveform = torch.tensor(waveform, dtype=torch.float32)
+                        
+                        audio_ids_list.append(audio_codes)
+                        audio_waveforms_list.append(waveform)
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to process audio {audio_path}: {e}")
+        
+        # Create proper audio concatenation (like backup trainer)
+        if audio_ids_list:
+            audio_ids_concat = torch.cat(audio_ids_list, dim=1)
+            audio_ids_start = torch.cumsum(
+                torch.tensor([0] + [ids.shape[1] for ids in audio_ids_list]), dim=0
+            )
+        else:
+            audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)
+            audio_ids_start = torch.tensor([0], dtype=torch.long)
+        
+        if audio_waveforms_list:
+            audio_waveforms_concat = torch.cat(audio_waveforms_list, dim=0)
+            lengths = [len(wv) for wv in audio_waveforms_list]
+            audio_waveforms_start = torch.tensor([0] + lengths[:-1]).cumsum(dim=0)
+            audio_sample_rate = torch.tensor([sample_rate] * len(audio_waveforms_list))
+            audio_speaker_indices = torch.zeros(len(audio_waveforms_list), dtype=torch.long)
+        else:
+            audio_waveforms_concat = torch.tensor([])
+            audio_waveforms_start = torch.tensor([0], dtype=torch.long)
+            audio_sample_rate = torch.tensor([sample_rate])
+            audio_speaker_indices = torch.tensor([0], dtype=torch.long)
+        
+        # Create ChatMLDatasetSample with REAL audio data
         chatml_sample = ChatMLDatasetSample(
             input_ids=torch.tensor(input_tokens, dtype=torch.long),
             label_ids=torch.tensor(label_tokens, dtype=torch.long),
-            # Proper dummy audio data
-            audio_ids_concat=torch.zeros((8, 10), dtype=torch.long),
-            audio_ids_start=torch.tensor([0], dtype=torch.long),
-            audio_waveforms_concat=torch.zeros(1000, dtype=torch.float32),
-            audio_waveforms_start=torch.tensor([0], dtype=torch.long), 
-            audio_sample_rate=torch.tensor([24000.0], dtype=torch.float32),
-            audio_speaker_indices=torch.tensor([0], dtype=torch.long),
-            # Add missing fields that collator might need
-            audio_label_ids_concat=None,
-            reward=None
+            audio_ids_concat=audio_ids_concat,
+            audio_ids_start=audio_ids_start,
+            audio_waveforms_concat=audio_waveforms_concat,
+            audio_waveforms_start=audio_waveforms_start,
+            audio_sample_rate=audio_sample_rate,
+            audio_speaker_indices=audio_speaker_indices
         )
         chatml_samples.append(chatml_sample)
     
