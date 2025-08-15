@@ -281,8 +281,21 @@ class HiggsAudioModelWrapper(nn.Module):
             logger.warning(f"🚨 MODEL WRAPPER: DataParallel passed 'labels'! Converting to 'label_ids'")
             kwargs['label_ids'] = kwargs.pop('labels')
         
-        # Simple forward with safety check
-        return self.model(**kwargs)
+        # ADDITIONAL SAFETY: Remove any other unexpected parameters
+        expected_params = {
+            'input_ids', 'inputs_embeds', 'attention_mask', 'audio_features', 
+            'audio_feature_attention_mask', 'audio_in_ids', 'audio_in_ids_start',
+            'audio_out_ids', 'audio_out_ids_start', 'audio_out_ids_start_group_loc',
+            'label_ids', 'label_audio_ids', 'past_key_values', 'use_cache',
+            'output_attentions', 'output_hidden_states', 'output_audio_hidden_states',
+            'return_dict', 'cache_position', 'cache_audio_discrete_codes_mask',
+            'past_key_values_buckets', 'reward'
+        }
+        
+        # Filter to only expected parameters
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in expected_params}
+        
+        return self.model(**filtered_kwargs)
 
 
 class HiggsAudioTrainer(Trainer):
