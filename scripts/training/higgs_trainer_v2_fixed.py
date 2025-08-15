@@ -338,7 +338,7 @@ class HiggsAudioTrainer(Trainer):
         
         return inputs
     
-    def training_step(self, model, inputs):
+    def training_step(self, model, inputs, num_items_in_batch=None):
         """
         DEFINITIVE FIX: Override training_step to remove 'labels' before it ever reaches the model.
         This prevents the DataParallel wrapper from passing the unexpected keyword argument.
@@ -348,7 +348,7 @@ class HiggsAudioTrainer(Trainer):
             inputs.pop('labels')
         
         # Proceed with the original training step using the sanitized inputs
-        return super().training_step(model, inputs)
+        return super().training_step(model, inputs, num_items_in_batch)
 
 
 def setup_lora_config(model: nn.Module, lora_config: Dict) -> nn.Module:
