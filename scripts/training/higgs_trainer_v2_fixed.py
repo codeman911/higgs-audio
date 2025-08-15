@@ -35,10 +35,10 @@ import re
 # Import Higgs Audio modules
 from boson_multimodal.model.higgs_audio import HiggsAudioConfig, HiggsAudioModel
 from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioModel, HiggsAudioConfig, HiggsAudioDualFFNDecoderLayer
-from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator, HiggsAudioBatchInput, ExtendedHiggsAudioBatchInput
+from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
+from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator, HiggsAudioBatchInput
 from boson_multimodal.tokenizer.higgs_audio_tokenizer import HiggsAudioTokenizer
 from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
-from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
 from boson_multimodal.data_types import Message, ChatMLSample, AudioContent, TextContent
 
 # Setup logging
