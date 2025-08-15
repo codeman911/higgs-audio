@@ -97,7 +97,7 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
         
         # Tokenize with prepare_chatml_sample (exactly like backup trainer)
         try:
-            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
+            input_tokens, label_tokens, audio_contents, speaker_id = fixed_prepare_chatml_sample(
                 chatml_dict, tokenizer
             )
         except Exception as e:
@@ -181,6 +181,101 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
     
     # Now call original collator with proper objects
     return collator(chatml_samples)
+
+
+def fixed_prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
+    """FIXED: Prevent audio tokens from contaminating text labels"""
+    
+    try:
+        # Handle different input types (same as original)
+        if not isinstance(sample, ChatMLSample):
+            # [Same conversion logic as original - abbreviated for space]
+            clean_sample = sample
+            try:
+                sample = dacite.from_dict(
+                    data_class=ChatMLSample, data=clean_sample, config=dacite.Config(strict=True, check_types=False)
+                )
+            except Exception as e:
+                logger.warning(f"Failed to convert to ChatMLSample: {e}")
+                return None, None, None, None
+
+        input_tokens = []
+        label_tokens = []
+        audio_contents = []
+        speaker_id = None
+        if sample.speaker is not None:
+            speaker_id = sample.speaker
+
+        total_m = len(sample.messages)
+        for turn_id, message in enumerate(sample.messages):
+            role = message.role
+            content = message.content
+            content_l = []
+
+            # Convert content to list format
+            if isinstance(content, str):
+                content_l.append(TextContent(text=content))
+            elif isinstance(content, list):
+                for ele in content:
+                    if isinstance(ele, str):
+                        content_l.append(TextContent(text=ele))
+                    else:
+                        content_l.append(ele)
+            else:
+                content_l.append(content)
+
+            # Add role header
+            if turn_id == 0:
+                prefix = f"<|begin_of_text|><|start_header_id|>{role}<|end_header_id|>\n\n"
+            else:
+                prefix = f"<|start_header_id|>{role}<|end_header_id|>\n\n"
+            
+            prefix_tokens = tokenizer.encode(prefix, add_special_tokens=False)
+            input_tokens.extend(prefix_tokens)
+            label_tokens.extend([-100 for _ in prefix_tokens])  # Headers always masked
+
+            # Process content
+            for content in content_l:
+                if content.type == "text":
+                    # TEXT CONTENT: Add to both input and labels (if assistant)
+                    text_tokens = tokenizer.encode(content.text, add_special_tokens=False)
+                    input_tokens.extend(text_tokens)
+                    if role == "assistant" and (sample.start_index is None or turn_id >= sample.start_index):
+                        label_tokens.extend(text_tokens)  # TEXT TOKENS in text labels
+                    else:
+                        label_tokens.extend([-100 for _ in text_tokens])
+
+                elif content.type == "audio":
+                    # AUDIO CONTENT: Add audio placeholders but MASK them in text labels
+                    audio_contents.append(content)
+                    if role == "user" or role == "system":
+                        # User/system audio: <|audio_bos|><|AUDIO|><|audio_eos|>
+                        audio_placeholder = "<|audio_bos|><|AUDIO|><|audio_eos|>"
+                    elif role == "assistant":
+                        # Assistant audio: <|audio_out_bos|><|AUDIO_OUT|><|audio_eos|>
+                        audio_placeholder = "<|audio_out_bos|><|AUDIO_OUT|><|audio_eos|>"
+                    else:
+                        audio_placeholder = "<|audio_bos|><|AUDIO|><|audio_eos|>"
+                    
+                    placeholder_tokens = tokenizer.encode(audio_placeholder, add_special_tokens=False)
+                    input_tokens.extend(placeholder_tokens)
+                    # CRITICAL FIX: ALWAYS mask audio placeholders in text labels
+                    label_tokens.extend([-100 for _ in placeholder_tokens])  # MASKED!
+            
+            # Add end-of-turn token
+            eot_postfix = "<|eot_id|>"
+            postfix_tokens = tokenizer.encode(eot_postfix, add_special_tokens=False)
+            input_tokens.extend(postfix_tokens)
+            if role == "assistant" and (sample.start_index is None or turn_id >= sample.start_index):
+                label_tokens.extend(postfix_tokens)
+            else:
+                label_tokens.extend([-100 for _ in postfix_tokens])
+
+        return input_tokens, label_tokens, audio_contents, speaker_id
+
+    except Exception as e:
+        logger.error(f"Error in fixed_prepare_chatml_sample: {str(e)}")
+        return None, None, None, None
 
 
 def main():
@@ -363,7 +458,7 @@ def main():
         # Test prepare_chatml_sample to see what it produces
         logger.info("🔍 TESTING prepare_chatml_sample OUTPUT:")
         try:
-            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
+            input_tokens, label_tokens, audio_contents, speaker_id = fixed_prepare_chatml_sample(sample, tokenizer)
             
             logger.info(f"   input_tokens length: {len(input_tokens)}")
             logger.info(f"   label_tokens length: {len(label_tokens)}")
