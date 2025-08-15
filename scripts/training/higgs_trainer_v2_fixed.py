@@ -268,6 +268,7 @@ class HiggsAudioModelWrapper(nn.Module):
         logger.info(f"✅ CROSS-MODAL CONDITIONING: Rebuilt {len(new_layers)} layers with audio attention")
     
     def forward(self, **kwargs):
+        # Remove parameter conversion from here - PEFT bypasses this anyway
         return self.model(**kwargs)
 
 
@@ -306,37 +307,37 @@ class HiggsAudioTrainer(Trainer):
     
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
-        Custom loss computation using model's built-in loss (official approach)
+        Custom loss computation following official trainer approach.
         But with audio token masking (your improvement)
         """
-        # Convert ExtendedHiggsAudioBatchInput to model inputs
+        # CRITICAL FIX: Handle parameter conversion BEFORE calling model
+        # This ensures conversion happens before PEFT wrapper gets involved
+        
         if isinstance(inputs, ExtendedHiggsAudioBatchInput):
+            # Convert ExtendedHiggsAudioBatchInput to model inputs
             model_inputs = {
                 'input_ids': inputs.input_ids,
                 'attention_mask': inputs.attention_mask,
                 'audio_in_ids': inputs.audio_in_ids,
-                'audio_features': inputs.audio_features,  # FIXED: Use correct attribute name
-                'audio_feature_attention_mask': inputs.audio_feature_attention_mask,  # FIXED: Add missing attribute
+                'audio_features': inputs.audio_features,
+                'audio_feature_attention_mask': inputs.audio_feature_attention_mask,
                 'audio_in_ids_start': inputs.audio_in_ids_start,
                 'audio_out_ids': inputs.audio_out_ids,
                 'audio_out_ids_start': inputs.audio_out_ids_start,
-                'label_ids': inputs.label_ids,  # HiggsAudio expects label_ids
+                'label_ids': inputs.label_ids,  # Already correct
             }
         else:
-            # Handle standard HuggingFace inputs
-            model_inputs = dict(inputs)
-            # Fix parameter mapping: HuggingFace uses 'labels' but HiggsAudio expects 'label_ids'
-            if 'labels' in model_inputs:
-                model_inputs['label_ids'] = model_inputs.pop('labels')
-        
-        # ROBUST FIX: Ensure NO 'labels' key exists anywhere
-        if 'labels' in model_inputs:
-            model_inputs['label_ids'] = model_inputs.pop('labels')
-            logger.debug("🔧 Converted 'labels' to 'label_ids' for HiggsAudio compatibility")
-        
-        # Debug: Log input types and keys
-        logger.debug(f"🔍 Input type: {type(inputs)}")
-        logger.debug(f"🔍 Model input keys: {list(model_inputs.keys())}")
+            # Handle standard HuggingFace inputs - convert dict to proper model inputs
+            model_inputs = {}
+            
+            # Copy all inputs and handle parameter mapping
+            for key, value in inputs.items():
+                if key == 'labels':
+                    # CRITICAL: Convert labels -> label_ids for HiggsAudio compatibility
+                    model_inputs['label_ids'] = value
+                    logger.debug("🔧 Converted 'labels' to 'label_ids' in compute_loss")
+                else:
+                    model_inputs[key] = value
         
         # Apply audio token masking in text labels (your improvement)
         if 'label_ids' in model_inputs and model_inputs['label_ids'] is not None:
@@ -357,7 +358,7 @@ class HiggsAudioTrainer(Trainer):
         # Add NaN detection (your safety improvement)
         if torch.isnan(loss):
             logger.warning("⚠️  NaN loss detected! Skipping this batch.")
-            loss = torch.tensor(0.0, requires_grad=True, device=loss.device)
+            return torch.tensor(0.0, requires_grad=True, device=loss.device)
         
         return (loss, outputs) if return_outputs else loss
     
