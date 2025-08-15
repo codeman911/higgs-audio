@@ -60,122 +60,6 @@ class SimpleDataset(Dataset):
         return self.samples[idx]
 
 
-def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
-    """Simple collate function that creates proper ChatMLDatasetSample objects for original collator"""
-    
-    chatml_samples = []
-    
-    for sample_idx, sample in enumerate(batch):
-        # Use the existing ChatML structure as-is (it's already correctly formatted)
-        # The sample already contains proper messages structure from zero-shot processing
-        
-        # Extract metadata for validation only
-        misc = sample.get('misc', {})
-        ref_transcript = misc.get('ref_transcript', '')
-        target_text = misc.get('target_transcript', '')  # Updated to match corrected data processor
-        
-        # Extract speaker info with robust fallback handling
-        misc_data = sample.get('misc', {})
-        speaker_id = sample.get('speaker', misc_data.get('sample_id', ''))
-        
-        # Convert string speaker_id to numeric hash for tensor compatibility
-        if isinstance(speaker_id, str) and speaker_id:
-            # Use hash of speaker string for numeric ID (consistent across runs)
-            speaker_numeric_id = abs(hash(speaker_id)) % 10000  # Keep it reasonable size
-        elif isinstance(speaker_id, (int, float)):
-            # If already numeric, use it directly
-            speaker_numeric_id = int(speaker_id)
-        else:
-            # Fallback: use sample index as speaker ID if no other info available
-            speaker_numeric_id = sample_idx if 'sample_idx' in locals() else 0
-        
-        # Process sample and get inputs/labels
-        input_tokens, label_tokens, audio_contents, _ = prepare_chatml_sample(sample, tokenizer)
-        
-        # CRITICAL FIX: Lower threshold to prevent empty batches (was 64, now 8)
-        target_token_count = len([t for t in label_tokens if t != -100])
-        audio_segment_count = len(audio_contents)
-        
-        # Skip only if extremely insufficient tokens (lowered from 64 to 8)
-        if target_token_count < 8:
-            continue
-        
-        # Process audio using audio_tokenizer if present
-        audio_ids_list = []
-        audio_waveforms_list = []
-        
-        for audio_content in audio_contents:
-            if audio_content and hasattr(audio_content, 'audio_url'):
-                audio_path = audio_content.audio_url
-                if audio_path and os.path.exists(audio_path):
-                    try:
-                        # Tokenize audio
-                        audio_codes = audio_tokenizer.encode(audio_path)
-                        
-                        # Load waveform
-                        waveform, sr = librosa.load(audio_path, sr=sample_rate, mono=True)
-                        waveform = torch.tensor(waveform, dtype=torch.float32)
-                        
-                        audio_ids_list.append(audio_codes)
-                        audio_waveforms_list.append(waveform)
-                        
-                    except Exception as e:
-                        logger.warning(f"Failed to process audio {audio_path}: {e}")
-        
-        # Create proper audio concatenation for ChatMLDatasetSample
-        if audio_ids_list:
-            # Concatenate audio codes from all segments [8, T_total]
-            audio_ids_concat = torch.cat(audio_ids_list, dim=-1)
-            # Create proper start indices for each audio segment
-            audio_ids_start = torch.tensor([0] + [audio_codes.shape[1] for audio_codes in audio_ids_list[:-1]], dtype=torch.long).cumsum(dim=0)
-            # Use first waveform as representative (collator handles properly)  
-            audio_wv = audio_waveforms_list[0] if audio_waveforms_list else None
-            audio_wv_start = torch.tensor([0], dtype=torch.long)
-        else:
-            # Create dummy audio to prevent errors
-            audio_ids_concat = torch.zeros((8, 10), dtype=torch.long)  # 8 codebooks, 10 time steps
-            audio_ids_start = torch.tensor([0, 10], dtype=torch.long)  # Corrected audio indexing structure
-            audio_wv = torch.zeros((1000,), dtype=torch.float32)  # 1000 samples dummy audio
-            audio_wv_start = torch.tensor([0], dtype=torch.long)
-        
-        # Create ChatMLDatasetSample with all required fields
-        chatml_sample = ChatMLDatasetSample(
-            input_ids=torch.tensor(input_tokens, dtype=torch.long),
-            label_ids=torch.tensor(label_tokens, dtype=torch.long), 
-            audio_ids_concat=audio_ids_concat,
-            audio_ids_start=audio_ids_start,
-            audio_waveforms_concat=audio_wv,
-            audio_waveforms_start=audio_wv_start,
-            audio_sample_rate=torch.tensor([sample_rate], dtype=torch.float32),
-            audio_speaker_indices=torch.tensor([speaker_numeric_id], dtype=torch.long)
-        )
-        
-        chatml_samples.append(chatml_sample)
-    
-    # CRITICAL FIX: Ensure we never return completely empty batches
-    if not chatml_samples:
-        # Create a dummy sample to prevent collator crash
-        dummy_input = torch.tensor([tokenizer.bos_token_id, tokenizer.eos_token_id], dtype=torch.long)
-        dummy_labels = torch.tensor([-100, tokenizer.eos_token_id], dtype=torch.long)
-        dummy_audio = torch.zeros((8, 10), dtype=torch.long)
-        dummy_wv = torch.zeros((1000,), dtype=torch.float32)
-        
-        dummy_sample = ChatMLDatasetSample(
-            input_ids=dummy_input,
-            label_ids=dummy_labels,
-            audio_ids_concat=dummy_audio, 
-            audio_ids_start=torch.tensor([0, 10], dtype=torch.long),  # Corrected audio indexing structure
-            audio_waveforms_concat=dummy_wv,
-            audio_waveforms_start=torch.tensor([0], dtype=torch.long),
-            audio_sample_rate=torch.tensor([sample_rate], dtype=torch.float32),
-            audio_speaker_indices=torch.tensor([0], dtype=torch.long)
-        )
-        chatml_samples = [dummy_sample]
-        logger.warning("EMPTY BATCH: Created dummy sample to prevent collator crash")
-    
-    return chatml_samples  # Return list of ChatMLDatasetSample objects
-
-
 def main():
     parser = argparse.ArgumentParser(description="Higgs-Audio LoRA Training")
     
@@ -302,18 +186,13 @@ def main():
     logger.info("Initializing collator...")
     whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
     
+    # Use the original HiggsAudioSampleCollator instead of custom collate function
+    # This handles all audio indexing automatically and correctly
     collator = HiggsAudioSampleCollator(
-        whisper_processor=whisper_processor,
-        audio_in_token_id=config.audio_in_token_idx,
-        audio_out_token_id=config.audio_out_token_idx,
-        audio_stream_bos_id=config.audio_stream_bos_id,
-        audio_stream_eos_id=config.audio_stream_eos_id,
-        encode_whisper_embed=config.encode_whisper_embed,
-        pad_token_id=config.pad_token_id,
-        return_audio_in_tokens=config.encode_audio_in_tokens,
-        use_delay_pattern=config.use_delay_pattern,
-        round_to=8,  # Documentation recommends round_to=8 for optimal batching
-        audio_num_codebooks=8
+        tokenizer=tokenizer,
+        processor=whisper_processor,
+        audio_tokenizer=audio_tokenizer,
+        audio_num_codebooks=8,  # Match the tokenizer
     )
     
     # Load datasets
@@ -352,7 +231,7 @@ def main():
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=lambda batch: collator(collate_fn(batch, tokenizer, audio_tokenizer)),
+        collate_fn=collator,  # Use original collator, not custom function
         pin_memory=True,  # H200 optimization
         drop_last=True    # Consistent batch sizes for speed
     )
@@ -364,7 +243,7 @@ def main():
         num_workers=args.num_workers // 2,  # Less workers for validation
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
-        collate_fn=lambda batch: collator(collate_fn(batch, tokenizer, audio_tokenizer)),
+        collate_fn=collator,  # Use original collator, not custom function
         pin_memory=True,
         drop_last=False
     )
@@ -440,11 +319,10 @@ def main():
             input_ids=inp, attention_mask=attn,
             audio_in_ids=a_in, audio_out_ids=a_shift, audio_labels=a_lbl,
             text_labels=t_lbl,
-            # CRITICAL FIX: Add missing audio indexing parameters that model expects
-            # For multi-codebook system: provide cumulative start indices that produce correct length calculations
-            # Each codebook stream needs its length specified individually
-            audio_in_ids_start=torch.arange(a_in.shape[0] + 1, dtype=torch.long, device=device) * a_in.shape[1] if a_in is not None else torch.tensor([0], dtype=torch.long, device=device),
-            audio_out_ids_start=torch.arange(a_shift.shape[0] + 1, dtype=torch.long, device=device) * a_shift.shape[1] if a_shift is not None else torch.tensor([0], dtype=torch.long, device=device),
+            # CRITICAL FIX: Create exactly the right number of start indices to produce correct length values
+            # For 8 codebooks, we need 8 start indices to produce 8 length values (not 9)
+            audio_in_ids_start=torch.arange(a_in.shape[0], dtype=torch.long, device=device) * a_in.shape[1] if a_in is not None else torch.tensor([0], dtype=torch.long, device=device),
+            audio_out_ids_start=torch.arange(a_shift.shape[0], dtype=torch.long, device=device) * a_shift.shape[1] if a_shift is not None else torch.tensor([0], dtype=torch.long, device=device),
             audio_out_ids_start_group_loc=None  # Not needed for single audio segments
         )
 
