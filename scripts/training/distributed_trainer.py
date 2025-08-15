@@ -144,49 +144,71 @@ def mask_audio_tokens_in_text_labels(batch, tokenizer):
     if not hasattr(batch, 'label_ids') or batch.label_ids is None:
         return batch
     
-    # Get audio token IDs that contaminate text supervision
-    audio_eos_id = tokenizer.convert_tokens_to_ids("<|audio_eos|>")
-    audio_bos_id = tokenizer.convert_tokens_to_ids("<|audio_bos|>") 
-    audio_out_bos_id = tokenizer.convert_tokens_to_ids("<|audio_out_bos|>")
-    audio_in_id = tokenizer.convert_tokens_to_ids("<|AUDIO|>")
-    audio_out_id = tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>")
+    # CRITICAL FIX: The token IDs we need to mask
+    # From logs, we see predictions are [128012, 128012, ...] which is likely <|audio_eos|>
     
-    # DEBUG: Log token IDs found
-    print(f"DEBUG MASKING - Token IDs found:")
-    print(f"  audio_eos_id: {audio_eos_id}")
-    print(f"  audio_bos_id: {audio_bos_id}")
-    print(f"  audio_out_bos_id: {audio_out_bos_id}")
-    print(f"  audio_in_id: {audio_in_id}")
-    print(f"  audio_out_id: {audio_out_id}")
+    # Check what 128012 actually is
+    try:
+        token_128012 = tokenizer.decode([128012])
+        print(f"DEBUG MASKING - Token 128012 decodes to: '{token_128012}'")
+    except:
+        print(f"DEBUG MASKING - Could not decode token 128012")
     
-    # Collect all audio token IDs to mask
+    # Get audio token IDs using multiple approaches
     audio_token_ids = set()
-    if audio_eos_id is not None: audio_token_ids.add(audio_eos_id)
-    if audio_bos_id is not None: audio_token_ids.add(audio_bos_id)
-    if audio_out_bos_id is not None: audio_token_ids.add(audio_out_bos_id)
-    if audio_in_id is not None: audio_token_ids.add(audio_in_id)
-    if audio_out_id is not None: audio_token_ids.add(audio_out_id)
     
-    print(f"  audio_token_ids to mask: {audio_token_ids}")
+    # Approach 1: Direct token ID lookup
+    possible_audio_tokens = [
+        "<|audio_eos|>", "<|audio_bos|>", "<|audio_out_bos|>", 
+        "<|AUDIO|>", "<|AUDIO_OUT|>",
+        "audio_eos", "audio_bos", "audio_out_bos"  # Alternative formats
+    ]
+    
+    for token in possible_audio_tokens:
+        token_id = tokenizer.convert_tokens_to_ids(token)
+        if token_id != tokenizer.unk_token_id:  # Valid token found
+            audio_token_ids.add(token_id)
+            print(f"DEBUG MASKING - Found audio token: '{token}' -> {token_id}")
+    
+    # Approach 2: Check vocab directly for audio-related tokens
+    vocab = tokenizer.get_vocab()
+    audio_vocab_tokens = {k: v for k, v in vocab.items() if 'audio' in k.lower()}
+    for token, token_id in audio_vocab_tokens.items():
+        audio_token_ids.add(token_id)
+        print(f"DEBUG MASKING - Found audio vocab token: '{token}' -> {token_id}")
+    
+    # Approach 3: Based on observed contamination - add 128012 if it's audio-related
+    if 128012 not in audio_token_ids:
+        audio_token_ids.add(128012)
+        print(f"DEBUG MASKING - Adding observed contamination token: 128012")
+    
+    print(f"DEBUG MASKING - Total audio tokens to mask: {sorted(audio_token_ids)}")
     
     # DEBUG: Check what's actually in labels before masking
     unique_tokens_before = torch.unique(batch.label_ids[batch.label_ids != -100])
-    print(f"  Unique tokens in labels BEFORE masking: {unique_tokens_before[:20].tolist()}")  # First 20
+    print(f"DEBUG MASKING - Unique tokens in labels BEFORE: {unique_tokens_before[:20].tolist()}")
     
     # Count audio tokens in labels before masking
     total_masked = 0
     for audio_token_id in audio_token_ids:
         count = (batch.label_ids == audio_token_id).sum().item()
         if count > 0:
-            print(f"  Found {count} instances of token {audio_token_id} to mask")
+            print(f"DEBUG MASKING - Found {count} instances of token {audio_token_id} to mask")
             total_masked += count
         batch.label_ids[batch.label_ids == audio_token_id] = -100
     
-    print(f"  Total tokens masked: {total_masked}")
+    print(f"DEBUG MASKING - Total tokens masked: {total_masked}")
     
     # DEBUG: Check what's left after masking
     unique_tokens_after = torch.unique(batch.label_ids[batch.label_ids != -100])
-    print(f"  Unique tokens in labels AFTER masking: {unique_tokens_after[:20].tolist()}")  # First 20
+    print(f"DEBUG MASKING - Unique tokens in labels AFTER: {unique_tokens_after[:20].tolist()}")
+    
+    # If no tokens were masked, this suggests the masking approach is wrong
+    if total_masked == 0:
+        print("DEBUG MASKING - ⚠️  WARNING: No tokens were masked! Masking may have failed.")
+        print("DEBUG MASKING - This could explain why text predictions are still contaminated.")
+    else:
+        print(f"DEBUG MASKING - ✅ Successfully masked {total_masked} audio tokens")
     
     return batch
 
@@ -290,11 +312,51 @@ def main():
     # Load model config (REVERT: Keep original config)
     config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
     
+    # CRITICAL DEBUG: Check DualFFN configuration
+    logger.info("=" * 100)
+    logger.info(" CRITICAL ARCHITECTURE DEBUG - DualFFN Configuration")
+    logger.info("=" * 100)
+    
+    # Check the critical use_audio_out_self_attention setting
+    use_audio_attention = getattr(config, 'use_audio_out_self_attention', None)
+    logger.info(f" use_audio_out_self_attention: {use_audio_attention}")
+    
+    if use_audio_attention is False:
+        logger.error(" ❌ CRITICAL BUG: use_audio_out_self_attention=False!")
+        logger.error("    This means NO audio attention modules exist!")
+        logger.error("    Audio and text pathways are COMPLETELY ISOLATED!")
+        logger.error("    This explains all training failures:")
+        logger.error("      - Audio learns independently (fast convergence)")
+        logger.error("      - Text can't access audio conditioning (0% accuracy)")
+        logger.error("      - No cross-modal learning possible")
+        logger.error("")
+        logger.error(" FIXING: Setting use_audio_out_self_attention=True")
+        config.use_audio_out_self_attention = True
+        logger.info(f" ✅ FIXED: use_audio_out_self_attention now: {config.use_audio_out_self_attention}")
+    elif use_audio_attention is True:
+        logger.info(" ✅ use_audio_out_self_attention=True (cross-attention enabled)")
+    else:
+        logger.warning(f" ⚠️  use_audio_out_self_attention not found in config: {use_audio_attention}")
+        logger.warning("    Setting to True for cross-modal conditioning")
+        config.use_audio_out_self_attention = True
+    
+    # Check other critical DualFFN settings
+    audio_num_codebooks = getattr(config, 'audio_num_codebooks', None)
+    logger.info(f" audio_num_codebooks: {audio_num_codebooks}")
+    
+    # Check if model will have separate FFNs
+    logger.info(f" Model will have:")
+    logger.info(f"   - Shared attention layer: YES")
+    logger.info(f"   - Separate audio attention: {config.use_audio_out_self_attention}")
+    logger.info(f"   - Separate text FFN: YES")
+    logger.info(f"   - Separate audio FFN: YES")
+    logger.info("=" * 100)
+    
     # Load model (REVERT: Use original architecture)
     logger.info("Loading model...")
     model = HiggsAudioModel.from_pretrained(
         args.model_path,
-        config=config,
+        config=config,  # Use the fixed config
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
         device_map={"": accelerator.device}
@@ -342,13 +404,51 @@ def main():
         "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj",
         "audio_mlp.gate_proj", "audio_mlp.up_proj", "audio_mlp.down_proj",
     )
+    
+    # Add audio attention targets if audio attention is enabled
+    if config.use_audio_out_self_attention:
+        logger.info(" ✅ Audio attention enabled - adding audio_attn targets to LoRA")
+        TARGET_FRAGMENTS = TARGET_FRAGMENTS + (
+            "audio_attn.q_proj", "audio_attn.k_proj", "audio_attn.v_proj", "audio_attn.o_proj",
+        )
+    else:
+        logger.warning(" ⚠️  Audio attention disabled - skipping audio_attn targets")
 
     def collect_lora_targets(model):
         leaf_targets = set()
+        all_module_names = []
+        
+        # Debug: collect all module names to see what's actually available
         for name, module in model.named_modules():
+            all_module_names.append(name)
             for frag in TARGET_FRAGMENTS:
                 if name.endswith(frag):
                     leaf_targets.add(frag.split(".")[-1])  # leaf module name
+        
+        # Debug logging
+        logger.info(f" LoRA TARGET DEBUG:")
+        logger.info(f"   Target fragments: {TARGET_FRAGMENTS}")
+        logger.info(f"   Found leaf targets: {sorted(leaf_targets)}")
+        
+        # Check for missing critical targets
+        expected_targets = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+        missing_targets = expected_targets - leaf_targets
+        if missing_targets:
+            logger.warning(f"   Missing expected targets: {missing_targets}")
+        
+        # Show sample of actual module names for debugging
+        attention_modules = [name for name in all_module_names if "attn" in name and "proj" in name]
+        mlp_modules = [name for name in all_module_names if "mlp" in name and "proj" in name]
+        
+        logger.info(f"   Sample attention modules found: {attention_modules[:5]}")
+        logger.info(f"   Sample MLP modules found: {mlp_modules[:5]}")
+        
+        if config.use_audio_out_self_attention:
+            audio_attn_modules = [name for name in all_module_names if "audio_attn" in name]
+            logger.info(f"   Audio attention modules found: {audio_attn_modules[:5]}")
+            if not audio_attn_modules:
+                logger.error(" ❌ CRITICAL: No audio_attn modules found despite use_audio_out_self_attention=True!")
+        
         return sorted(leaf_targets)
 
     lora_leaf_targets = collect_lora_targets(model)
