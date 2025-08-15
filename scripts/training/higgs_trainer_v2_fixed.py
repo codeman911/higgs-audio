@@ -91,6 +91,10 @@ class ExtendedHiggsAudioSampleCollator:
                     continue  # Skip labels entirely
                 setattr(extended_batch, attr_name, getattr(batch_input, attr_name))
         
+        # FINAL FIX: Ensure no 'labels' attribute exists
+        if hasattr(extended_batch, 'labels'):
+            delattr(extended_batch, 'labels')
+        
         return extended_batch
 
 
