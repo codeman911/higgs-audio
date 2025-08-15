@@ -311,17 +311,20 @@ class HiggsAudioTrainer(Trainer):
         """
         # Convert ExtendedHiggsAudioBatchInput to model inputs
         if isinstance(inputs, ExtendedHiggsAudioBatchInput):
-            model_inputs = {}
-            for attr_name in ['input_ids', 'attention_mask', 'label_ids', 
-                            'audio_features', 'audio_feature_attention_mask',
-                            'audio_out_ids', 'audio_out_ids_start', 
-                            'audio_in_ids', 'audio_in_ids_start',
-                            'label_audio_ids']:
-                attr_value = getattr(inputs, attr_name, None)
-                if attr_value is not None:
-                    model_inputs[attr_name] = attr_value
+            model_inputs = {
+                'input_ids': inputs.input_ids,
+                'attention_mask': inputs.attention_mask,
+                'audio_in_ids': inputs.audio_in_ids,
+                'audio_in_wv': inputs.audio_in_wv,
+                'audio_in_ids_start': inputs.audio_in_ids_start,
+                'audio_out_ids': inputs.audio_out_ids,
+                'audio_out_ids_start': inputs.audio_out_ids_start,
+                'label_ids': inputs.label_ids,  # HiggsAudio expects label_ids
+            }
         else:
+            # Handle standard HuggingFace inputs
             model_inputs = dict(inputs)
+            # Fix parameter mapping: HuggingFace uses 'labels' but HiggsAudio expects 'label_ids'
             if 'labels' in model_inputs:
                 model_inputs['label_ids'] = model_inputs.pop('labels')
         
