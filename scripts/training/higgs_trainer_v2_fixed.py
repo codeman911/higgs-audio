@@ -68,11 +68,8 @@ class FinalDataCollator:
         if 'labels' in model_inputs:
             model_inputs.pop('labels')
 
-        # 4. CRITICAL: Rename 'label_ids' to 'labels' for the Trainer
-        # The Trainer requires the 'labels' key to compute loss.
-        # The HiggsAudioModel is designed to accept this key for loss calculation.
-        if 'label_ids' in model_inputs:
-            model_inputs['labels'] = model_inputs.pop('label_ids')
+        # 4. CRITICAL FIX: Ensure 'label_ids' is present and there is NO 'labels' key.
+        # DO NOT rename 'label_ids' to 'labels'. The model only accepts 'label_ids'.
 
         return model_inputs
 
