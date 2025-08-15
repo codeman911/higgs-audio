@@ -528,35 +528,61 @@ def main():
     # Calculate training steps for proper warmup scheduling
     num_training_steps = len(train_dataloader) * args.num_epochs
     
-    # FINAL FIX: Immediate learning rate for newly initialized cross-attention modules
-    # The cosine scheduler with long warmup prevents learning for thousands of steps
-    # Newly initialized modules need immediate adaptation to learn text-audio conditioning
+    # CRITICAL FIX: The scheduler was broken - simplify and fix
+    # Don't use warmup with ultra-conservative LR - just use constant LR
+    if newly_initialized_params:
+        # For newly initialized modules, use constant learning rate (no scheduler)
+        logger.info(f" SCHEDULER FIX: Using constant LR (no warmup/decay) for stability")
+        scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0, total_iters=1)
+    else:
+        # Normal scheduler for pretrained-only models
+        warmup_steps = 50
+        logger.info(f" SCHEDULER: Using {warmup_steps} warmup steps for pretrained model")
+        from transformers import get_linear_schedule_with_warmup
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=num_training_steps
+        )
     
-    # Calculate training steps for proper warmup scheduling
-    num_training_steps = len(train_dataloader) * args.num_epochs
+    # CRITICAL: Initialize newly created audio attention modules properly
+    if newly_initialized_params:
+        logger.info(f" WEIGHT INITIALIZATION: Fixing newly initialized audio attention modules")
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if 'audio_attn' in name and 'weight' in name:
+                    if 'lora_A' in name:
+                        # LoRA A matrices should be near zero
+                        torch.nn.init.normal_(param, mean=0.0, std=0.001)
+                    elif 'lora_B' in name:
+                        # LoRA B matrices should be very small
+                        torch.nn.init.zeros_(param)
+                    elif 'base_layer' in name:
+                        # Base layer should be reasonable
+                        if 'q_proj' in name or 'k_proj' in name or 'v_proj' in name or 'o_proj' in name:
+                            torch.nn.init.xavier_uniform_(param, gain=0.02)  # Very small gain
+                elif 'audio_post_audio_attn_layer_norm' in name:
+                    if 'weight' in name:
+                        torch.nn.init.ones_(param)
+        
+        logger.info(f" WEIGHT INITIALIZATION: Completed for {len(newly_initialized_params)} parameters")
     
-    # CRITICAL FIX: Immediate learning for cross-attention adaptation
-    # Use minimal warmup (50 steps) so learning starts immediately
-    warmup_steps = 50  # Very short warmup for immediate learning
-    logger.info(f" IMMEDIATE LEARNING FIX: Using {warmup_steps} warmup steps (immediate learning for cross-attention)")
+    logger.info(f" FINAL LEARNING RATES:")
+    if hasattr(optimizer, 'param_groups'):
+        for i, group in enumerate(optimizer.param_groups):
+            logger.info(f"   Group {i}: LR = {group['lr']:.2e}")
+            
+    # CRITICAL FIX: Verify scheduler gives non-zero LR
+    test_lr = scheduler.get_last_lr() if hasattr(scheduler, 'get_last_lr') else [group['lr'] for group in optimizer.param_groups]
+    logger.info(f" SCHEDULER TEST: Initial LR = {test_lr}")
     
-    # Alternative: Use linear scheduler that starts with small non-zero LR
-    from transformers import get_linear_schedule_with_warmup
-    
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=num_training_steps
-    )
-    
-    # Verify scheduler starts with meaningful LR after just 1 step
-    # Take one scheduler step to see actual LR
-    dummy_step_lr = stable_lr / warmup_steps  # Expected LR after 1 step
-    logger.info(f" LEARNING RATE FIX: After 1 step, LR will be ≈ {dummy_step_lr:.2e} (immediate learning)")
-    
-    # Alternative approach: Start with constant LR for first 1000 steps, then decay
-    # This ensures immediate learning for cross-attention adaptation
-    logger.info(" CROSS-ATTENTION LEARNING: Enabling immediate gradient updates for newly initialized modules")
+    if any(lr == 0.0 for lr in test_lr):
+        logger.error(f" ❌ SCHEDULER BUG: Learning rate is 0! Fixing...")
+        # Force non-zero learning rate
+        for group in optimizer.param_groups:
+            if group['lr'] == 0.0:
+                group['lr'] = stable_lr
+        logger.info(f" SCHEDULER FIX: Reset LR to {stable_lr:.2e}")
     
     # Prepare for training
     model, optimizer, train_dataloader, scheduler = accelerator.prepare(
