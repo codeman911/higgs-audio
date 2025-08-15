@@ -567,6 +567,45 @@ def main():
                     for key, value in model_inputs.items():
                         if hasattr(value, 'shape'):
                             logger.info(f"DEBUG: {key} shape: {value.shape}")
+                    
+                    # CRITICAL: Verify data flow for zero-shot TTS
+                    logger.info("🔍 VERIFYING DATA FLOW FOR ZERO-SHOT TTS:")
+                    
+                    # 1. Check reference text + target text in input_ids
+                    if "input_ids" in model_inputs:
+                        input_text = tokenizer.decode(model_inputs["input_ids"][0], skip_special_tokens=False)
+                        logger.info(f"📝 INPUT_IDS CONTENT (sample): {input_text[:200]}...")
+                    
+                    # 2. Check reference audio conditioning
+                    if "audio_in_ids" in model_inputs:
+                        ref_audio = model_inputs["audio_in_ids"]
+                        logger.info(f"🎤 REFERENCE AUDIO: shape={ref_audio.shape}, non_zero={((ref_audio != 0).sum().item())}/{ref_audio.numel()}")
+                        logger.info(f"🎤 REFERENCE AUDIO TOKENS: {ref_audio[:, :10].tolist()}")
+                    
+                    # 3. Check target audio for prediction
+                    if "audio_out_ids" in model_inputs:
+                        target_audio = model_inputs["audio_out_ids"] 
+                        logger.info(f"🎯 TARGET AUDIO (shifted): shape={target_audio.shape}, non_zero={((target_audio != 0).sum().item())}/{target_audio.numel()}")
+                        logger.info(f"🎯 TARGET AUDIO TOKENS: {target_audio[:, :10].tolist()}")
+                    
+                    # 4. Check if we have audio features for Whisper
+                    if "audio_features" in model_inputs:
+                        audio_feat = model_inputs["audio_features"]
+                        logger.info(f"🎵 AUDIO FEATURES: shape={audio_feat.shape}, mean={audio_feat.mean().item():.4f}")
+                    
+                    # 5. Verify labels are separate (not passed to model)
+                    logger.info(f"✅ TEXT LABELS: shape={text_labels.shape} (separate from model)")
+                    logger.info(f"✅ AUDIO LABELS: shape={audio_labels.shape} (separate from model)")
+                    
+                    logger.info("🔍 DATA FLOW VERIFICATION COMPLETE")
+                
+                # Get the underlying model (handle PEFT wrapping) - CRITICAL FIX!
+                if hasattr(model, 'base_model') and hasattr(model.base_model, 'model'):
+                    actual_model = model.base_model.model  # PEFT wrapped
+                elif hasattr(model, 'module'):
+                    actual_model = model.module  # Accelerate wrapped
+                else:
+                    actual_model = model
                 
                 # Forward pass - call underlying model directly to bypass PEFT label injection
                 outputs = actual_model(**model_inputs)
