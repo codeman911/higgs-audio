@@ -268,7 +268,13 @@ class HiggsAudioModelWrapper(nn.Module):
         logger.info(f"✅ CROSS-MODAL CONDITIONING: Rebuilt {len(new_layers)} layers with audio attention")
     
     def forward(self, **kwargs):
-        # Simple forward - no safety checks needed since compute_loss whitelists parameters
+        # CRITICAL: DataParallel bypasses compute_loss and calls this directly with 'labels'
+        # We must handle the conversion here as a safety net
+        if 'labels' in kwargs:
+            logger.warning(f"🚨 MODEL WRAPPER: DataParallel passed 'labels'! Converting to 'label_ids'")
+            kwargs['label_ids'] = kwargs.pop('labels')
+        
+        # Simple forward with safety check
         return self.model(**kwargs)
 
 
