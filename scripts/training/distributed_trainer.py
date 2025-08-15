@@ -485,9 +485,12 @@ def main():
     logger.info(f"   Newly initialized parameters: {len(newly_initialized_params)}")
     logger.info(f"   Pretrained parameters: {len(pretrained_params)}")
     
+    stable_lr = min(args.learning_rate, 1e-4)
+    
     if newly_initialized_params:
         # Use much lower learning rate for newly initialized modules
         ultra_conservative_lr = min(base_lr * 0.01, 1e-6)  # 100x smaller, max 1e-6
+        stable_lr = ultra_conservative_lr  # Define for later use
         logger.error(f" ❌ CRITICAL INSTABILITY DETECTED: NaN losses from new modules!")
         logger.error(f"    Setting ultra-conservative LR: {ultra_conservative_lr:.2e}")
         
@@ -502,7 +505,6 @@ def main():
         logger.info(f"   New audio modules LR: {ultra_conservative_lr * 0.1:.2e}")
     else:
         # Regular optimizer if no new modules
-        stable_lr = min(args.learning_rate, 1e-4)
         optimizer = torch.optim.AdamW(
             model.parameters(), 
             lr=stable_lr,
