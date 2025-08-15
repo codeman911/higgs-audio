@@ -82,18 +82,31 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
                     try:
                         # Tokenize audio
                         audio_codes = audio_tokenizer.encode(audio_path)
-                        
-                        # Load waveform
-                        waveform, sr = librosa.load(audio_path, sr=sample_rate, mono=True)
-                        waveform = torch.tensor(waveform, dtype=torch.float32)
-                        
+                        # Ensure tensor is on CPU (like backup trainer)
+                        if audio_codes.is_cuda:
+                            audio_codes = audio_codes.cpu()
+                        # Ensure 8 codebooks (like backup trainer)
+                        if audio_codes.shape[0] != 8:
+                            if audio_codes.shape[0] > 8:
+                                audio_codes = audio_codes[:8, :]
+                            else:
+                                padding = torch.zeros(8 - audio_codes.shape[0], audio_codes.shape[1])
+                                audio_codes = torch.cat([audio_codes, padding], dim=0)
                         audio_ids_list.append(audio_codes)
+                        
+                        # Load waveform using torchaudio (like backup trainer)
+                        waveform, sr = torchaudio.load(audio_path)
+                        if sr != sample_rate:
+                            waveform = torchaudio.transforms.Resample(sr, sample_rate)(waveform)
+                        if waveform.shape[0] > 1:
+                            waveform = waveform.mean(dim=0, keepdim=True)
+                        waveform = waveform.squeeze(0)  # Flatten to 1D
                         audio_waveforms_list.append(waveform)
                         
                     except Exception as e:
                         logger.warning(f"Failed to process audio {audio_path}: {e}")
         
-        # Create proper audio concatenation (like backup trainer)
+        # Create tensors (like backup trainer)
         if audio_ids_list:
             audio_ids_concat = torch.cat(audio_ids_list, dim=1)
             audio_ids_start = torch.cumsum(
@@ -115,7 +128,7 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
             audio_sample_rate = torch.tensor([sample_rate])
             audio_speaker_indices = torch.tensor([0], dtype=torch.long)
         
-        # Create ChatMLDatasetSample with REAL audio data
+        # Create ChatMLDatasetSample (exactly like backup trainer)
         chatml_sample = ChatMLDatasetSample(
             input_ids=torch.tensor(input_tokens, dtype=torch.long),
             label_ids=torch.tensor(label_tokens, dtype=torch.long),
