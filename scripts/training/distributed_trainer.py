@@ -130,7 +130,40 @@ def custom_collate_fn(batch, tokenizer, audio_tokenizer, collator):
         return None  # Skip empty batches
         
     # Use the original HiggsAudioSampleCollator - THE PROVEN WORKING COLLATOR
-    return collator(chatml_samples)
+    batch = collator(chatml_samples)
+    return mask_audio_tokens_in_text_labels(batch, tokenizer)
+
+
+def mask_audio_tokens_in_text_labels(batch, tokenizer):
+    """
+    MINIMAL POST-COLLATION FIX: Mask audio tokens in text labels only.
+    
+    This preserves the entire working audio pipeline while fixing text contamination.
+    Only modifies text labels after all audio processing is complete.
+    """
+    if not hasattr(batch, 'label_ids') or batch.label_ids is None:
+        return batch
+    
+    # Get audio token IDs that contaminate text supervision
+    audio_eos_id = tokenizer.convert_tokens_to_ids("<|audio_eos|>")
+    audio_bos_id = tokenizer.convert_tokens_to_ids("<|audio_bos|>") 
+    audio_out_bos_id = tokenizer.convert_tokens_to_ids("<|audio_out_bos|>")
+    audio_in_id = tokenizer.convert_tokens_to_ids("<|AUDIO|>")
+    audio_out_id = tokenizer.convert_tokens_to_ids("<|AUDIO_OUT|>")
+    
+    # Collect all audio token IDs to mask
+    audio_token_ids = set()
+    if audio_eos_id is not None: audio_token_ids.add(audio_eos_id)
+    if audio_bos_id is not None: audio_token_ids.add(audio_bos_id)
+    if audio_out_bos_id is not None: audio_token_ids.add(audio_out_bos_id)
+    if audio_in_id is not None: audio_token_ids.add(audio_in_id)
+    if audio_out_id is not None: audio_token_ids.add(audio_out_id)
+    
+    # Mask audio tokens in text labels (in-place to preserve batch structure)
+    for audio_token_id in audio_token_ids:
+        batch.label_ids[batch.label_ids == audio_token_id] = -100
+    
+    return batch
 
 
 def setup_collator(config, tokenizer, whisper_processor):
