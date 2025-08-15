@@ -177,23 +177,6 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
             audio_speaker_indices=audio_speaker_indices
         )
         
-        # DEBUG: Log audio structure for first sample
-        if len(chatml_samples) == 0:  # Only log first sample
-            logger.info(f"🔍 AUDIO STRUCTURE DEBUG for sample 0:")
-            logger.info("=" * 80)
-            
-            # Log raw ChatML conversation structure from batch
-            logger.info(f"   input_tokens length: {len(input_tokens)}")
-            logger.info(f"   audio_ids_concat shape: {audio_ids_concat.shape}")
-            logger.info(f"   audio_ids_start: {audio_ids_start}")
-            logger.info(f"   audio_waveforms_concat length: {len(audio_waveforms_concat) if len(audio_waveforms_concat) > 0 else 0}")
-            logger.info(f"   Number of audio segments: {len(audio_ids_list)}")
-            if len(audio_contents) > 0:
-                logger.info(f"   Audio contents found: {len(audio_contents)} items")
-                for i, content in enumerate(audio_contents[:2]):  # First 2 audio items
-                    if hasattr(content, 'audio_url'):
-                        logger.info(f"     Audio {i}: {content.audio_url}")
-        
         chatml_samples.append(chatml_sample)
     
     # Now call original collator with proper objects
@@ -666,7 +649,7 @@ def main():
                 text_labels = to_device(batch.label_ids) if hasattr(batch, 'label_ids') else None
                 audio_labels = to_device(batch.label_audio_ids) if hasattr(batch, 'label_audio_ids') else None
                 
-                # Manual loss computation (like working version)
+                # Manual loss computation (like backup trainer)
                 total_loss = 0.0
                 
                 # Audio loss computation
@@ -713,6 +696,84 @@ def main():
                     total_loss += weighted_text_loss
                 
                 loss = total_loss
+                
+                # Comprehensive loss logging every 10 steps
+                if global_step % 10 == 0 and accelerator.is_main_process:
+                    logger.info("=" * 100)
+                    logger.info(f"📊 STEP {global_step} TRAINING METRICS")
+                    logger.info("=" * 100)
+                    
+                    # Loss breakdown
+                    logger.info(f"🔥 LOSS BREAKDOWN:")
+                    logger.info(f"   Total Loss: {total_loss.item():.4f}")
+                    logger.info(f"   Text Loss: {text_loss.item():.4f}")
+                    logger.info(f"   Audio Loss: {audio_loss.item():.4f}")
+                    if hasattr(args, 'text_loss_weight'):
+                        logger.info(f"   Text Weight: {args.text_loss_weight}")
+                    
+                    # Text predictions vs labels analysis
+                    if "logits" in outputs and outputs["logits"] is not None and text_labels is not None:
+                        text_logits = outputs["logits"][:, :-1, :].contiguous()
+                        shift_labels = text_labels[:, 1:].contiguous()
+                        
+                        # Get predictions
+                        text_preds = text_logits.argmax(dim=-1)  # [B, T]
+                        
+                        # Find valid positions (not -100)
+                        valid_mask = (shift_labels != -100)
+                        if valid_mask.any():
+                            text_preds_flat = text_preds[valid_mask]
+                            text_labels_flat = shift_labels[valid_mask]
+                            
+                            # Accuracy
+                            accuracy = (text_preds_flat == text_labels_flat).float().mean().item()
+                            logger.info(f"📝 TEXT ANALYSIS:")
+                            logger.info(f"   Accuracy: {accuracy:.1%}")
+                            logger.info(f"   Valid tokens: {valid_mask.sum().item()}")
+                            
+                            # First and last 10 predictions vs labels
+                            if len(text_preds_flat) >= 10:
+                                logger.info(f"   FIRST 10 - Pred: {text_preds_flat[:10].tolist()}")
+                                logger.info(f"   FIRST 10 - Label: {text_labels_flat[:10].tolist()}")
+                                if len(text_preds_flat) >= 20:
+                                    logger.info(f"   LAST 10 - Pred: {text_preds_flat[-10:].tolist()}")
+                                    logger.info(f"   LAST 10 - Label: {text_labels_flat[-10:].tolist()}")
+                    
+                    # Audio predictions vs labels analysis
+                    if "audio_logits" in outputs and outputs["audio_logits"] is not None and audio_labels is not None:
+                        audio_logits = outputs["audio_logits"]
+                        
+                        # Get predictions
+                        audio_preds = audio_logits.argmax(dim=-1)  # [C, T] or [B, T, C]
+                        
+                        # Ensure same shape as labels
+                        if audio_preds.dim() != audio_labels.dim():
+                            if audio_preds.dim() == 3:  # [B, T, C] -> [C, T]
+                                audio_preds = audio_preds.squeeze(0).transpose(0, 1)
+                        
+                        # Find valid positions (not -100)
+                        valid_mask = (audio_labels != -100)
+                        if valid_mask.any():
+                            audio_preds_flat = audio_preds[valid_mask]
+                            audio_labels_flat = audio_labels[valid_mask]
+                            
+                            # Accuracy
+                            accuracy = (audio_preds_flat == audio_labels_flat).float().mean().item()
+                            logger.info(f"🎵 AUDIO ANALYSIS:")
+                            logger.info(f"   Accuracy: {accuracy:.1%}")
+                            logger.info(f"   Valid tokens: {valid_mask.sum().item()}")
+                            logger.info(f"   Audio shape: {audio_labels.shape}")
+                            
+                            # First and last 10 predictions vs labels
+                            if len(audio_preds_flat) >= 10:
+                                logger.info(f"   FIRST 10 - Pred: {audio_preds_flat[:10].tolist()}")
+                                logger.info(f"   FIRST 10 - Label: {audio_labels_flat[:10].tolist()}")
+                                if len(audio_preds_flat) >= 20:
+                                    logger.info(f"   LAST 10 - Pred: {audio_preds_flat[-10:].tolist()}")
+                                    logger.info(f"   LAST 10 - Label: {audio_labels_flat[-10:].tolist()}")
+                    
+                    logger.info(f"🚀 TRAINING STATUS: LR={scheduler.get_last_lr()[0]:.2e}")
+                    logger.info("=" * 100)
                 
                 # Backward pass
                 loss.backward()
