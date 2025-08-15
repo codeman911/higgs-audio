@@ -313,6 +313,11 @@ class HiggsAudioTrainer(Trainer):
         # CRITICAL FIX: Handle parameter conversion BEFORE calling model
         # This ensures conversion happens before PEFT wrapper gets involved
         
+        # Debug: Log what we receive
+        logger.info(f"🔍 RECEIVED INPUT TYPE: {type(inputs)}")
+        if hasattr(inputs, 'keys'):
+            logger.info(f"🔍 RECEIVED KEYS: {list(inputs.keys())}")
+        
         if isinstance(inputs, ExtendedHiggsAudioBatchInput):
             # Convert ExtendedHiggsAudioBatchInput to model inputs
             model_inputs = {
@@ -335,9 +340,24 @@ class HiggsAudioTrainer(Trainer):
                 if key == 'labels':
                     # CRITICAL: Convert labels -> label_ids for HiggsAudio compatibility
                     model_inputs['label_ids'] = value
-                    logger.debug("🔧 Converted 'labels' to 'label_ids' in compute_loss")
+                    logger.info("🔧 CONVERTED 'labels' to 'label_ids' in compute_loss")
                 else:
                     model_inputs[key] = value
+        
+        # ULTRA-ROBUST FIX: Ensure NO 'labels' key exists ANYWHERE
+        if 'labels' in model_inputs:
+            logger.warning(f"⚠️  FOUND 'labels' in model_inputs! Removing it...")
+            model_inputs['label_ids'] = model_inputs.pop('labels')
+        
+        # Debug: Log final model inputs
+        logger.info(f"🔍 FINAL MODEL INPUT KEYS: {list(model_inputs.keys())}")
+        
+        # Verify no labels key exists
+        if 'labels' in model_inputs:
+            logger.error(f"❌ CRITICAL ERROR: 'labels' still in model_inputs: {list(model_inputs.keys())}")
+            raise ValueError("Labels parameter not properly converted!")
+        else:
+            logger.info("✅ VERIFIED: No 'labels' key in model_inputs")
         
         # Apply audio token masking in text labels (your improvement)
         if 'label_ids' in model_inputs and model_inputs['label_ids'] is not None:
