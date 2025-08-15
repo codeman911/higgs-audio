@@ -441,8 +441,9 @@ def main():
             audio_in_ids=a_in, audio_out_ids=a_shift, audio_labels=a_lbl,
             text_labels=t_lbl,
             # CRITICAL FIX: Add missing audio indexing parameters that model expects
-            audio_in_ids_start=torch.tensor([0, a_in.shape[1]], dtype=torch.long, device=device) if a_in is not None else None,
-            audio_out_ids_start=torch.tensor([0, a_shift.shape[1]], dtype=torch.long, device=device) if a_shift is not None else None,
+            # For 8-codebook system, each audio segment gets 8 streams, but they all have the same length
+            audio_in_ids_start=torch.tensor([0, a_in.shape[1]] if a_in is not None else [0], dtype=torch.long, device=device),
+            audio_out_ids_start=torch.tensor([0, a_shift.shape[1]] if a_shift is not None else [0], dtype=torch.long, device=device),
             audio_out_ids_start_group_loc=None  # Not needed for single audio segments
         )
 
