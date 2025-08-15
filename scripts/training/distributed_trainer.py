@@ -72,7 +72,7 @@ def collate_fn(batch, tokenizer, audio_tokenizer, sample_rate=24000):
         # Extract metadata for validation only
         misc = sample.get('misc', {})
         ref_transcript = misc.get('ref_transcript', '')
-        target_text = misc.get('target_text', '')
+        target_text = misc.get('target_transcript', '')  # Updated to match corrected data processor
         
         # Process sample and get inputs/labels
         input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
