@@ -99,9 +99,28 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
         
         # Tokenize with prepare_chatml_sample (exactly like backup trainer)
         try:
-            input_tokens, label_tokens, audio_contents, speaker_id = fixed_prepare_chatml_sample(
+            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
                 chatml_dict, tokenizer
             )
+            
+            # CRITICAL FIX: Post-process to mask audio placeholder tokens in text labels
+            # This prevents <|audio_eos|> contamination in text predictions while preserving audio processing
+            if input_tokens and label_tokens:
+                # Find and mask audio placeholder tokens in text labels
+                audio_special_tokens = [
+                    tokenizer.encode("<|audio_bos|>", add_special_tokens=False)[0] if tokenizer.encode("<|audio_bos|>", add_special_tokens=False) else None,
+                    tokenizer.encode("<|AUDIO|>", add_special_tokens=False)[0] if tokenizer.encode("<|AUDIO|>", add_special_tokens=False) else None,
+                    tokenizer.encode("<|audio_eos|>", add_special_tokens=False)[0] if tokenizer.encode("<|audio_eos|>", add_special_tokens=False) else None,
+                    tokenizer.encode("<|audio_out_bos|>", add_special_tokens=False)[0] if tokenizer.encode("<|audio_out_bos|>", add_special_tokens=False) else None,
+                    tokenizer.encode("<|AUDIO_OUT|>", add_special_tokens=False)[0] if tokenizer.encode("<|AUDIO_OUT|>", add_special_tokens=False) else None,
+                ]
+                audio_special_tokens = [t for t in audio_special_tokens if t is not None]
+                
+                # Mask audio special tokens in text labels (but keep them in input_tokens for model processing)
+                for i in range(len(label_tokens)):
+                    if i < len(input_tokens) and input_tokens[i] in audio_special_tokens:
+                        label_tokens[i] = -100  # Mask audio tokens in text labels
+                        
         except Exception as e:
             logger.warning(f"Failed to prepare sample: {e}")
             # Create empty sample
@@ -185,8 +204,8 @@ def simple_collate_fn(batch, tokenizer, audio_tokenizer, collator, sample_rate=2
     return collator(chatml_samples)
 
 
-def fixed_prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
-    """FIXED: Prevent audio tokens from contaminating text labels"""
+def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
+    """Prepare ChatML sample for training"""
     
     try:
         # Handle different input types (same as original)
@@ -276,7 +295,7 @@ def fixed_prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
         return input_tokens, label_tokens, audio_contents, speaker_id
 
     except Exception as e:
-        logger.error(f"Error in fixed_prepare_chatml_sample: {str(e)}")
+        logger.error(f"Error in prepare_chatml_sample: {str(e)}")
         return None, None, None, None
 
 
@@ -382,15 +401,15 @@ def main():
     # Load model config
     config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
     
-    # CRITICAL ARCHITECTURE FIX: Revert to original Higgs-Audio V2 configuration
-    # Original architecture doesn't use cross-attention modules
-    # Text-audio conditioning happens through shared attention + DualFFN, not separate cross-attention
-    logger.info(" ORIGINAL CONFIG: audio_out_self_attention=False (shared attention + DualFFN)")
+    # CRITICAL ARCHITECTURE FIX: Enable text-audio cross-attention for zero-shot voice cloning
+    # The model NEEDS audio attention modules for proper text-audio conditioning
+    # Without this, the model cannot condition audio generation on text input!
+    logger.info(" ENABLING CRITICAL CROSS-ATTENTION: use_audio_out_self_attention=True")
     
-    # CRITICAL: Revert to original configuration - no cross-attention modules
-    config.use_audio_out_self_attention = False  # Original default - proven architecture!
+    # ENABLE: Text-audio cross-attention for proper zero-shot voice cloning
+    config.use_audio_out_self_attention = True  # REQUIRED for text-audio conditioning!
     
-    logger.info(" REVERTED: use_audio_out_self_attention=False (original architecture)")
+    logger.info(" ENABLED: Cross-attention modules for text-audio conditioning")
     
     # Load model
     logger.info("Loading model...")
@@ -428,13 +447,13 @@ def main():
     val_dataset = SimpleDataset(os.path.join(args.dataset_path, "val_chatml_samples.json"))[:args.debug_val_samples]
     
     # ========== STRATEGIC LOGGING: DATA PIPELINE ANALYSIS ==========
-    logger.info("🔍 STRATEGIC ANALYSIS: ChatML Data Format")
+    logger.info(" STRATEGIC ANALYSIS: ChatML Data Format")
     logger.info("=" * 80)
     
     # Analyze first sample to understand exact data format
     if len(train_dataset) > 0:
         sample = train_dataset[0]
-        logger.info("📋 RAW CHATML SAMPLE STRUCTURE:")
+        logger.info(" RAW CHATML SAMPLE STRUCTURE:")
         logger.info(f"   Sample keys: {list(sample.keys())}")
         
         if 'messages' in sample:
@@ -458,9 +477,9 @@ def main():
                     logger.info(f"     Content [text]: {content_preview}")
         
         # Test prepare_chatml_sample to see what it produces
-        logger.info("🔍 TESTING prepare_chatml_sample OUTPUT:")
+        logger.info(" TESTING prepare_chatml_sample OUTPUT:")
         try:
-            input_tokens, label_tokens, audio_contents, speaker_id = fixed_prepare_chatml_sample(sample, tokenizer)
+            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
             
             logger.info(f"   input_tokens length: {len(input_tokens)}")
             logger.info(f"   label_tokens length: {len(label_tokens)}")
@@ -486,7 +505,7 @@ def main():
         except Exception as e:
             logger.error(f"   Error in prepare_chatml_sample: {e}")
     
-    logger.info("✅ STRATEGIC ANALYSIS COMPLETE")
+    logger.info(" STRATEGIC ANALYSIS COMPLETE")
     logger.info("=" * 80)
     
     # Create data loaders - OPTIMIZED FOR H200
@@ -797,11 +816,11 @@ def main():
                 # Comprehensive loss logging every 10 steps
                 if global_step % 10 == 0 and accelerator.is_main_process:
                     logger.info("=" * 100)
-                    logger.info(f"📊 STEP {global_step} TRAINING METRICS")
+                    logger.info(f" STEP {global_step} TRAINING METRICS")
                     logger.info("=" * 100)
                     
                     # Loss breakdown
-                    logger.info(f"🔥 LOSS BREAKDOWN:")
+                    logger.info(f" LOSS BREAKDOWN:")
                     logger.info(f"   Total Loss: {total_loss.item():.4f}")
                     logger.info(f"   Text Loss: {text_loss.item():.4f}")
                     logger.info(f"   Audio Loss: {audio_loss.item():.4f}")
@@ -809,7 +828,7 @@ def main():
                         logger.info(f"   Text Weight: {args.text_loss_weight}")
                     
                     # MODEL INPUT LOGGING (as requested)
-                    logger.info(f"🔍 MODEL INPUTS:")
+                    logger.info(f" MODEL INPUTS:")
                     for key, value in model_inputs.items():
                         if torch.is_tensor(value):
                             logger.info(f"   {key}: shape={value.shape}, dtype={value.dtype}")
@@ -842,7 +861,7 @@ def main():
                             
                             # Accuracy
                             accuracy = (text_preds_flat == text_labels_flat).float().mean().item()
-                            logger.info(f"📝 TEXT ANALYSIS:")
+                            logger.info(f" TEXT ANALYSIS:")
                             logger.info(f"   Accuracy: {accuracy:.1%}")
                             logger.info(f"   Valid tokens: {valid_mask.sum().item()}")
                             logger.info(f"   Text logits shape: {adjusted_text_logits.shape}")
@@ -850,7 +869,7 @@ def main():
                             
                             # TEXT TOKEN IDs: First and last 10 predictions vs labels
                             if len(text_preds_flat) >= 10:
-                                logger.info(f"   📋 TEXT TOKEN IDs:")
+                                logger.info(f"   TEXT TOKEN IDs:")
                                 logger.info(f"     FIRST 10 - Pred: {text_preds_flat[:10].tolist()}")
                                 logger.info(f"     FIRST 10 - Label: {text_labels_flat[:10].tolist()}")
                                 if len(text_preds_flat) >= 20:
@@ -858,7 +877,7 @@ def main():
                                     logger.info(f"     LAST 10 - Label: {text_labels_flat[-10:].tolist()}")
                             
                             # DECODED TEXT LOGGING (as requested)
-                            logger.info(f"   📖 DECODED TEXT ANALYSIS:")
+                            logger.info(f"   DECODED TEXT ANALYSIS:")
                             try:
                                 # Decode first 20 predictions and labels
                                 if len(text_preds_flat) >= 20:
@@ -884,12 +903,12 @@ def main():
                                         logger.info(f"     FULL SAMPLE PRED: '{full_pred_text[:200]}{'...' if len(full_pred_text) > 200 else ''}'")
                                         logger.info(f"     FULL SAMPLE LABEL: '{full_label_text[:200]}{'...' if len(full_label_text) > 200 else ''}'")
                             except Exception as e:
-                                logger.warning(f"     ⚠️ Decode error: {e}")
+                                logger.warning(f"     Decode error: {e}")
                             
                             # ALL PREDICTIONS LOGGING (token IDs)
-                            logger.info(f"   📋 ALL TEXT TOKEN PREDICTIONS (first 50): {text_preds.flatten()[:50].tolist()}")
+                            logger.info(f"   ALL TEXT TOKEN PREDICTIONS (first 50): {text_preds.flatten()[:50].tolist()}")
                     
-                    # 🎵 AUDIO PREDICTIONS vs LABELS ANALYSIS
+                    # AUDIO PREDICTIONS vs LABELS ANALYSIS
                     if "audio_logits" in outputs and outputs["audio_logits"] is not None and audio_labels is not None:
                         audio_logits = outputs["audio_logits"]
                         
@@ -897,7 +916,7 @@ def main():
                         audio_preds = audio_logits.argmax(dim=-1)  # [B, T, C] or [C, T] or [B, C, T]
                         
                         # Debug shapes before adjustment
-                        logger.info(f"🔍 AUDIO TENSOR SHAPES (before adjustment):")
+                        logger.info(f" AUDIO TENSOR SHAPES (before adjustment):")
                         logger.info(f"   audio_logits: {audio_logits.shape}")
                         logger.info(f"   audio_preds (raw): {audio_preds.shape}")
                         logger.info(f"   audio_labels: {audio_labels.shape}")
@@ -920,7 +939,7 @@ def main():
                                         audio_preds = audio_preds.transpose(0, 1)  # [T, C] -> [C, T]
                         
                         # Verify shapes match after adjustment
-                        logger.info(f"🔍 AUDIO TENSOR SHAPES (after adjustment):")
+                        logger.info(f" AUDIO TENSOR SHAPES (after adjustment):")
                         logger.info(f"   audio_preds (adjusted): {audio_preds.shape}")
                         logger.info(f"   audio_labels: {audio_labels.shape}")
                         
@@ -934,15 +953,15 @@ def main():
                                 
                                 # Accuracy
                                 accuracy = (audio_preds_flat == audio_labels_flat).float().mean().item()
-                                logger.info(f"🎵 AUDIO ANALYSIS:")
+                                logger.info(f" AUDIO ANALYSIS:")
                                 logger.info(f"   Accuracy: {accuracy:.1%}")
                                 logger.info(f"   Valid tokens: {valid_mask.sum().item()}")
                                 logger.info(f"   Audio logits shape: {audio_logits.shape}")
                                 logger.info(f"   Audio labels shape: {audio_labels.shape}")
                                 
-                                # 🎵 AUDIO LOGS: First and last 10 predictions vs labels (as requested)
+                                # AUDIO LOGS: First and last 10 predictions vs labels (as requested)
                                 if len(audio_preds_flat) >= 10:
-                                    logger.info(f"   🎵 AUDIO LOGS - TOKEN IDs:")
+                                    logger.info(f"   AUDIO LOGS - TOKEN IDs:")
                                     logger.info(f"     FIRST 10 - Pred: {audio_preds_flat[:10].tolist()}")
                                     logger.info(f"     FIRST 10 - Label: {audio_labels_flat[:10].tolist()}")
                                     if len(audio_preds_flat) >= 20:
@@ -950,12 +969,12 @@ def main():
                                         logger.info(f"     LAST 10 - Label: {audio_labels_flat[-10:].tolist()}")
                                 
                                 # FULL AUDIO PREDICTIONS LOGGING
-                                logger.info(f"   🎵 ALL AUDIO TOKEN PREDICTIONS (first 50): {audio_preds.flatten()[:50].tolist()}")
+                                logger.info(f"   ALL AUDIO TOKEN PREDICTIONS (first 50): {audio_preds.flatten()[:50].tolist()}")
                         else:
-                            logger.warning(f"⚠️ AUDIO SHAPE MISMATCH: preds={audio_preds.shape} vs labels={audio_labels.shape}")
+                            logger.warning(f" AUDIO SHAPE MISMATCH: preds={audio_preds.shape} vs labels={audio_labels.shape}")
                             logger.warning(f"   Skipping audio analysis for this step")
                     
-                    logger.info(f"🚀 TRAINING STATUS: LR={scheduler.get_last_lr()[0]:.2e}")
+                    logger.info(f" TRAINING STATUS: LR={scheduler.get_last_lr()[0]:.2e}")
                     logger.info("=" * 100)
                 
                 # Backward pass
