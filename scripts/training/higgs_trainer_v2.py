@@ -473,9 +473,10 @@ def main():
     parser.add_argument("--bf16", action="store_true", help="Use bfloat16 precision")
     parser.add_argument("--gradient_checkpointing", action="store_true", help="Use gradient checkpointing")
     
-    # LoRA arguments
+    # LoRA arguments - FIXED: Match user's argument names
     parser.add_argument("--use_lora", action="store_true", help="Use LoRA fine-tuning")
-    parser.add_argument("--lora_rank", type=int, default=16, help="LoRA rank")
+    parser.add_argument("--lora_r", type=int, default=16, help="LoRA rank (matches user's argument)")
+    parser.add_argument("--lora_rank", type=int, help="LoRA rank (alternative)")
     parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA alpha")
     parser.add_argument("--lora_dropout", type=float, default=0.1, help="LoRA dropout")
     
@@ -484,6 +485,10 @@ def main():
     parser.add_argument("--logging_dir", type=str, help="Logging directory")
     
     args = parser.parse_args()
+    
+    # FIXED: Handle both lora_r and lora_rank arguments
+    if args.lora_rank is None:
+        args.lora_rank = args.lora_r
     
     # Setup paths
     if not args.tokenizer_path:
