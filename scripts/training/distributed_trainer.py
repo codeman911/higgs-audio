@@ -767,37 +767,65 @@ def main():
                         audio_logits = outputs["audio_logits"]
                         
                         # Get predictions
-                        audio_preds = audio_logits.argmax(dim=-1)  # [C, T] or [B, T, C]
+                        audio_preds = audio_logits.argmax(dim=-1)  # [B, T, C] or [C, T] or [B, C, T]
                         
-                        # Ensure same shape as labels
-                        if audio_preds.dim() != audio_labels.dim():
-                            if audio_preds.dim() == 3:  # [B, T, C] -> [C, T]
-                                audio_preds = audio_preds.squeeze(0).transpose(0, 1)
+                        # Debug shapes before adjustment
+                        logger.info(f"🔍 AUDIO TENSOR SHAPES (before adjustment):")
+                        logger.info(f"   audio_logits: {audio_logits.shape}")
+                        logger.info(f"   audio_preds (raw): {audio_preds.shape}")
+                        logger.info(f"   audio_labels: {audio_labels.shape}")
                         
-                        # Find valid positions (not -100)
-                        valid_mask = (audio_labels != -100)
-                        if valid_mask.any():
-                            audio_preds_flat = audio_preds[valid_mask]
-                            audio_labels_flat = audio_labels[valid_mask]
-                            
-                            # Accuracy
-                            accuracy = (audio_preds_flat == audio_labels_flat).float().mean().item()
-                            logger.info(f"🎵 AUDIO ANALYSIS:")
-                            logger.info(f"   Accuracy: {accuracy:.1%}")
-                            logger.info(f"   Valid tokens: {valid_mask.sum().item()}")
-                            logger.info(f"   Audio logits shape: {audio_logits.shape}")
-                            logger.info(f"   Audio labels shape: {audio_labels.shape}")
-                            
-                            # First and last 10 predictions vs labels (FULL VALUES as requested)
-                            if len(audio_preds_flat) >= 10:
-                                logger.info(f"   FIRST 10 - Pred: {audio_preds_flat[:10].tolist()}")
-                                logger.info(f"   FIRST 10 - Label: {audio_labels_flat[:10].tolist()}")
-                                if len(audio_preds_flat) >= 20:
-                                    logger.info(f"   LAST 10 - Pred: {audio_preds_flat[-10:].tolist()}")
-                                    logger.info(f"   LAST 10 - Label: {audio_labels_flat[-10:].tolist()}")
-                            
-                            # FULL PREDICTIONS LOGGING (as requested)
-                            logger.info(f"   ALL AUDIO PREDICTIONS (first 50): {audio_preds.flatten()[:50].tolist()}")
+                        # Ensure audio_preds matches audio_labels shape exactly
+                        if audio_preds.shape != audio_labels.shape:
+                            # Handle different possible shapes
+                            if audio_preds.dim() == 3:  # [B, T, C] or [B, C, T]
+                                if audio_preds.shape[0] == 1:  # Single batch
+                                    audio_preds = audio_preds.squeeze(0)  # Remove batch dimension
+                                    # Now audio_preds could be [T, C] or [C, T]
+                                    if audio_preds.shape != audio_labels.shape:
+                                        # Try transpose to match labels
+                                        if audio_preds.shape == (audio_labels.shape[1], audio_labels.shape[0]):
+                                            audio_preds = audio_preds.transpose(0, 1)  # [T, C] -> [C, T]
+                            elif audio_preds.dim() == 2:  # [T, C] or [C, T]
+                                if audio_preds.shape != audio_labels.shape:
+                                    # Try transpose to match labels
+                                    if audio_preds.shape == (audio_labels.shape[1], audio_labels.shape[0]):
+                                        audio_preds = audio_preds.transpose(0, 1)  # [T, C] -> [C, T]
+                        
+                        # Verify shapes match after adjustment
+                        logger.info(f"🔍 AUDIO TENSOR SHAPES (after adjustment):")
+                        logger.info(f"   audio_preds (adjusted): {audio_preds.shape}")
+                        logger.info(f"   audio_labels: {audio_labels.shape}")
+                        
+                        # Only proceed if shapes match
+                        if audio_preds.shape == audio_labels.shape:
+                            # Find valid positions (not -100)
+                            valid_mask = (audio_labels != -100)
+                            if valid_mask.any():
+                                audio_preds_flat = audio_preds[valid_mask]
+                                audio_labels_flat = audio_labels[valid_mask]
+                                
+                                # Accuracy
+                                accuracy = (audio_preds_flat == audio_labels_flat).float().mean().item()
+                                logger.info(f"🎵 AUDIO ANALYSIS:")
+                                logger.info(f"   Accuracy: {accuracy:.1%}")
+                                logger.info(f"   Valid tokens: {valid_mask.sum().item()}")
+                                logger.info(f"   Audio logits shape: {audio_logits.shape}")
+                                logger.info(f"   Audio labels shape: {audio_labels.shape}")
+                                
+                                # First and last 10 predictions vs labels (FULL VALUES as requested)
+                                if len(audio_preds_flat) >= 10:
+                                    logger.info(f"   FIRST 10 - Pred: {audio_preds_flat[:10].tolist()}")
+                                    logger.info(f"   FIRST 10 - Label: {audio_labels_flat[:10].tolist()}")
+                                    if len(audio_preds_flat) >= 20:
+                                        logger.info(f"   LAST 10 - Pred: {audio_preds_flat[-10:].tolist()}")
+                                        logger.info(f"   LAST 10 - Label: {audio_labels_flat[-10:].tolist()}")
+                                
+                                # FULL PREDICTIONS LOGGING (as requested)
+                                logger.info(f"   ALL AUDIO PREDICTIONS (first 50): {audio_preds.flatten()[:50].tolist()}")
+                        else:
+                            logger.warning(f"⚠️ AUDIO SHAPE MISMATCH: preds={audio_preds.shape} vs labels={audio_labels.shape}")
+                            logger.warning(f"   Skipping audio analysis for this step")
                     
                     logger.info(f"🚀 TRAINING STATUS: LR={scheduler.get_last_lr()[0]:.2e}")
                     logger.info("=" * 100)
