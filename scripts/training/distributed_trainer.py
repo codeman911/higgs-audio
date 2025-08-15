@@ -438,7 +438,7 @@ def main():
 
         return dict(
             input_ids=inp, attention_mask=attn,
-            audio_in_ids=a_in, audio_out_ids_shifted_in=a_shift, audio_labels=a_lbl,
+            audio_in_ids=a_in, audio_out_ids=a_shift, audio_labels=a_lbl,
             text_labels=t_lbl
         )
 
@@ -716,9 +716,9 @@ def main():
                         logger.info(f"🎤 REFERENCE AUDIO TOKENS: {ref_audio[:, :10].tolist()}")
                     
                     # 3. Check target audio for prediction
-                    if "audio_out_ids_shifted_in" in model_inputs:
-                        target_audio = model_inputs["audio_out_ids_shifted_in"] 
-                        logger.info(f"🎯 TARGET AUDIO (shifted): shape={target_audio.shape}, non_zero={((target_audio != 0).sum().item())}/{target_audio.numel()}")
+                    if "audio_out_ids" in model_inputs:
+                        target_audio = model_inputs["audio_out_ids"] 
+                        logger.info(f"🎯 TARGET AUDIO: shape={target_audio.shape}, non_zero={((target_audio != 0).sum().item())}/{target_audio.numel()}")
                         logger.info(f"🎯 TARGET AUDIO TOKENS: {target_audio[:, :10].tolist()}")
                     
                     # 4. Check if we have audio features for Whisper
@@ -898,7 +898,7 @@ def main():
                         "audio_features": batch.audio_in_wv.to(device) if hasattr(batch, 'audio_in_wv') and batch.audio_in_wv is not None else None,
                         "audio_feature_attention_mask": batch.audio_feature_attention_mask.to(device) if hasattr(batch, 'audio_feature_attention_mask') and batch.audio_feature_attention_mask is not None else None,
                         "audio_in_ids": sup["audio_in_ids"],
-                        "audio_out_ids": sup["audio_out_ids_shifted_in"],
+                        "audio_out_ids": sup["audio_out_ids"],
                         "audio_in_ids_start": batch.audio_in_ids_start.to(device) if hasattr(batch, 'audio_in_ids_start') and batch.audio_in_ids_start is not None else None,
                         "audio_out_ids_start": batch.audio_out_ids_start.to(device) if hasattr(batch, 'audio_out_ids_start') and batch.audio_out_ids_start is not None else None,
                         "audio_out_ids_start_group_loc": batch.audio_out_ids_start_group_loc.to(device) if hasattr(batch, 'audio_out_ids_start_group_loc') and batch.audio_out_ids_start_group_loc is not None else None,
