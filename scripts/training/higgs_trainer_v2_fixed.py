@@ -338,18 +338,17 @@ class HiggsAudioTrainer(Trainer):
         
         return inputs
     
-    def training_step(self, model, inputs, num_items_in_batch=None):
+    def training_step(self, model, inputs):
         """
-        Override training_step to ensure 'labels' never reaches the model
+        DEFINITIVE FIX: Override training_step to remove 'labels' before it ever reaches the model.
+        This prevents the DataParallel wrapper from passing the unexpected keyword argument.
         """
-        # CRITICAL FIX: Remove 'labels' from inputs before any processing
-        if hasattr(inputs, 'labels'):
-            delattr(inputs, 'labels')
-        elif isinstance(inputs, dict) and 'labels' in inputs:
+        if 'labels' in inputs:
+            # Forcefully remove the problematic key
             inputs.pop('labels')
         
-        # Call parent training_step with cleaned inputs
-        return super().training_step(model, inputs, num_items_in_batch)
+        # Proceed with the original training step using the sanitized inputs
+        return super().training_step(model, inputs)
 
 
 def setup_lora_config(model: nn.Module, lora_config: Dict) -> nn.Module:
