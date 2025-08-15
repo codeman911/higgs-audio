@@ -15,6 +15,9 @@ from tqdm import tqdm
 from pathlib import Path
 import logging
 
+# FIX: Disable tokenizer parallelism warning
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
