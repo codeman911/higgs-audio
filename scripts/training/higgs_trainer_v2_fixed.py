@@ -268,29 +268,7 @@ class HiggsAudioModelWrapper(nn.Module):
         logger.info(f"✅ CROSS-MODAL CONDITIONING: Rebuilt {len(new_layers)} layers with audio attention")
     
     def forward(self, **kwargs):
-        # AGGRESSIVE DEBUG: Log everything we receive
-        logger.warning(f"🔍 MODEL WRAPPER RECEIVED: {list(kwargs.keys())}")
-        
-        # CRITICAL SAFETY CHECK: DataParallel bypasses compute_loss and calls this directly
-        if 'labels' in kwargs:
-            logger.error(f"🚨 MODEL WRAPPER SAFETY: Found 'labels'! Converting to 'label_ids'")
-            logger.error(f"🚨 BEFORE CONVERSION: {list(kwargs.keys())}")
-            kwargs['label_ids'] = kwargs.pop('labels')
-            logger.error(f"🚨 AFTER CONVERSION: {list(kwargs.keys())}")
-        
-        # Debug: Log what we're passing to the underlying model
-        logger.warning(f"🔍 MODEL WRAPPER → PEFT INPUT KEYS: {list(kwargs.keys())}")
-        
-        # Verify no labels exist before calling model
-        if 'labels' in kwargs:
-            logger.error(f"❌ CRITICAL ERROR: 'labels' still in kwargs: {list(kwargs.keys())}")
-            raise ValueError(f"CRITICAL ERROR: 'labels' still in kwargs: {list(kwargs.keys())}")
-        
-        # FINAL CHECK: Ensure label_ids exists if we had labels
-        if 'label_ids' not in kwargs:
-            logger.error(f"❌ WARNING: No 'label_ids' found in kwargs: {list(kwargs.keys())}")
-        
-        logger.warning(f"🚀 CALLING UNDERLYING MODEL WITH: {list(kwargs.keys())}")
+        # Simple forward - no safety checks needed since compute_loss whitelists parameters
         return self.model(**kwargs)
 
 
@@ -329,68 +307,43 @@ class HiggsAudioTrainer(Trainer):
     
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
-        Custom loss computation following official trainer approach.
-        But with audio token masking (your improvement)
+        Custom loss computation following EXACT official trainer approach.
         """
-        # CRITICAL FIX: Handle parameter conversion BEFORE calling model
-        # This ensures conversion happens before PEFT wrapper gets involved
-        
-        # Debug: Log what we receive
-        logger.info(f"🔍 RECEIVED INPUT TYPE: {type(inputs)}")
-        if hasattr(inputs, 'keys'):
-            logger.info(f"🔍 RECEIVED KEYS: {list(inputs.keys())}")
-        
+        # OFFICIAL APPROACH: Whitelist only the parameters the model needs
         if isinstance(inputs, ExtendedHiggsAudioBatchInput):
-            # Convert ExtendedHiggsAudioBatchInput to model inputs
-            model_inputs = {
-                'input_ids': inputs.input_ids,
-                'attention_mask': inputs.attention_mask,
-                'audio_in_ids': inputs.audio_in_ids,
-                'audio_features': inputs.audio_features,
-                'audio_feature_attention_mask': inputs.audio_feature_attention_mask,
-                'audio_in_ids_start': inputs.audio_in_ids_start,
-                'audio_out_ids': inputs.audio_out_ids,
-                'audio_out_ids_start': inputs.audio_out_ids_start,
-                'label_ids': inputs.label_ids,  # Already correct
-            }
-        else:
-            # Handle standard HuggingFace inputs - convert dict to proper model inputs
             model_inputs = {}
-            
-            # Copy all inputs and handle parameter mapping
+            # Explicitly copy only the attributes we need (official approach)
+            for attr_name in ['input_ids', 'attention_mask', 'label_ids', 
+                            'audio_features', 'audio_feature_attention_mask',
+                            'audio_out_ids', 'audio_out_ids_start', 
+                            'audio_in_ids', 'audio_in_ids_start',
+                            'label_audio_ids']:
+                attr_value = getattr(inputs, attr_name, None)
+                if attr_value is not None:
+                    model_inputs[attr_name] = attr_value
+        else:
+            model_inputs = {}
             for key, value in inputs.items():
                 if key == 'labels':
-                    # CRITICAL: Convert labels -> label_ids for HiggsAudio compatibility
+                    # Convert labels → label_ids (official approach)
                     model_inputs['label_ids'] = value
-                    logger.info("🔧 CONVERTED 'labels' to 'label_ids' in compute_loss")
-                else:
+                elif key in ['input_ids', 'attention_mask', 'label_ids',
+                            'audio_features', 'audio_feature_attention_mask',
+                            'audio_out_ids', 'audio_out_ids_start', 
+                            'audio_in_ids', 'audio_in_ids_start',
+                            'label_audio_ids']:
+                    # Only copy whitelisted keys (official approach)
                     model_inputs[key] = value
-        
-        # ULTRA-ROBUST FIX: Ensure NO 'labels' key exists ANYWHERE
-        if 'labels' in model_inputs:
-            logger.warning(f"⚠️  FOUND 'labels' in model_inputs! Removing it...")
-            model_inputs['label_ids'] = model_inputs.pop('labels')
-        
-        # Debug: Log final model inputs
-        logger.info(f"🔍 FINAL MODEL INPUT KEYS: {list(model_inputs.keys())}")
-        
-        # Verify no labels key exists
-        if 'labels' in model_inputs:
-            logger.error(f"❌ CRITICAL ERROR: 'labels' still in model_inputs: {list(model_inputs.keys())}")
-            raise ValueError("Labels parameter not properly converted!")
-        else:
-            logger.info("✅ VERIFIED: No 'labels' key in model_inputs")
         
         # Apply audio token masking in text labels (your improvement)
         if 'label_ids' in model_inputs and model_inputs['label_ids'] is not None:
             model_inputs['label_ids'] = self._mask_audio_tokens_in_text_labels(model_inputs['label_ids'])
         
-        # Ensure all inputs are on the same device
+        # Ensure all inputs are on the same device (official approach)
         for key, value in model_inputs.items():
             if isinstance(value, torch.Tensor):
-                # Fix for DataParallel: use next(model.parameters()).device instead of model.device
-                device = next(model.parameters()).device
-                model_inputs[key] = value.to(device)
+                # Use model.device (official approach)
+                model_inputs[key] = value.to(model.device)
         
         # Forward pass - use model's built-in loss (official approach)
         outputs = model(**model_inputs)
