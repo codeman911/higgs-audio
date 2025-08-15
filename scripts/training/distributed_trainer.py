@@ -361,7 +361,7 @@ def main():
                     logger.info(f"     Content [text]: {content_preview}")
         
         # Test prepare_chatml_sample to see what it produces
-        logger.info("� TESTING prepare_chatml_sample OUTPUT:")
+        logger.info("🔍 TESTING prepare_chatml_sample OUTPUT:")
         try:
             input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
             
@@ -751,18 +751,48 @@ def main():
                             logger.info(f"   Text logits shape: {adjusted_text_logits.shape}")
                             logger.info(f"   Text labels shape: {adjusted_shift_labels.shape}")
                             
-                            # First and last 10 predictions vs labels (FULL VALUES as requested)
+                            # TEXT TOKEN IDs: First and last 10 predictions vs labels
                             if len(text_preds_flat) >= 10:
-                                logger.info(f"   FIRST 10 - Pred: {text_preds_flat[:10].tolist()}")
-                                logger.info(f"   FIRST 10 - Label: {text_labels_flat[:10].tolist()}")
+                                logger.info(f"   📋 TEXT TOKEN IDs:")
+                                logger.info(f"     FIRST 10 - Pred: {text_preds_flat[:10].tolist()}")
+                                logger.info(f"     FIRST 10 - Label: {text_labels_flat[:10].tolist()}")
                                 if len(text_preds_flat) >= 20:
-                                    logger.info(f"   LAST 10 - Pred: {text_preds_flat[-10:].tolist()}")
-                                    logger.info(f"   LAST 10 - Label: {text_labels_flat[-10:].tolist()}")
+                                    logger.info(f"     LAST 10 - Pred: {text_preds_flat[-10:].tolist()}")
+                                    logger.info(f"     LAST 10 - Label: {text_labels_flat[-10:].tolist()}")
                             
-                            # FULL PREDICTIONS LOGGING (as requested)
-                            logger.info(f"   ALL TEXT PREDICTIONS (first 50): {text_preds.flatten()[:50].tolist()}")
+                            # DECODED TEXT LOGGING (as requested)
+                            logger.info(f"   📖 DECODED TEXT ANALYSIS:")
+                            try:
+                                # Decode first 20 predictions and labels
+                                if len(text_preds_flat) >= 20:
+                                    pred_text = tokenizer.decode(text_preds_flat[:20].tolist(), skip_special_tokens=False)
+                                    label_text = tokenizer.decode(text_labels_flat[:20].tolist(), skip_special_tokens=False)
+                                    logger.info(f"     PRED TEXT (first 20): '{pred_text}'")
+                                    logger.info(f"     LABEL TEXT (first 20): '{label_text}'")
+                                
+                                # Decode last 20 predictions and labels if available
+                                if len(text_preds_flat) >= 40:
+                                    pred_text_last = tokenizer.decode(text_preds_flat[-20:].tolist(), skip_special_tokens=False)
+                                    label_text_last = tokenizer.decode(text_labels_flat[-20:].tolist(), skip_special_tokens=False)
+                                    logger.info(f"     PRED TEXT (last 20): '{pred_text_last}'")
+                                    logger.info(f"     LABEL TEXT (last 20): '{label_text_last}'")
+                                
+                                # Show full sample decoded text (first sample only)
+                                if B >= 1:
+                                    sample_preds = text_preds[0][valid_mask[0]]  # First batch sample
+                                    sample_labels = adjusted_shift_labels[0][valid_mask[0]]
+                                    if len(sample_preds) > 0:
+                                        full_pred_text = tokenizer.decode(sample_preds.tolist(), skip_special_tokens=False)
+                                        full_label_text = tokenizer.decode(sample_labels.tolist(), skip_special_tokens=False)
+                                        logger.info(f"     FULL SAMPLE PRED: '{full_pred_text[:200]}{'...' if len(full_pred_text) > 200 else ''}'")
+                                        logger.info(f"     FULL SAMPLE LABEL: '{full_label_text[:200]}{'...' if len(full_label_text) > 200 else ''}'")
+                            except Exception as e:
+                                logger.warning(f"     ⚠️ Decode error: {e}")
+                            
+                            # ALL PREDICTIONS LOGGING (token IDs)
+                            logger.info(f"   📋 ALL TEXT TOKEN PREDICTIONS (first 50): {text_preds.flatten()[:50].tolist()}")
                     
-                    # Audio predictions vs labels analysis
+                    # 🎵 AUDIO PREDICTIONS vs LABELS ANALYSIS
                     if "audio_logits" in outputs and outputs["audio_logits"] is not None and audio_labels is not None:
                         audio_logits = outputs["audio_logits"]
                         
@@ -813,16 +843,17 @@ def main():
                                 logger.info(f"   Audio logits shape: {audio_logits.shape}")
                                 logger.info(f"   Audio labels shape: {audio_labels.shape}")
                                 
-                                # First and last 10 predictions vs labels (FULL VALUES as requested)
+                                # 🎵 AUDIO LOGS: First and last 10 predictions vs labels (as requested)
                                 if len(audio_preds_flat) >= 10:
-                                    logger.info(f"   FIRST 10 - Pred: {audio_preds_flat[:10].tolist()}")
-                                    logger.info(f"   FIRST 10 - Label: {audio_labels_flat[:10].tolist()}")
+                                    logger.info(f"   🎵 AUDIO LOGS - TOKEN IDs:")
+                                    logger.info(f"     FIRST 10 - Pred: {audio_preds_flat[:10].tolist()}")
+                                    logger.info(f"     FIRST 10 - Label: {audio_labels_flat[:10].tolist()}")
                                     if len(audio_preds_flat) >= 20:
-                                        logger.info(f"   LAST 10 - Pred: {audio_preds_flat[-10:].tolist()}")
-                                        logger.info(f"   LAST 10 - Label: {audio_labels_flat[-10:].tolist()}")
+                                        logger.info(f"     LAST 10 - Pred: {audio_preds_flat[-10:].tolist()}")
+                                        logger.info(f"     LAST 10 - Label: {audio_labels_flat[-10:].tolist()}")
                                 
-                                # FULL PREDICTIONS LOGGING (as requested)
-                                logger.info(f"   ALL AUDIO PREDICTIONS (first 50): {audio_preds.flatten()[:50].tolist()}")
+                                # FULL AUDIO PREDICTIONS LOGGING
+                                logger.info(f"   🎵 ALL AUDIO TOKEN PREDICTIONS (first 50): {audio_preds.flatten()[:50].tolist()}")
                         else:
                             logger.warning(f"⚠️ AUDIO SHAPE MISMATCH: preds={audio_preds.shape} vs labels={audio_labels.shape}")
                             logger.warning(f"   Skipping audio analysis for this step")
