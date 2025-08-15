@@ -55,13 +55,45 @@ class SimpleDataset(Dataset):
         return self.samples[idx]
 
 
+# CRITICAL FIX: Patch original prepare_chatml_sample to mask audio tokens in text labels
+def fixed_prepare_chatml_sample_minimal(sample, tokenizer):
+    """
+    MINIMAL FIX: Use original prepare_chatml_sample but post-process to mask audio tokens
+    This prevents <|audio_eos|> contamination without breaking the working architecture
+    """
+    # Call original function
+    input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
+    
+    if input_tokens and label_tokens:
+        # Get audio special token IDs
+        audio_eos_id = tokenizer.encode("<|audio_eos|>", add_special_tokens=False)
+        audio_bos_id = tokenizer.encode("<|audio_bos|>", add_special_tokens=False)  
+        audio_out_bos_id = tokenizer.encode("<|audio_out_bos|>", add_special_tokens=False)
+        audio_id = tokenizer.encode("<|AUDIO|>", add_special_tokens=False)
+        audio_out_id = tokenizer.encode("<|AUDIO_OUT|>", add_special_tokens=False)
+        
+        audio_special_tokens = set()
+        if audio_eos_id: audio_special_tokens.update(audio_eos_id)
+        if audio_bos_id: audio_special_tokens.update(audio_bos_id)
+        if audio_out_bos_id: audio_special_tokens.update(audio_out_bos_id)
+        if audio_id: audio_special_tokens.update(audio_id)
+        if audio_out_id: audio_special_tokens.update(audio_out_id)
+        
+        # Mask audio special tokens in text labels (but keep in input_tokens)
+        for i in range(len(label_tokens)):
+            if i < len(input_tokens) and input_tokens[i] in audio_special_tokens:
+                label_tokens[i] = -100  # Mask audio tokens
+    
+    return input_tokens, label_tokens, audio_contents, speaker_id
+
+
 def custom_collate_fn(batch, tokenizer, audio_tokenizer, collator):
     """Convert raw dict samples to ChatMLDatasetSample objects with PROPER ZERO-SHOT AUDIO SEPARATION"""
     chatml_samples = []
     
     for sample in batch:
-        # Process each sample to create ChatMLDatasetSample with ZERO-SHOT STRUCTURE
-        input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(sample, tokenizer)
+        # CRITICAL FIX: Use fixed tokenization that masks audio tokens in text labels
+        input_tokens, label_tokens, audio_contents, speaker_id = fixed_prepare_chatml_sample_minimal(sample, tokenizer)
         
         if input_tokens is None or label_tokens is None:
             continue  # Skip invalid samples
