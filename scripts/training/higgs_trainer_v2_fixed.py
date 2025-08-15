@@ -275,11 +275,16 @@ class HiggsAudioModelWrapper(nn.Module):
         logger.info(f"✅ CROSS-MODAL CONDITIONING: Rebuilt {len(new_layers)} layers with audio attention")
     
     def forward(self, **kwargs):
+        # CRITICAL DEBUG: Log exactly what we receive
+        print(f"🔍 MODEL WRAPPER RECEIVED: {list(kwargs.keys())}")
+        print(f"🔍 'labels' in kwargs: {'labels' in kwargs}")
+        
         # CRITICAL: DataParallel bypasses compute_loss and calls this directly with 'labels'
         # We must handle the conversion here as a safety net
         if 'labels' in kwargs:
-            logger.warning(f"🚨 MODEL WRAPPER: DataParallel passed 'labels'! Converting to 'label_ids'")
+            print(f"🚨 CONVERTING 'labels' to 'label_ids'")
             kwargs['label_ids'] = kwargs.pop('labels')
+            print(f"🔍 AFTER CONVERSION: {list(kwargs.keys())}")
         
         # ADDITIONAL SAFETY: Remove any other unexpected parameters
         expected_params = {
@@ -294,6 +299,13 @@ class HiggsAudioModelWrapper(nn.Module):
         
         # Filter to only expected parameters
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in expected_params}
+        
+        print(f"🔍 FILTERED KWARGS: {list(filtered_kwargs.keys())}")
+        print(f"🔍 'labels' in filtered_kwargs: {'labels' in filtered_kwargs}")
+        
+        if 'labels' in filtered_kwargs:
+            print(f"❌ CRITICAL ERROR: 'labels' STILL in filtered_kwargs!")
+            raise ValueError("Labels still in filtered kwargs after filtering!")
         
         return self.model(**filtered_kwargs)
 
