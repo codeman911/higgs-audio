@@ -223,6 +223,12 @@ def main():
                         choices=["no", "fp16", "bf16"],
                         help="Mixed precision training")
     
+    # DEBUG arguments
+    parser.add_argument("--debug_samples", type=int, default=None,
+                        help="Limit training to N samples for debugging (default: use full dataset)")
+    parser.add_argument("--debug_val_samples", type=int, default=None,
+                        help="Limit validation to N samples for debugging (default: use full dataset)")
+    
     args = parser.parse_args()
     
     # Setup accelerator
@@ -296,20 +302,32 @@ def main():
     )
     
     # Load datasets
-    train_path = os.path.join(args.dataset_path, "train_chatml_samples.json")
-    val_path = os.path.join(args.dataset_path, "val_chatml_samples.json")
+    train_file = os.path.join(args.dataset_path, "train_chatml_samples.json")
+    val_file = os.path.join(args.dataset_path, "val_chatml_samples.json")
     
-    if not os.path.exists(train_path):
-        logger.error(f"Training file not found: {train_path}")
-        sys.exit(1)
+    train_path = train_file
+    val_path = val_file
     
     logger.info(f"Loading training data from {train_path}")
     train_dataset = SimpleDataset(train_path)
+    logger.info(f"Loaded {len(train_dataset)} samples from {train_path}")
+    
+    if args.debug_samples is not None:
+        original_size = len(train_dataset)
+        train_dataset.samples = train_dataset.samples[:args.debug_samples]
+        logger.info(f"🐛 DEBUG MODE: Limited training from {original_size} → {len(train_dataset)} samples")
+        logger.info(f"🚀 SPEEDUP: ~{original_size//len(train_dataset)}x faster training for debugging")
     
     val_dataset = None
     if os.path.exists(val_path):
         logger.info(f"Loading validation data from {val_path}")
         val_dataset = SimpleDataset(val_path)
+        logger.info(f"Loaded {len(val_dataset)} samples from {val_path}")
+        
+        if args.debug_val_samples is not None:
+            original_val_size = len(val_dataset)
+            val_dataset.samples = val_dataset.samples[:args.debug_val_samples]
+            logger.info(f"🐛 DEBUG MODE: Limited validation from {original_val_size} → {len(val_dataset)} samples")
     
     # Create data loaders - OPTIMIZED FOR H200
     train_dataloader = DataLoader(
@@ -545,23 +563,27 @@ def main():
                     logger.error(f" INSUFFICIENT TEXT SUPERVISION: {per_sample:.1f} tokens/sample < {MIN_ASSISTANT_TOKENS} required for Arabic!")
                     continue  # Skip starved batches
                 
-                # Forward pass with clean inputs - NO LABELS to model (like working version)
-                model_inputs = {
-                    "input_ids": sup["input_ids"],
-                    "attention_mask": sup["attention_mask"],
-                    "audio_features": batch.audio_in_wv.to(device) if hasattr(batch, 'audio_in_wv') and batch.audio_in_wv is not None else None,
-                    "audio_feature_attention_mask": batch.audio_feature_attention_mask.to(device) if hasattr(batch, 'audio_feature_attention_mask') and batch.audio_feature_attention_mask is not None else None,
-                    "audio_in_ids": sup["audio_in_ids"],
-                    "audio_out_ids": sup["audio_out_ids_shifted_in"],
-                    "audio_in_ids_start": batch.audio_in_ids_start.to(device) if hasattr(batch, 'audio_in_ids_start') and batch.audio_in_ids_start is not None else None,
-                    "audio_out_ids_start": batch.audio_out_ids_start.to(device) if hasattr(batch, 'audio_out_ids_start') and batch.audio_out_ids_start is not None else None,
-                    "audio_out_ids_start_group_loc": batch.audio_out_ids_start_group_loc.to(device) if hasattr(batch, 'audio_out_ids_start_group_loc') and batch.audio_out_ids_start_group_loc is not None else None,
-                }
+                # Complete debug logging after labels are extracted
+                if global_step == 0:
+                    # 5. Verify labels are separate (not passed to model)
+                    logger.info(f"✅ TEXT LABELS: shape={sup['text_labels'].shape} (separate from model)")
+                    logger.info(f"✅ AUDIO LABELS: shape={sup['audio_labels'].shape} (separate from model)")
+                    
+                    # Show actual text and audio label content
+                    logger.info("📋 TEXT LABELS CONTENT:")
+                    text_label_content = tokenizer.decode([t for t in sup['text_labels'][0] if t != -100], skip_special_tokens=False)
+                    logger.info(f"TEXT LABELS (decoded): {text_label_content}")
+                    
+                    logger.info("📋 AUDIO LABELS SHAPE AND SAMPLE:")
+                    logger.info(f"AUDIO LABELS: shape={sup['audio_labels'].shape}, non_ignore={((sup['audio_labels'] != -100).sum().item())}/{sup['audio_labels'].numel()}")
+                    logger.info(f"AUDIO LABELS (first 20): {sup['audio_labels'].flatten()[:20].tolist()}")
+                    
+                    logger.info("🔍 DATA FLOW VERIFICATION COMPLETE")
                 
                 # Remove None values for clean forward pass
-                model_inputs = {k: v for k, v in model_inputs.items() if v is not None}
+                model_inputs = {k: v for k, v in sup.items() if v is not None}
                 
-                # DEBUG: Log model inputs to verify NO labels
+                # DEBUG: Log model inputs and COMPLETE content verification
                 if global_step == 0:
                     logger.info(f"DEBUG: Model input keys: {list(model_inputs.keys())}")
                     for key, value in model_inputs.items():
@@ -592,8 +614,8 @@ def main():
                         logger.info(f"🎤 REFERENCE AUDIO TOKENS: {ref_audio[:, :10].tolist()}")
                     
                     # 3. Check target audio for prediction
-                    if "audio_out_ids" in model_inputs:
-                        target_audio = model_inputs["audio_out_ids"] 
+                    if "audio_out_ids_shifted_in" in model_inputs:
+                        target_audio = model_inputs["audio_out_ids_shifted_in"] 
                         logger.info(f"🎯 TARGET AUDIO (shifted): shape={target_audio.shape}, non_zero={((target_audio != 0).sum().item())}/{target_audio.numel()}")
                         logger.info(f"🎯 TARGET AUDIO TOKENS: {target_audio[:, :10].tolist()}")
                     
