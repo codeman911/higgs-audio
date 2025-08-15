@@ -156,7 +156,7 @@ class InferenceStyleDatasetForTrainer(Dataset):
             
             input_tokens, label_tokens, audio_contents, speaker_id = result
             
-            # Process audio using your exact approach (matches distributed_trainer.py lines 70-85)
+            # Process audio exactly like your working distributed_trainer.py
             audio_ids_list = []
             audio_waveforms_list = []
             
@@ -165,22 +165,25 @@ class InferenceStyleDatasetForTrainer(Dataset):
                     audio_path = audio_content.audio_url
                     if audio_path and os.path.exists(audio_path):
                         try:
-                            # Tokenize audio (exact same as your working code)
+                            # Tokenize audio (returns tensor on device of tokenizer)
                             audio_codes = self.audio_tokenizer.encode(audio_path)
+                            # Ensure CPU and proper dtype
+                            audio_codes = audio_codes.detach().cpu().long()
                             
-                            # Load waveform (exact same as your working code)
+                            # Load waveform (always on CPU)
                             waveform, sr = librosa.load(audio_path, sr=24000, mono=True)
-                            waveform = torch.tensor(waveform, dtype=torch.float32)
+                            waveform = torch.tensor(waveform, dtype=torch.float32)  # CPU by default
                             
                             audio_ids_list.append(audio_codes)
                             audio_waveforms_list.append(waveform)
                             
                         except Exception as e:
-                            logger.warning(f"Error processing audio {audio_path}: {e}")
+                            logger.warning(f"Failed to process audio {audio_path}: {e}")
             
-            # Handle concatenation (matches your working approach)
+            # Create concatenations (ensure all CPU)
             if audio_ids_list:
-                audio_ids_concat = torch.cat([torch.tensor(codes, dtype=torch.long) for codes in audio_ids_list], dim=1)
+                # Use .detach().clone() to avoid tensor creation warning
+                audio_ids_concat = torch.cat([codes.detach().clone() for codes in audio_ids_list], dim=1)
                 audio_ids_start = torch.tensor([0] + [codes.shape[1] for codes in audio_ids_list[:-1]], dtype=torch.long).cumsum(0)
                 
                 audio_waveforms_concat = torch.cat(audio_waveforms_list, dim=0) if audio_waveforms_list else torch.zeros(1)
