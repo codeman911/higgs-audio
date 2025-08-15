@@ -44,59 +44,37 @@ from boson_multimodal.data_types import Message, ChatMLSample, AudioContent, Tex
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class ExtendedHiggsAudioBatchInput:
-    """Extended HiggsAudioBatchInput with __len__ method for Trainer compatibility"""
-    
-    def __init__(self, **kwargs):
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-    
-    def __len__(self):
-        """Return the batch size based on input_ids"""
-        if hasattr(self, 'input_ids') and self.input_ids is not None:
-            return self.input_ids.shape[0]
-        else:
-            return 0
-    
-    def __getitem__(self, key):
-        """Allow dictionary-style access for compatibility"""
-        return getattr(self, key)
-    
-    def __contains__(self, key):
-        """Check if attribute exists"""
-        return hasattr(self, key)
-    
-    def keys(self):
-        """Return all attribute names for compatibility"""
-        return [attr for attr in dir(self) if not attr.startswith('_') and not callable(getattr(self, attr))]
 
-
-class ExtendedHiggsAudioSampleCollator:
-    """Extended collator that returns our custom batch input class"""
-    
+class FinalDataCollator:
+    """
+    DEFINITIVE FIX: A simple collator that prepares a clean dictionary for the standard Trainer.
+    It fixes the 'labels' issue at the source.
+    """
     def __init__(self, **kwargs):
+        # Use the official collator internally
         self.base_collator = HiggsAudioSampleCollator(**kwargs)
-    
+
     def __call__(self, batch: List[ChatMLDatasetSample]):
-        # Use official collator
+        # 1. Get the batch object from the official collator
         batch_input = self.base_collator(batch)
         
-        # Convert to extended batch input for Trainer compatibility
-        extended_batch = ExtendedHiggsAudioBatchInput()
-        
-        # Copy all attributes from base batch, but SKIP 'labels' completely
+        # 2. Convert the batch object to a clean dictionary
+        model_inputs = {}
         for attr_name in dir(batch_input):
             if not attr_name.startswith('_') and not callable(getattr(batch_input, attr_name)):
-                # CRITICAL FIX: Skip 'labels' completely - HiggsAudio doesn't expect it
-                if attr_name == 'labels':
-                    continue  # Skip labels entirely
-                setattr(extended_batch, attr_name, getattr(batch_input, attr_name))
-        
-        # FINAL FIX: Ensure no 'labels' attribute exists
-        if hasattr(extended_batch, 'labels'):
-            delattr(extended_batch, 'labels')
-        
-        return extended_batch
+                model_inputs[attr_name] = getattr(batch_input, attr_name)
+
+        # 3. Forcefully remove the original 'labels' key if it exists
+        if 'labels' in model_inputs:
+            model_inputs.pop('labels')
+
+        # 4. CRITICAL: Rename 'label_ids' to 'labels' for the Trainer
+        # The Trainer requires the 'labels' key to compute loss.
+        # The HiggsAudioModel is designed to accept this key for loss calculation.
+        if 'label_ids' in model_inputs:
+            model_inputs['labels'] = model_inputs.pop('label_ids')
+
+        return model_inputs
 
 
 class InferenceStyleDatasetForTrainer(Dataset):
@@ -418,7 +396,7 @@ def main():
     try:
         whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
         
-        data_collator = ExtendedHiggsAudioSampleCollator(
+        data_collator = FinalDataCollator(
             whisper_processor=whisper_processor,
             audio_in_token_id=model.config.audio_in_token_idx,
             audio_out_token_id=model.config.audio_out_token_idx,
