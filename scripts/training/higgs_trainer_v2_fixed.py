@@ -329,6 +329,15 @@ class HiggsAudioTrainer(Trainer):
             if 'labels' in model_inputs:
                 model_inputs['label_ids'] = model_inputs.pop('labels')
         
+        # ROBUST FIX: Ensure NO 'labels' key exists anywhere
+        if 'labels' in model_inputs:
+            model_inputs['label_ids'] = model_inputs.pop('labels')
+            logger.debug("🔧 Converted 'labels' to 'label_ids' for HiggsAudio compatibility")
+        
+        # Debug: Log input types and keys
+        logger.debug(f"🔍 Input type: {type(inputs)}")
+        logger.debug(f"🔍 Model input keys: {list(model_inputs.keys())}")
+        
         # Apply audio token masking in text labels (your improvement)
         if 'label_ids' in model_inputs and model_inputs['label_ids'] is not None:
             model_inputs['label_ids'] = self._mask_audio_tokens_in_text_labels(model_inputs['label_ids'])
