@@ -12,7 +12,8 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import autocast
+import torch
 from transformers import get_cosine_schedule_with_warmup, AutoTokenizer
 import wandb
 from typing import Dict, List, Optional, Any
@@ -235,7 +236,7 @@ class ArabicVoiceCloningDistributedTrainer:
         
         # Mixed precision
         if self.training_config.use_mixed_precision:
-            self.scaler = GradScaler()
+            self.scaler = torch.amp.GradScaler('cuda')
         else:
             self.scaler = None
         
@@ -299,7 +300,7 @@ class ArabicVoiceCloningDistributedTrainer:
             # The batch is already collated by the DataLoader's collate_fn
             training_batch = self._move_batch_to_device(batch)
             
-            with autocast(enabled=self.training_config.use_mixed_precision):
+            with torch.amp.autocast('cuda', enabled=self.training_config.use_mixed_precision):
                 outputs = self.model(
                     input_ids=training_batch.input_ids,
                     attention_mask=training_batch.attention_mask,

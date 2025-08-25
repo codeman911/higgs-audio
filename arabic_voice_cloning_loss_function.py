@@ -184,19 +184,19 @@ class HiggsAudioDualFFNLoss(nn.Module):
         total_loss = 0.0
         
         # 1. Text Generation Loss
-        if text_logits is not None and batch.labels is not None:
-            text_loss = self._compute_text_loss(text_logits, batch.labels)
+        if text_logits is not None and batch.label_ids is not None:
+            text_loss = self._compute_text_loss(text_logits, batch.label_ids)
             losses['text_loss'] = text_loss
             total_loss += self.loss_config.text_loss_weight * text_loss
             
             # Text generation metrics
             with torch.no_grad():
-                text_accuracy = self._compute_text_accuracy(text_logits, batch.labels)
+                text_accuracy = self._compute_text_accuracy(text_logits, batch.label_ids)
                 metrics['text_accuracy'] = text_accuracy
         
         # 2. Audio Generation Loss
-        if audio_logits is not None and batch.audio_labels is not None:
-            audio_loss, audio_metrics = self._compute_audio_loss(audio_logits, batch.audio_labels)
+        if audio_logits is not None and batch.label_audio_ids is not None:
+            audio_loss, audio_metrics = self._compute_audio_loss(audio_logits, batch.label_audio_ids)
             losses['audio_loss'] = audio_loss
             total_loss += self.loss_config.audio_loss_weight * audio_loss
             metrics.update(audio_metrics)
