@@ -126,29 +126,33 @@ class ArabicVoiceCloningInference:
         
         # Load Whisper processor for reference audio conditioning
         logger.info("Loading Whisper processor for reference audio conditioning")
-        try:
-            # Try the recommended model first
-            whisper_processor = AutoProcessor.from_pretrained(
-                "openai/whisper-large-v3",  # Changed from v3-turbo to standard v3
-                trust_remote_code=True
-            )
-            logger.info("✅ Successfully loaded Whisper processor")
-        except Exception as e:
-            logger.warning(f"Failed to load whisper-large-v3: {e}")
+        whisper_processor = None
+        whisper_models = [
+            "openai/whisper-large-v3",
+            "openai/whisper-base", 
+            "openai/whisper-tiny"
+        ]
+        
+        for model_name in whisper_models:
             try:
-                # Fallback to base model
                 whisper_processor = AutoProcessor.from_pretrained(
-                    "openai/whisper-base",
+                    model_name,
                     trust_remote_code=True
                 )
-                logger.info("✅ Successfully loaded Whisper base processor as fallback")
-            except Exception as e2:
-                logger.error(f"Failed to load any Whisper processor: {e2}")
-                whisper_processor = None
-                # If we can't load Whisper, revert the config
-                self.config.encode_whisper_embed = original_whisper_setting
+                logger.info(f"✅ Successfully loaded Whisper processor: {model_name}")
+                break
+            except Exception as e:
+                logger.warning(f"Failed to load {model_name}: {e}")
         
-        # CRITICAL FIX: Setup collator exactly like serve_engine.py
+        if whisper_processor is None:
+            logger.warning("⚠️ No Whisper processor available - will use DAC-only mode")
+        
+        # Force enable Whisper embeddings if processor is available
+        encode_whisper_embed = whisper_processor is not None
+        if encode_whisper_embed != original_whisper_setting:
+            logger.info(f"Overriding encode_whisper_embed: {original_whisper_setting} → {encode_whisper_embed}")
+        
+        # CRITICAL FIX: Setup collator with intelligent configuration
         logger.info(f"Setting up collator with Whisper processor: {whisper_processor is not None}")
         self.collator = HiggsAudioSampleCollator(
             whisper_processor=whisper_processor,
@@ -156,7 +160,7 @@ class ArabicVoiceCloningInference:
             audio_out_token_id=self.config.audio_out_token_idx,
             audio_stream_bos_id=self.config.audio_stream_bos_id,
             audio_stream_eos_id=self.config.audio_stream_eos_id,
-            encode_whisper_embed=True,  # Force True for voice cloning
+            encode_whisper_embed=encode_whisper_embed,  # Use the determined value
             pad_token_id=self.config.pad_token_id,
             return_audio_in_tokens=False,  # CRITICAL: serve_engine.py uses False
             use_delay_pattern=self.config.use_delay_pattern,
@@ -165,8 +169,8 @@ class ArabicVoiceCloningInference:
         )
         
         # Verify collator setup
-        logger.info(f"Collator configuration (forced for voice cloning):")
-        logger.info(f"  - encode_whisper_embed: {self.collator.encode_whisper_embed} (forced True)")
+        logger.info(f"Collator configuration:")
+        logger.info(f"  - encode_whisper_embed: {self.collator.encode_whisper_embed} ({'adaptive' if encode_whisper_embed else 'disabled'})")
         logger.info(f"  - whisper_processor available: {self.collator.whisper_processor is not None}")
         logger.info(f"  - return_audio_in_tokens: {self.collator.return_audio_in_tokens}")
         
@@ -362,10 +366,10 @@ class ArabicVoiceCloningInference:
         logger.info(f"Loading reference audio waveform: {ref_audio_path}")
         if not os.path.exists(ref_audio_path):
             logger.error(f"Reference audio file not found: {ref_audio_path}")
-            return messages, []
+            return messages, [], None, None
             
         try:
-            # Load audio waveform for Whisper embeddings
+            # Load audio waveform
             waveform, sr = torchaudio.load(ref_audio_path)
             logger.info(f"Loaded audio: shape={waveform.shape}, sr={sr}")
             
@@ -374,32 +378,39 @@ class ArabicVoiceCloningInference:
                 waveform = waveform.mean(dim=0, keepdim=True)
                 logger.info(f"Converted to mono: shape={waveform.shape}")
             
-            # Resample to 16kHz for Whisper if needed
-            target_sr = 16000
-            if sr != target_sr:
-                resampler = T.Resample(sr, target_sr)
-                waveform = resampler(waveform)
-                sr = target_sr
-                logger.info(f"Resampled to {target_sr}Hz: shape={waveform.shape}")
-            
-            # Encode reference audio for DAC tokens (for context)
+            # Encode reference audio for DAC tokens (always needed)
             audio_tokens = self.audio_tokenizer.encode(ref_audio_path)
             audio_ids = [audio_tokens]
             logger.info(f"Audio tokens shape: {audio_tokens.shape}")
             
-            # Store waveform for Whisper processing in dataset sample
-            ref_waveform = waveform.squeeze(0)  # Remove channel dimension
-            logger.info(f"Final waveform for Whisper: shape={ref_waveform.shape}, type={type(ref_waveform)}")
-            
-            # Validate the waveform
-            if ref_waveform.numel() == 0:
-                logger.error("Waveform is empty after processing!")
-                ref_waveform = None
-            elif torch.isnan(ref_waveform).any() or torch.isinf(ref_waveform).any():
-                logger.error("Waveform contains NaN or Inf values!")
-                ref_waveform = None
+            # Prepare waveform for Whisper processing (conditional)
+            ref_waveform = None
+            if self.collator.whisper_processor is not None and self.collator.encode_whisper_embed:
+                # Resample to 16kHz for Whisper if needed
+                target_sr = 16000
+                if sr != target_sr:
+                    resampler = T.Resample(sr, target_sr)
+                    waveform_16k = resampler(waveform)
+                    logger.info(f"Resampled to {target_sr}Hz: shape={waveform_16k.shape}")
+                else:
+                    waveform_16k = waveform
+                
+                # Store waveform for Whisper processing
+                ref_waveform = waveform_16k.squeeze(0)  # Remove channel dimension
+                logger.info(f"Final waveform for Whisper: shape={ref_waveform.shape}, type={type(ref_waveform)}")
+                
+                # Validate the waveform
+                if ref_waveform.numel() == 0:
+                    logger.warning("Waveform is empty after processing! Disabling Whisper conditioning.")
+                    ref_waveform = None
+                elif torch.isnan(ref_waveform).any() or torch.isinf(ref_waveform).any():
+                    logger.warning("Waveform contains NaN or Inf values! Disabling Whisper conditioning.")
+                    ref_waveform = None
+                else:
+                    logger.info(f"Waveform validation passed: min={ref_waveform.min():.4f}, max={ref_waveform.max():.4f}")
+                    sr = target_sr  # Update sample rate for return
             else:
-                logger.info(f"Waveform validation passed: min={ref_waveform.min():.4f}, max={ref_waveform.max():.4f}")
+                logger.info("Whisper processor not available or disabled - using DAC-only mode")
             
         except Exception as e:
             logger.error(f"Error loading audio: {e}")
@@ -408,6 +419,118 @@ class ArabicVoiceCloningInference:
             sr = None
         
         return messages, audio_ids, ref_waveform, sr
+    
+    def _create_robust_sample(
+        self,
+        input_tokens: List[int],
+        audio_ids: List[torch.Tensor],
+        ref_waveform: Optional[torch.Tensor] = None,
+        ref_sample_rate: Optional[int] = None
+    ) -> ChatMLDatasetSample:
+        """
+        Create ChatMLDatasetSample with proper conditional waveform handling.
+        
+        This method handles two scenarios:
+        1. Full pipeline: Whisper available + valid waveform -> include waveforms for conditioning
+        2. DAC-only pipeline: Whisper unavailable or no waveform -> serve_engine.py pattern
+        
+        Args:
+            input_tokens: Input text tokens
+            audio_ids: List of audio token tensors
+            ref_waveform: Reference audio waveform (optional)
+            ref_sample_rate: Sample rate of reference waveform (optional)
+            
+        Returns:
+            Properly configured ChatMLDatasetSample
+        """
+        # Process DAC tokens (always needed)
+        if audio_ids:
+            audio_ids_start = torch.tensor(
+                np.cumsum(np.array([0] + [audio_ids[i].shape[1] for i in range(len(audio_ids))])),
+                dtype=torch.long, device=self._device,
+            )[:-1]
+            audio_ids_concat = torch.cat([ele.cpu() for ele in audio_ids], dim=1)
+        else:
+            audio_ids_start = torch.tensor([], dtype=torch.long)
+            audio_ids_concat = torch.zeros((self.config.audio_num_codebooks, 0), dtype=torch.long)
+        
+        # Check if we should use Whisper conditioning
+        whisper_available = (
+            self.collator.whisper_processor is not None and 
+            self.collator.encode_whisper_embed
+        )
+        
+        if whisper_available and ref_waveform is not None:
+            # Full pipeline mode: include waveforms for Whisper conditioning
+            logger.info(f"✅ Using full pipeline mode (Whisper + DAC): waveform shape={ref_waveform.shape}")
+            
+            return ChatMLDatasetSample(
+                input_ids=torch.LongTensor(input_tokens),
+                label_ids=None,
+                audio_ids_concat=audio_ids_concat,
+                audio_ids_start=audio_ids_start,
+                audio_waveforms_concat=ref_waveform,
+                audio_waveforms_start=torch.tensor([0], dtype=torch.long),
+                audio_sample_rate=torch.tensor([ref_sample_rate or 16000], dtype=torch.float32),
+                audio_speaker_indices=torch.tensor([0], dtype=torch.long),
+            )
+        else:
+            # DAC-only mode: follow serve_engine.py pattern
+            reason = "Whisper unavailable" if not whisper_available else "No waveform provided"
+            logger.info(f"✅ Using DAC-only mode ({reason}): DAC tokens shape={audio_ids_concat.shape}")
+            
+            return ChatMLDatasetSample(
+                input_ids=torch.LongTensor(input_tokens),
+                label_ids=None,
+                audio_ids_concat=audio_ids_concat,
+                audio_ids_start=audio_ids_start,
+                audio_waveforms_concat=torch.tensor([]),  # Empty tensor, not None
+                audio_waveforms_start=torch.tensor([], dtype=torch.long),
+                audio_sample_rate=torch.tensor([], dtype=torch.float32),
+                audio_speaker_indices=torch.tensor([], dtype=torch.long),
+            )
+    
+    def _validate_sample_for_collator(self, sample: ChatMLDatasetSample) -> ChatMLDatasetSample:
+        """
+        Defensive validation to ensure sample is compatible with collator configuration.
+        
+        Args:
+            sample: The ChatMLDatasetSample to validate
+            
+        Returns:
+            Validated or corrected ChatMLDatasetSample
+        """
+        try:
+            # Check for Whisper configuration mismatch
+            if self.collator.encode_whisper_embed:
+                audio_in_mask = sample.input_ids == self.collator.audio_in_token_id
+                has_audio_tokens = audio_in_mask.any()
+                
+                if has_audio_tokens:
+                    # Audio tokens present, validate waveform data
+                    if (sample.audio_waveforms_concat is None or 
+                        sample.audio_waveforms_start is None or
+                        len(sample.audio_waveforms_concat) == 0):
+                        
+                        logger.warning("Sample has audio tokens but missing waveforms for Whisper. Converting to DAC-only mode.")
+                        
+                        # Convert to DAC-only compatible sample
+                        return ChatMLDatasetSample(
+                            input_ids=sample.input_ids,
+                            label_ids=sample.label_ids,
+                            audio_ids_concat=sample.audio_ids_concat if sample.audio_ids_concat is not None else torch.zeros((self.config.audio_num_codebooks, 0), dtype=torch.long),
+                            audio_ids_start=sample.audio_ids_start if sample.audio_ids_start is not None else torch.tensor([], dtype=torch.long),
+                            audio_waveforms_concat=torch.tensor([]),
+                            audio_waveforms_start=torch.tensor([], dtype=torch.long),
+                            audio_sample_rate=torch.tensor([], dtype=torch.float32),
+                            audio_speaker_indices=torch.tensor([], dtype=torch.long),
+                        )
+            
+            return sample
+            
+        except Exception as e:
+            logger.error(f"Error validating sample: {e}")
+            return sample
     
     @torch.inference_mode()
     def generate_arabic_speech(
@@ -459,30 +582,16 @@ class ArabicVoiceCloningInference:
             logger.info("=== Generation Input ===")
             logger.info(self.tokenizer.decode(input_tokens))
             
-            # CRITICAL FIX: Simple sample creation like serve_engine.py
-            # Use DAC tokens only with simple waveform setup
-            if audio_ids:
-                audio_ids_start = torch.tensor(
-                    np.cumsum(np.array([0] + [audio_ids[i].shape[1] for i in range(len(audio_ids))])),
-                    dtype=torch.long, device=self._device,
-                )[:-1]
-                audio_ids_concat = torch.cat([ele.cpu() for ele in audio_ids], dim=1)
-            else:
-                audio_ids_start = None
-                audio_ids_concat = None
-            
-            # CRITICAL: serve_engine.py pattern - simple sample creation
-            curr_sample = ChatMLDatasetSample(
-                input_ids=torch.LongTensor(input_tokens),
-                label_ids=None,
-                audio_ids_concat=audio_ids_concat,
-                audio_ids_start=audio_ids_start,
-                audio_waveforms_concat=None,  # serve_engine.py pattern
-                audio_waveforms_start=None,   # serve_engine.py pattern  
-                audio_sample_rate=None,       # serve_engine.py pattern
-                audio_speaker_indices=None,
+            # CRITICAL FIX: Use robust sample creation with conditional waveform handling
+            curr_sample = self._create_robust_sample(
+                input_tokens=input_tokens,
+                audio_ids=audio_ids,
+                ref_waveform=ref_waveform,
+                ref_sample_rate=ref_sample_rate
             )
-            logger.info(f"✅ Using serve_engine.py pattern: DAC tokens: {audio_ids_concat.shape if audio_ids_concat is not None else 'None'}")
+            
+            # CRITICAL: Validate sample for collator compatibility
+            curr_sample = self._validate_sample_for_collator(curr_sample)
             
             # Collate data
             batch_data = self.collator([curr_sample])
