@@ -115,6 +115,9 @@ class ArabicVoiceCloningInference:
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.config = AutoConfig.from_pretrained(model_path)
         
+        # CRITICAL: Initialize audio codebook size like serve_engine.py
+        self.audio_codebook_size = self.config.audio_codebook_size
+        
         # Force enable Whisper embeddings for better voice cloning (override model config)
         # This follows the training pipeline pattern where Whisper is always enabled
         original_whisper_setting = self.config.encode_whisper_embed
@@ -145,7 +148,7 @@ class ArabicVoiceCloningInference:
                 # If we can't load Whisper, revert the config
                 self.config.encode_whisper_embed = original_whisper_setting
         
-        # Setup collator with forced Whisper embedding (following training pipeline)
+        # CRITICAL FIX: Setup collator exactly like serve_engine.py
         logger.info(f"Setting up collator with Whisper processor: {whisper_processor is not None}")
         self.collator = HiggsAudioSampleCollator(
             whisper_processor=whisper_processor,
@@ -153,11 +156,11 @@ class ArabicVoiceCloningInference:
             audio_out_token_id=self.config.audio_out_token_idx,
             audio_stream_bos_id=self.config.audio_stream_bos_id,
             audio_stream_eos_id=self.config.audio_stream_eos_id,
-            encode_whisper_embed=True,  # Force True for voice cloning (like training pipeline)
+            encode_whisper_embed=True,  # Force True for voice cloning
             pad_token_id=self.config.pad_token_id,
-            return_audio_in_tokens=self.config.encode_audio_in_tokens,
+            return_audio_in_tokens=False,  # CRITICAL: serve_engine.py uses False
             use_delay_pattern=self.config.use_delay_pattern,
-            round_to=1,
+            round_to=1,  # CRITICAL: serve_engine.py uses fixed round_to=1
             audio_num_codebooks=self.config.audio_num_codebooks,
         )
         
@@ -456,55 +459,30 @@ class ArabicVoiceCloningInference:
             logger.info("=== Generation Input ===")
             logger.info(self.tokenizer.decode(input_tokens))
             
-            # Create dataset sample with proper audio waveform for Whisper processing
-            logger.info(f"Checking Whisper conditioning requirements (forced enabled):")
-            logger.info(f"  - ref_waveform is not None: {ref_waveform is not None}")
-            logger.info(f"  - collator.encode_whisper_embed: {self.collator.encode_whisper_embed} (forced True)")
-            logger.info(f"  - collator.whisper_processor is not None: {self.collator.whisper_processor is not None}")
-            
-            # Use collator settings instead of config since we forced them
-            if ref_waveform is not None and self.collator.encode_whisper_embed and self.collator.whisper_processor is not None:
-                # Dual pathway: Whisper embeddings + DAC tokens for proper voice cloning
-                curr_sample = ChatMLDatasetSample(
-                    input_ids=torch.LongTensor(input_tokens),
-                    label_ids=None,
-                    # DAC audio tokens for generation context
-                    audio_ids_concat=torch.concat([ele.cpu() for ele in audio_ids], dim=1) if audio_ids else torch.empty(0, 0, dtype=torch.long),
-                    audio_ids_start=torch.cumsum(
-                        torch.tensor([0] + [ele.shape[1] for ele in audio_ids], dtype=torch.long), 
-                        dim=0
-                    ) if audio_ids else torch.empty(0, dtype=torch.long),
-                    # Reference waveform for Whisper feature extraction (key for voice cloning)
-                    audio_waveforms_concat=ref_waveform,
-                    audio_waveforms_start=torch.tensor([0, len(ref_waveform)], dtype=torch.long),
-                    audio_sample_rate=torch.tensor([ref_sample_rate], dtype=torch.float32),
-                    audio_speaker_indices=torch.empty(0, dtype=torch.long),
-                )
-                logger.info(f"✅ Using Whisper conditioning with waveform: {ref_waveform.shape}, DAC tokens: {audio_ids[0].shape if audio_ids else 'None'}")
+            # CRITICAL FIX: Simple sample creation like serve_engine.py
+            # Use DAC tokens only with simple waveform setup
+            if audio_ids:
+                audio_ids_start = torch.tensor(
+                    np.cumsum(np.array([0] + [audio_ids[i].shape[1] for i in range(len(audio_ids))])),
+                    dtype=torch.long, device=self._device,
+                )[:-1]
+                audio_ids_concat = torch.cat([ele.cpu() for ele in audio_ids], dim=1)
             else:
-                # Fallback to audio tokens only (original behavior) - less optimal for voice cloning
-                reasons = []
-                if ref_waveform is None:
-                    reasons.append("ref_waveform is None")
-                if not self.collator.encode_whisper_embed:
-                    reasons.append("collator.encode_whisper_embed is False")
-                if self.collator.whisper_processor is None:
-                    reasons.append("whisper_processor is None")
-                
-                logger.warning(f"❌ Creating sample without Whisper embeddings - Reasons: {', '.join(reasons)} - Voice similarity may be reduced")
-                curr_sample = ChatMLDatasetSample(
-                    input_ids=torch.LongTensor(input_tokens),
-                    label_ids=None,
-                    audio_ids_concat=torch.concat([ele.cpu() for ele in audio_ids], dim=1) if audio_ids else torch.empty(0, 0, dtype=torch.long),
-                    audio_ids_start=torch.cumsum(
-                        torch.tensor([0] + [ele.shape[1] for ele in audio_ids], dtype=torch.long), 
-                        dim=0
-                    ) if audio_ids else torch.empty(0, dtype=torch.long),
-                    audio_waveforms_concat=torch.empty(0, dtype=torch.float32),
-                    audio_waveforms_start=torch.empty(0, dtype=torch.long),
-                    audio_sample_rate=torch.empty(0, dtype=torch.float32),
-                    audio_speaker_indices=torch.empty(0, dtype=torch.long),
-                )
+                audio_ids_start = None
+                audio_ids_concat = None
+            
+            # CRITICAL: serve_engine.py pattern - simple sample creation
+            curr_sample = ChatMLDatasetSample(
+                input_ids=torch.LongTensor(input_tokens),
+                label_ids=None,
+                audio_ids_concat=audio_ids_concat,
+                audio_ids_start=audio_ids_start,
+                audio_waveforms_concat=None,  # serve_engine.py pattern
+                audio_waveforms_start=None,   # serve_engine.py pattern  
+                audio_sample_rate=None,       # serve_engine.py pattern
+                audio_speaker_indices=None,
+            )
+            logger.info(f"✅ Using serve_engine.py pattern: DAC tokens: {audio_ids_concat.shape if audio_ids_concat is not None else 'None'}")
             
             # Collate data
             batch_data = self.collator([curr_sample])
@@ -516,126 +494,60 @@ class ArabicVoiceCloningInference:
             # Calculate adaptive max tokens based on target text
             adaptive_max_tokens = self.calculate_adaptive_max_tokens(target_text)
             
-            # Generate with proper audio stream EOS detection
+            # CRITICAL FIX: Use serve_engine.py generation parameters
             logger.info(f"Starting generation with {adaptive_max_tokens} max tokens...")
             
-            # Create proper stopping criteria for audio generation
-            # Include text-based stopping and let model handle audio stream EOS internally
-            stop_strings = [
-                "<|end_of_text|>", 
-                "<|eot_id|>",
-                # Don't include audio tokens in stop_strings as they're handled by the model
-            ]
+            # serve_engine.py default stop strings
+            stop_strings = ["<|end_of_text|>", "<|eot_id|>"]
             
-            # Improved generation parameters for better audio quality
+            # CRITICAL: Match serve_engine.py generation exactly
             outputs = self.model.generate(
                 **batch,
                 max_new_tokens=adaptive_max_tokens,
                 use_cache=True,
-                do_sample=True,
+                stop_strings=stop_strings,
+                tokenizer=self.tokenizer,
+                do_sample=False if temperature == 0.0 else True,  # serve_engine.py pattern
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
-                stop_strings=stop_strings,
-                tokenizer=self.tokenizer,
+                ras_win_len=7,  # serve_engine.py default
+                ras_win_max_num_repeat=2,  # serve_engine.py default
                 seed=seed,
             )
             
-            # Process audio outputs - CRITICAL FIX: Follow official implementation pattern
-            audio_out_ids_list = []
-            for i, ele in enumerate(outputs[1]):
-                audio_out_ids = ele
-                logger.info(f"Raw audio output {i}: shape={audio_out_ids.shape}, first_tokens={audio_out_ids[:, :5] if audio_out_ids.shape[1] > 5 else audio_out_ids}")
-                
-                if self.config.use_delay_pattern:
-                    audio_out_ids = revert_delay_pattern(audio_out_ids)
-                    logger.info(f"After delay pattern revert {i}: shape={audio_out_ids.shape}")
-                
-                # CRITICAL FIX: Follow official serve_engine.py pattern
-                # Strip BOS/EOS tokens and clip values (like official implementation)
-                audio_out_ids_clipped = audio_out_ids.clip(0, self.audio_tokenizer.codebook_size - 1)
-                
-                # Validate audio stream tokens for debugging
-                if audio_out_ids_clipped.shape[1] > 2:
-                    first_token = audio_out_ids_clipped[0, 0].item()
-                    last_token = audio_out_ids_clipped[0, -1].item()
-                    logger.info(f"Audio {i} boundaries: first={first_token}, last={last_token}, expected_bos={self.config.audio_stream_bos_id}, expected_eos={self.config.audio_stream_eos_id}")
+            # CRITICAL FIX: Process audio outputs using serve_engine.py EXACT pattern
+            if len(outputs[1]) > 0:
+                wv_list = []
+                for i, output_audio in enumerate(outputs[1]):
+                    logger.info(f"Raw audio output {i}: shape={output_audio.shape}, first_tokens={output_audio[:, :5] if output_audio.shape[1] > 5 else output_audio}")
                     
-                    # Check for proper EOS token
-                    if last_token == self.config.audio_stream_eos_id:
-                        logger.info(f"✅ Audio {i}: Proper EOS token detected")
+                    # CRITICAL: serve_engine.py exact one-line pattern
+                    vq_code = revert_delay_pattern(output_audio).clip(0, self.audio_codebook_size - 1)[:, 1:-1]
+                    logger.info(f"After serve_engine.py processing {i}: shape={vq_code.shape}")
+                    
+                    # Decode audio
+                    wv_numpy = self.audio_tokenizer.decode(vq_code.unsqueeze(0))[0, 0]
+                    wv_list.append(wv_numpy)
+                    
+                    # Log processing results
+                    if isinstance(wv_numpy, torch.Tensor):
+                        wv_numpy_debug = wv_numpy.detach().cpu().numpy()
                     else:
-                        logger.warning(f"⚠️ Audio {i}: Missing EOS token, found {last_token}")
-                
-                # Strip boundary tokens like official implementation (serve_engine.py)
-                if audio_out_ids_clipped.shape[1] > 2:
-                    audio_out_ids_stripped = audio_out_ids_clipped[:, 1:-1]  # Remove BOS and EOS
-                    logger.info(f"Audio {i} after stripping boundaries: shape={audio_out_ids_stripped.shape}")
-                else:
-                    logger.warning(f"⚠️ Audio {i}: Sequence too short ({audio_out_ids_clipped.shape[1]}) to strip boundaries")
-                    audio_out_ids_stripped = audio_out_ids_clipped
-                
-                audio_out_ids_list.append(audio_out_ids_stripped)
-            
-            if audio_out_ids_list:
-                concat_audio_out_ids = torch.concat(audio_out_ids_list, dim=1)
-                logger.info(f"Concatenated audio shape: {concat_audio_out_ids.shape}")
-                
-                # Enhanced debugging: Check token distribution
-                unique_tokens = torch.unique(concat_audio_out_ids)
-                logger.info(f"Unique audio tokens: count={len(unique_tokens)}, first_10={unique_tokens[:10].tolist()}")
-                
-                # Check for potential silence indicators
-                bos_count = (concat_audio_out_ids == self.config.audio_stream_bos_id).sum().item()
-                eos_count = (concat_audio_out_ids == self.config.audio_stream_eos_id).sum().item()
-                zero_count = (concat_audio_out_ids == 0).sum().item()
-                
-                logger.info(f"Token analysis: BOS={bos_count}, EOS={eos_count}, zeros={zero_count}, total={concat_audio_out_ids.numel()}")
-                
-                # Handle MPS compatibility
-                if concat_audio_out_ids.device.type == "mps":
-                    concat_audio_out_ids_cpu = concat_audio_out_ids.detach().cpu()
-                else:
-                    concat_audio_out_ids_cpu = concat_audio_out_ids
-                
-                # Decode audio with enhanced error handling
-                logger.info("Decoding generated audio...")
-                decode_input = None  # Initialize for error handling
-                try:
-                    # CRITICAL: Ensure proper tensor shape for decoding
-                    if concat_audio_out_ids_cpu.dim() == 2:
-                        decode_input = concat_audio_out_ids_cpu.unsqueeze(0)  # Add batch dimension
-                    else:
-                        decode_input = concat_audio_out_ids_cpu
+                        wv_numpy_debug = wv_numpy
                     
-                    logger.info(f"Decoder input shape: {decode_input.shape}")
-                    waveform = self.audio_tokenizer.decode(decode_input)[0, 0]
-                    
-                    # Immediate audio validation
-                    if isinstance(waveform, torch.Tensor):
-                        waveform_np = waveform.detach().cpu().numpy()
-                    else:
-                        waveform_np = waveform
-                    
-                    audio_energy = (waveform_np ** 2).mean()
-                    audio_max = np.abs(waveform_np).max()
-                    
-                    logger.info(f"Decoded audio: energy={audio_energy:.2e}, max_amplitude={audio_max:.6f}, duration={len(waveform_np)/24000:.2f}s")
-                    
-                    if audio_energy < 1e-8:
-                        logger.error(f"🚨 CRITICAL: Generated audio has extremely low energy ({audio_energy:.2e}) - likely silence")
-                    elif audio_energy < 1e-6:
-                        logger.warning(f"⚠️ Generated audio has very low energy ({audio_energy:.2e}) - may be too quiet")
-                    else:
-                        logger.info(f"✅ Audio energy looks good: {audio_energy:.2e}")
-                        
-                except Exception as decode_error:
-                    logger.error(f"❌ Audio decoding failed: {decode_error}")
-                    if decode_input is not None:
-                        logger.error(f"Decoder input shape: {decode_input.shape}, dtype: {decode_input.dtype}")
-                        logger.error(f"Token range: min={decode_input.min()}, max={decode_input.max()}")
-                    else:
-                        logger.error("Failed before tensor preparation")
+                    energy = (wv_numpy_debug ** 2).mean()
+                    logger.info(f"Audio {i}: energy={energy:.2e}, duration={len(wv_numpy_debug)/24000:.2f}s")
+                
+                # Concatenate all audio
+                wv_numpy = np.concatenate(wv_list)
+                
+                # Final validation
+                final_energy = (wv_numpy ** 2).mean()
+                logger.info(f"Final concatenated audio: energy={final_energy:.2e}, duration={len(wv_numpy)/24000:.2f}s")
+                
+                if final_energy < 1e-8:
+                    logger.error(f"🚨 CRITICAL: Still generating silence - check model/tokenizer compatibility")
                     return None, None, None
                 
                 sample_rate = 24000  # Higgs Audio output sample rate
@@ -646,7 +558,7 @@ class ArabicVoiceCloningInference:
                 logger.info("=== Generation Output Text ===")
                 logger.info(text_result)
                 
-                return waveform_np, sample_rate, text_result
+                return wv_numpy, sample_rate, text_result
             else:
                 logger.error("No audio output generated")
                 return None, None, None
