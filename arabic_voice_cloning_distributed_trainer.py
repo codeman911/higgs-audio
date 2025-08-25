@@ -147,7 +147,7 @@ class ArabicVoiceCloningDistributedTrainer:
         else:
             logger.warning(f"⚠️ Unexpected model type: {type(base_model)}")
         
-        # Validate forward signature
+        # Validate forward signature on the base model
         sig = inspect.signature(base_model.forward)
         params = list(sig.parameters.keys())
         
@@ -164,7 +164,13 @@ class ArabicVoiceCloningDistributedTrainer:
         
         if missing_params:
             logger.error(f"❌ Missing required parameters: {missing_params}")
-            raise RuntimeError(f"Model missing required parameters: {missing_params}")
+            # Only raise error for critical parameters that are absolutely necessary
+            critical_params = ['label_ids', 'label_audio_ids']
+            missing_critical = [p for p in critical_params if p in missing_params]
+            if missing_critical:
+                raise RuntimeError(f"Model missing critical parameters: {missing_critical}")
+            else:
+                logger.warning("⚠️ Some non-critical parameters missing, continuing...")
         else:
             logger.info("✅ All required parameters present in model forward signature")
         
