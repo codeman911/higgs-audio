@@ -20,7 +20,6 @@ import os
 import torch
 import librosa
 import numpy as np
-import multiprocessing as mp
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 from dataclasses import dataclass
@@ -143,22 +142,24 @@ class ArabicVoiceCloningDataset(Dataset):
             'corrupted_audio': 0
         }
         
-        # Use multiprocessing for faster validation
-        with mp.Pool(processes=min(mp.cpu_count(), 32)) as pool:
-            validation_results = pool.map(
-                self._validate_single_sample,
-                [(idx, sample) for idx, sample in enumerate(self.raw_data)]
-            )
+        # Process samples sequentially to avoid tensor serialization issues in multiprocessing
+        # Multiprocessing can cause issues with tensors that have gradients
+        logger.info("Validating samples sequentially to avoid tensor serialization issues...")
         
-        # Process validation results
-        for idx, (sample, status, error_type) in enumerate(validation_results):
+        for idx, sample in enumerate(self.raw_data):
+            sample_result, status, error_type = self._validate_single_sample((idx, sample))
+            
             if status == 'valid':
-                validated_samples.append(sample)
+                validated_samples.append(sample_result)
                 validation_stats['valid'] += 1
             else:
                 validation_stats[error_type] += 1
                 if len(validated_samples) < 5:  # Log first few errors for debugging
                     logger.warning(f"Sample {idx} failed validation: {error_type}")
+            
+            # Log progress for large datasets
+            if (idx + 1) % 100 == 0:
+                logger.info(f"Validated {idx + 1}/{len(self.raw_data)} samples...")
         
         # Log validation statistics
         logger.info("Dataset validation completed:")
@@ -489,22 +490,23 @@ def create_arabic_voice_cloning_dataloader(
         text_tokenizer=text_tokenizer
     )
     
-    if num_workers is None:
-        num_workers = min(config.num_workers, mp.cpu_count())
+    # Force single-process data loading to avoid tensor serialization issues
+    # Multiprocessing with PyTorch tensors that have gradients causes RuntimeError
+    actual_num_workers = 0  # Force single-process
     
-    # Create DataLoader with optimized settings for multi-GPU training
+    # Create DataLoader with single-process settings for stability
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
-        num_workers=num_workers,
+        num_workers=actual_num_workers,  # Always 0 to avoid tensor serialization
         pin_memory=pin_memory,
         drop_last=drop_last,
-        prefetch_factor=config.prefetch_factor,
-        persistent_workers=True if num_workers > 0 else False,
+        prefetch_factor=2 if actual_num_workers > 0 else None,  # Only if workers > 0
+        persistent_workers=False,  # Always False for single-process
     )
     
-    logger.info(f"Created DataLoader: batch_size={batch_size}, num_workers={num_workers}")
+    logger.info(f"Created DataLoader: batch_size={batch_size}, num_workers={actual_num_workers} (single-process for stability)")
     return dataloader
 
 

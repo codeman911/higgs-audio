@@ -6,6 +6,7 @@ Your training failed with these specific errors:
 1. ✅ **FIXED** - **NotImplementedError** from `enable_input_require_grads()` 
 2. ✅ **FIXED** - **Modules mismatch** - trying to save non-existent modules
 3. ✅ **FIXED** - **ValueError** - HiggsAudioModel gradient checkpointing incompatibility
+4. ✅ **FIXED** - **RuntimeError** - Tensor serialization in multiprocessing
 
 **All issues have been RESOLVED!** Here's what to do:
 
@@ -22,9 +23,15 @@ cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/arabic_voice_cloning_lo
 # Copy the fixed distributed trainer
 cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/arabic_voice_cloning_distributed_trainer.py .
 
+# Copy the fixed dataset (tensor serialization fix)
+cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/arabic_voice_cloning_dataset.py .
+
 # Verify the fixes
 grep -n "gradient_checkpointing.*False" arabic_voice_cloning_distributed_trainer.py
 # Should show: gradient_checkpointing: bool = False
+
+grep -n "num_workers=0" arabic_voice_cloning_dataset.py
+# Should show: num_workers=0 (single-process for stability)
 ```
 
 ### Step 2: Run Your Original Training Command
@@ -57,12 +64,21 @@ Make sure all the architecture support it by setting a boolean attribute
 `gradient_checkpointing` to modules of the model that uses checkpointing.
 ```
 
+**Error 4:** Tensor Serialization in Multiprocessing
+```
+RuntimeError: Cowardly refusing to serialize non-leaf tensor which requires_grad, 
+since autograd does not support crossing process boundaries. If you just want to 
+transfer the data, call detach() on the tensor before serializing.
+```
+
 ### ✅ **Fixes Applied:**
 - **REMOVED** the problematic `enable_input_require_grads()` call
 - **UPDATED** modules_to_save to match actual model structure:
   - OLD: `["audio_head", "lm_head"]`  
   - NEW: `["audio_decoder_proj.text_lm_head", "audio_decoder_proj.audio_lm_head", "audio_codebook_embeddings"]`
 - **DISABLED** gradient checkpointing by default (Higgs Audio doesn't support it)
+- **REMOVED** multiprocessing from dataset validation (prevents tensor serialization errors)
+- **SET** DataLoader num_workers=0 to use single-process data loading
 - **ADDED** proper error handling for gradient checkpointing attempts
 - **CONFIRMED** all target modules exist in the actual model
 
@@ -100,6 +116,8 @@ Training Configuration:
 # Use the completely rewritten fixed version
 cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/complete_training_fix.py .
 cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/fix_gradient_checkpointing.py .
+cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/fix_tensor_serialization.py .
+python3 fix_tensor_serialization.py
 python3 fix_gradient_checkpointing.py
 python3 complete_training_fix.py --fix-all
 ```
@@ -147,6 +165,7 @@ Just execute:
 cd /vs/higgs-audio
 cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/arabic_voice_cloning_lora_config.py .
 cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/arabic_voice_cloning_distributed_trainer.py .
+cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/arabic_voice_cloning_dataset.py .
 python3 arabic_voice_cloning_distributed_trainer.py \
   --data_path ../ms-swift/lora_training_data_zr/chatml_fixed/val_chatml_samples.json \
   --output_dir EXPMT/exp_small
