@@ -6,6 +6,8 @@ Optimized for 8xH200 GPU setup with advanced memory management and monitoring.
 """
 
 import os
+import sys
+from pathlib import Path
 import time
 import torch
 import torch.distributed as dist
@@ -21,6 +23,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from loguru import logger
 from tqdm import tqdm
+import inspect
+
+# CRITICAL: Force correct model import path
+current_dir = Path(__file__).parent
+project_root = current_dir
+sys.path.insert(0, str(project_root))
+
+# Import from CORRECT boson_multimodal path (not train-higgs-audio)
+from boson_multimodal.model.higgs_audio import HiggsAudioModel, HiggsAudioConfig
+from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioModel as DirectHiggsAudioModel
 
 # Import our custom modules
 from arabic_voice_cloning_dataset import *
@@ -88,11 +100,52 @@ class ArabicVoiceCloningDistributedTrainer:
         self.lora_config = lora_config
         self.loss_config = loss_config
         
+        # CRITICAL: Validate model compatibility before any initialization
+        self._validate_model_compatibility()
+        
         self._setup_distributed()
         self._setup_device()
         self._initialize_components()
         
         logger.info(f"Trainer initialized: {self.device}, World size: {self.training_config.world_size}")
+    
+    def _validate_model_compatibility(self):
+        """CRITICAL: Validate that we're using the correct model version."""
+        logger.info("🔍 Validating HiggsAudioModel compatibility...")
+        
+        # Get the forward method signature from the correct model class
+        sig = inspect.signature(DirectHiggsAudioModel.forward)
+        params = list(sig.parameters.keys())
+        
+        logger.info(f"🔍 HiggsAudioModel.forward() parameters ({len(params)} total):")
+        for i, param in enumerate(params[:10], 1):  # Show first 10
+            logger.info(f"  {i:2d}. {param}")
+        if len(params) > 10:
+            logger.info(f"  ... and {len(params) - 10} more")
+        
+        # Check for problematic 'labels' parameter
+        if 'labels' in params:
+            logger.error("❌ CRITICAL ERROR: HiggsAudioModel has 'labels' parameter!")
+            logger.error("❌ You're using the WRONG model version from train-higgs-audio!")
+            logger.error("❌ This will cause 'unexpected keyword argument labels' error")
+            logger.error("")
+            logger.error("🔧 FIX: Ensure you're importing from the correct boson_multimodal path")
+            logger.error("🔧 Expected: boson_multimodal.model.higgs_audio (NO labels parameter)")
+            logger.error("🔧 Wrong: train-higgs-audio/boson_multimodal/model/higgs_audio (HAS labels parameter)")
+            raise RuntimeError("Model version compatibility check failed - wrong HiggsAudioModel version")
+        else:
+            logger.info("✅ CORRECT: HiggsAudioModel does NOT have 'labels' parameter")
+            logger.info("✅ Model uses label_ids and label_audio_ids - compatible with trainer")
+        
+        # Validate required parameters are present
+        required_params = ['label_ids', 'label_audio_ids', 'audio_out_ids', 'audio_features']
+        missing_params = [p for p in required_params if p not in params]
+        
+        if missing_params:
+            logger.error(f"❌ Missing required parameters: {missing_params}")
+            raise RuntimeError(f"Model missing required parameters: {missing_params}")
+        else:
+            logger.info("✅ All required parameters present in model forward signature")
     
     def _setup_distributed(self):
         """Setup distributed training."""
@@ -126,8 +179,8 @@ class ArabicVoiceCloningDistributedTrainer:
     
     def _initialize_components(self):
         """Initialize model, data, and training components."""
-        # Load model with LoRA
-        logger.info("🔧 Loading HiggsAudioModel with LoRA (validating compatibility)...")
+        # Load model with LoRA - FORCE correct version
+        logger.info("🔧 Loading HiggsAudioModel with LoRA (forcing correct version)...")
         self.model, self.model_config, _ = create_higgs_audio_lora_model(
             model_path=self.training_config.model_path,
             custom_config=self.lora_config,
@@ -136,35 +189,12 @@ class ArabicVoiceCloningDistributedTrainer:
             enable_gradient_checkpointing=self.training_config.gradient_checkpointing
         )
         
-        # CRITICAL: Validate model compatibility
-        import inspect
-        from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioModel as CorrectHiggsAudioModel
-        
-        # Check if we're using the correct model version
-        base_model = self.model.base_model if hasattr(self.model, 'base_model') else self.model
-        if isinstance(base_model, CorrectHiggsAudioModel):
+        # CRITICAL: Validate model instance
+        if isinstance(self.model.base_model, DirectHiggsAudioModel):
             logger.info("✅ Using correct boson_multimodal.HiggsAudioModel")
         else:
-            logger.warning(f"⚠️ Unexpected model type: {type(base_model)}")
-        
-        # Validate forward signature on the base model
-        sig = inspect.signature(base_model.forward)
-        params = list(sig.parameters.keys())
-        
-        if 'labels' in params:
-            logger.error("❌ CRITICAL: Model has 'labels' parameter - wrong version!")
-            logger.error("❌ Expected: label_ids, label_audio_ids")
-            logger.error("❌ Found: labels parameter (incompatible version)")
-            raise RuntimeError("Model version incompatible - has 'labels' parameter")
-        else:
-            logger.info("✅ CORRECT: Model does NOT have 'labels' parameter")
-            
-        # Log model parameters for debugging
-        logger.debug(f"Model forward parameters: {params[:10]}... (showing first 10)")
-        
-        # REMOVED: Strict validation of critical parameters that was causing false failures
-        # The model can work with label_ids and label_audio_ids even if they're not explicitly 
-        # in the forward signature, so we don't need to fail on their absence
+            logger.warning(f"⚠️ Unexpected model type: {type(self.model.base_model)}")
+            logger.warning("⚠️ This may cause compatibility issues - expected DirectHiggsAudioModel")
         
         self.model = self.model.to(self.device)
         
@@ -367,14 +397,27 @@ class ArabicVoiceCloningDistributedTrainer:
             sig = inspect.signature(model_forward)
             params = list(sig.parameters.keys())
             
+            # CRITICAL: Check for incompatible 'labels' parameter
             if 'labels' in params:
                 logger.error("❌ CRITICAL: Model has 'labels' parameter - wrong version!")
                 logger.error("❌ Expected: label_ids, label_audio_ids")
                 logger.error("❌ Found: labels parameter (incompatible version)")
-                raise RuntimeError("Model version incompatible - has 'labels' parameter")
-            # REMOVED: Strict validation of critical parameters that was causing false failures
-            # The model can work with label_ids and label_audio_ids even if they're not explicitly 
-            # in the forward signature, so we don't need to fail on their absence
+                logger.error("❌ This will cause 'unexpected keyword argument labels' error")
+                logger.error("")
+                logger.error("🔧 FIX: Ensure you're importing from the correct boson_multimodal path")
+                logger.error("🔧 Expected: boson_multimodal.model.higgs_audio (NO labels parameter)")
+                logger.error("🔧 Wrong: train-higgs-audio/boson_multimodal/model/higgs_audio (HAS labels parameter)")
+                raise RuntimeError("Model version incompatible - has 'labels' parameter - STOPPING TRAINING")
+            
+            # Validate required parameters are present
+            required_params = ['label_ids', 'label_audio_ids', 'audio_out_ids', 'audio_features']
+            missing_params = [p for p in required_params if p not in params]
+            
+            if missing_params:
+                logger.error(f"❌ Missing required parameters: {missing_params}")
+                raise RuntimeError(f"Model missing required parameters: {missing_params}")
+            else:
+                logger.debug("✅ All required parameters present in model forward signature")
             
             with torch.amp.autocast('cuda', enabled=self.training_config.use_mixed_precision):
                 # DEFINITIVE model forward call - NO 'labels' parameter
