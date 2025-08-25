@@ -50,8 +50,42 @@ except ImportError:
 
 # Add current directory and parent directory to path for imports
 trainer_dir = Path(__file__).parent
-sys.path.insert(0, str(trainer_dir.parent))  # Add higgs-audio root
-sys.path.insert(0, str(trainer_dir))         # Add trainer directory
+parent_dir = trainer_dir.parent
+
+# Ensure boson_multimodal can be found
+sys.path.insert(0, str(parent_dir))  # Add higgs-audio root
+sys.path.insert(0, str(trainer_dir))   # Add trainer directory
+
+# Try to find and add boson_multimodal to path if needed
+def setup_boson_multimodal_path():
+    """Ensure boson_multimodal is available by adjusting Python path."""
+    try:
+        import boson_multimodal
+        return True
+    except ImportError:
+        # Try common paths where boson_multimodal might be
+        possible_paths = [
+            parent_dir,  # Current higgs-audio root
+            parent_dir.parent,  # One level up
+            Path.cwd(),  # Current working directory
+            Path.cwd().parent,  # Parent of working directory
+        ]
+        
+        for path in possible_paths:
+            boson_path = path / "boson_multimodal"
+            if boson_path.exists() and boson_path.is_dir():
+                sys.path.insert(0, str(path))
+                try:
+                    import boson_multimodal
+                    print(f"✅ Found boson_multimodal at: {path}")
+                    return True
+                except ImportError:
+                    continue
+        
+        return False
+
+# Setup boson_multimodal path
+BOSON_MULTIMODAL_AVAILABLE = setup_boson_multimodal_path()
 
 # Import utility functions directly (no ML dependencies)
 try:
@@ -62,23 +96,29 @@ except ImportError as e:
     DATASET_UTILS_AVAILABLE = False
 
 # Conditional imports for training components
-try:
-    # Try different import patterns to find the trainer module
+TRAINER_AVAILABLE = False
+TRAINER_IMPORT_ERROR = None
+
+if BOSON_MULTIMODAL_AVAILABLE:
     try:
-        from trainer.trainer import HiggsAudioTrainer
-        from trainer.config import TrainingConfig
-    except ImportError:
+        # Try different import patterns to find the trainer module
         try:
-            from trainer import HiggsAudioTrainer
-            from config import TrainingConfig
+            from trainer.trainer import HiggsAudioTrainer
+            from trainer.config import TrainingConfig
         except ImportError:
-            # Direct imports as last resort
-            from .trainer import HiggsAudioTrainer
-            from .config import TrainingConfig
-    TRAINER_AVAILABLE = True
-except ImportError as e:
-    print(f"Debug: Trainer import error: {e}")
-    TRAINER_AVAILABLE = False
+            try:
+                from trainer import HiggsAudioTrainer
+                from config import TrainingConfig
+            except ImportError:
+                # Direct imports as last resort
+                from .trainer import HiggsAudioTrainer
+                from .config import TrainingConfig
+        TRAINER_AVAILABLE = True
+    except ImportError as e:
+        TRAINER_IMPORT_ERROR = str(e)
+        TRAINER_AVAILABLE = False
+else:
+    TRAINER_IMPORT_ERROR = "boson_multimodal not available - run from higgs-audio root directory"
 
 
 def parse_arguments():
@@ -396,48 +436,47 @@ def validate_environment():
         print("   ❌ PEFT not found")
         return False
     
-    # Debug trainer import issues
-    print("   🔍 Debugging trainer imports...")
-    trainer_dir = Path(__file__).parent
-    print(f"      Trainer directory: {trainer_dir}")
-    print(f"      Python path includes: {[p for p in sys.path if 'trainer' in p or 'higgs-audio' in p]}")
+    # Enhanced boson_multimodal diagnosis
+    print(f"   🔍 Diagnosing boson_multimodal availability...")
+    if BOSON_MULTIMODAL_AVAILABLE:
+        import boson_multimodal
+        print(f"      ✅ boson_multimodal found at: {Path(boson_multimodal.__file__).parent}")
+    else:
+        print(f"      ❌ boson_multimodal not available")
+        print(f"      💡 SOLUTION: Run from the higgs-audio root directory:")
+        print(f"         cd /vs/higgs-audio")
+        print(f"         python3 trainer/train.py --train_data ...")
+        print(f"")
+        print(f"      📍 Current working directory: {Path.cwd()}")
+        print(f"      📍 Script location: {Path(__file__).parent}")
+        print(f"      📍 Expected higgs-audio root: {parent_dir}")
+        
+        # Check if we can find higgs-audio root
+        if (parent_dir / "boson_multimodal").exists():
+            print(f"      ✅ Found boson_multimodal at expected location: {parent_dir / 'boson_multimodal'}")
+            print(f"      💡 Issue: Python path not set correctly")
+        else:
+            print(f"      ❌ boson_multimodal not found at expected location")
+            print(f"      💡 Make sure you're in the correct higgs-audio repository")
     
-    # Test individual module imports
-    try:
-        print("      Testing config import...")
-        from config import TrainingConfig
-        print("      ✅ Config import successful")
-    except ImportError as e:
-        print(f"      ❌ Config import failed: {e}")
-        try:
-            from trainer.config import TrainingConfig
-            print("      ✅ trainer.config import successful")
-        except ImportError as e2:
-            print(f"      ❌ trainer.config import also failed: {e2}")
-    
-    try:
-        print("      Testing trainer import...")
-        from trainer import HiggsAudioTrainer
-        print("      ✅ Trainer import successful")
-    except ImportError as e:
-        print(f"      ❌ Trainer import failed: {e}")
-        try:
-            from trainer.trainer import HiggsAudioTrainer
-            print("      ✅ trainer.trainer import successful")
-        except ImportError as e2:
-            print(f"      ❌ trainer.trainer import also failed: {e2}")
-            # Show more detailed error
-            import traceback
-            print(f"      Full traceback: {traceback.format_exc()}")
-    
+    # Enhanced trainer import diagnosis
     if TRAINER_AVAILABLE:
         print("   ✅ Trainer components available")
+        return True
     else:
         print("   ❌ Trainer components not available")
+        if TRAINER_IMPORT_ERROR:
+            print(f"      Error details: {TRAINER_IMPORT_ERROR}")
+        
+        if not BOSON_MULTIMODAL_AVAILABLE:
+            print(f"      🎯 PRIMARY ISSUE: boson_multimodal not available")
+            print(f"      🔧 QUICK FIX: Run this exact command:")
+            print(f"         cd /vs/higgs-audio && python3 trainer/train.py --train_data ../../ms-swift/lora_training_data_zr/chatml_fixed/val_chatml_samples.json")
+        else:
+            print(f"      🎯 SECONDARY ISSUE: Trainer modules not importing correctly")
+            print(f"      🔧 Check trainer module dependencies")
+        
         return False
-    
-    print("✅ Environment validation passed")
-    return True
 
 
 def main():

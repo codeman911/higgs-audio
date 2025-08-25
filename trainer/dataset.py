@@ -16,6 +16,7 @@ Reuses existing boson_multimodal components without modification:
 
 import json
 import os
+import sys
 import torch
 import torchaudio
 import torchaudio.transforms as T
@@ -23,6 +24,12 @@ import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union, Tuple
 from loguru import logger
+
+# Add parent directory to path for boson_multimodal imports
+current_dir = Path(__file__).parent  
+parent_dir = current_dir.parent
+if str(parent_dir) not in sys.path:
+    sys.path.insert(0, str(parent_dir))
 
 # Conditional imports for ML dependencies
 try:
@@ -43,8 +50,29 @@ try:
     )
     from boson_multimodal.data_types import ChatMLSample, Message, AudioContent, TextContent
     BOSON_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    logger.error(f"❌ Failed to import boson_multimodal components: {e}")
+    logger.error(f"   Make sure you're running from the higgs-audio directory")
     BOSON_AVAILABLE = False
+    
+    # Create dummy classes to prevent import errors
+    def prepare_chatml_sample(*args, **kwargs):
+        return None, None, None, None
+    
+    class ChatMLDatasetSample:
+        pass
+    
+    class ChatMLSample:
+        pass
+    
+    class Message:
+        pass
+    
+    class AudioContent:
+        pass
+    
+    class TextContent:
+        pass
 
 
 class VoiceCloningDataset(Dataset):

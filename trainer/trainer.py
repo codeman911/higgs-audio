@@ -70,6 +70,13 @@ class HiggsAudioTrainer:
         Args:
             config: Training configuration containing all hyperparameters
         """
+        # Check if boson_multimodal is available
+        if not BOSON_AVAILABLE:
+            raise ImportError(
+                "boson_multimodal package not found. Please ensure you're running from the higgs-audio directory "
+                "and the boson_multimodal package is in your Python path."
+            )
+        
         self.config = config
         self.device = self._setup_device()
         
