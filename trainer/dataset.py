@@ -8,18 +8,31 @@ Reuses existing boson_multimodal components without modification:
 """
 
 import json
-import torch
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
-from torch.utils.data import Dataset
 
-# Import existing boson_multimodal components
-from boson_multimodal.dataset.chatml_dataset import (
-    prepare_chatml_sample,
-    ChatMLDatasetSample,
-)
-from boson_multimodal.data_types import ChatMLSample, Message, AudioContent, TextContent
+# Conditional imports for ML dependencies
+try:
+    import torch
+    from torch.utils.data import Dataset
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    # Create dummy Dataset class for utility functions
+    class Dataset:
+        pass
+
+# Import existing boson_multimodal components (conditional)
+try:
+    from boson_multimodal.dataset.chatml_dataset import (
+        prepare_chatml_sample,
+        ChatMLDatasetSample,
+    )
+    from boson_multimodal.data_types import ChatMLSample, Message, AudioContent, TextContent
+    BOSON_AVAILABLE = True
+except ImportError:
+    BOSON_AVAILABLE = False
 
 
 class VoiceCloningDataset(Dataset):
@@ -59,6 +72,12 @@ class VoiceCloningDataset(Dataset):
             audio_base_path: Base path for resolving relative audio paths
             validate_audio_paths: Whether to validate audio file existence
         """
+        if not TORCH_AVAILABLE:
+            raise ImportError("PyTorch is required for dataset functionality. Install with: pip install torch")
+        
+        if not BOSON_AVAILABLE:
+            raise ImportError("boson_multimodal is required for dataset functionality. Ensure it's in the Python path.")
+        
         self.tokenizer = tokenizer
         self.audio_tokenizer = audio_tokenizer
         self.audio_base_path = Path(audio_base_path) if audio_base_path else Path()
@@ -169,8 +188,8 @@ class VoiceCloningDataset(Dataset):
                         continue
             
             return {
-                'input_tokens': torch.tensor(input_tokens, dtype=torch.long) if input_tokens else torch.tensor([], dtype=torch.long),
-                'label_tokens': torch.tensor(label_tokens, dtype=torch.long) if label_tokens else torch.tensor([], dtype=torch.long),
+                'input_tokens': torch.tensor(input_tokens, dtype=torch.long) if input_tokens and TORCH_AVAILABLE else input_tokens,
+                'label_tokens': torch.tensor(label_tokens, dtype=torch.long) if label_tokens and TORCH_AVAILABLE else label_tokens,
                 'audio_contents': processed_audio_contents,
                 'speaker_id': speaker_id,
                 'audio_ids': audio_ids_list,
@@ -181,8 +200,8 @@ class VoiceCloningDataset(Dataset):
             print(f"⚠️ Error processing sample {idx}: {e}")
             # Return empty sample to prevent training failure
             return {
-                'input_tokens': torch.tensor([], dtype=torch.long),
-                'label_tokens': torch.tensor([], dtype=torch.long),
+                'input_tokens': torch.tensor([], dtype=torch.long) if TORCH_AVAILABLE else [],
+                'label_tokens': torch.tensor([], dtype=torch.long) if TORCH_AVAILABLE else [],
                 'audio_contents': [],
                 'speaker_id': None,
                 'audio_ids': [],

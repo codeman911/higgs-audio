@@ -73,27 +73,45 @@ class TrainingConfig:
     mixed_precision: bool = True
     
     def __post_init__(self):
-        """Setup directories and validate configuration."""
+        """Setup directories and basic configuration. Validation is done separately."""
         os.makedirs(self.output_dir, exist_ok=True)
-        
-        # Validate paths
-        if not os.path.exists(self.train_data_path):
-            raise FileNotFoundError(f"Training data not found: {self.train_data_path}")
         
         # Setup device
         if self.device == "auto":
-            import torch
-            if torch.cuda.is_available():
-                self.device = "cuda:0"
-            elif torch.backends.mps.is_available():
-                self.device = "mps"
-            else:
-                self.device = "cpu"
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    self.device = "cuda:0"
+                elif torch.backends.mps.is_available():
+                    self.device = "mps"
+                else:
+                    self.device = "cpu"
+            except ImportError:
+                # If torch is not available, keep as "auto" and handle later
+                pass
         
         # Adjust batch size for MPS (limited memory)
         if self.device == "mps" and self.batch_size > 1:
             print(f"⚠️ Reducing batch size from {self.batch_size} to 1 for MPS compatibility")
             self.batch_size = 1
+    
+    def validate_for_training(self):
+        """Validate configuration specifically for training. Call this before starting training."""
+        # Validate training data path
+        if not os.path.exists(self.train_data_path):
+            raise FileNotFoundError(f"Training data not found: {self.train_data_path}")
+        
+        # Validate other requirements
+        if self.batch_size <= 0:
+            raise ValueError(f"Invalid batch size: {self.batch_size}")
+        
+        if self.learning_rate <= 0:
+            raise ValueError(f"Invalid learning rate: {self.learning_rate}")
+        
+        if self.num_epochs <= 0:
+            raise ValueError(f"Invalid number of epochs: {self.num_epochs}")
+        
+        print(f"✅ Configuration validation passed for training")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for logging/serialization."""
@@ -130,24 +148,30 @@ class TrainingConfig:
 
 
 # Predefined configurations for different use cases
-DEFAULT_CONFIG = TrainingConfig()
+def get_default_config() -> TrainingConfig:
+    """Get default configuration without validation."""
+    return TrainingConfig()
 
-QUICK_TEST_CONFIG = TrainingConfig(
-    batch_size=1,
-    gradient_accumulation_steps=2,
-    num_epochs=1,
-    lora_r=8,
-    lora_alpha=16,
-    logging_steps=5,
-    save_steps=50,
-)
+def get_quick_test_config() -> TrainingConfig:
+    """Get quick test configuration."""
+    return TrainingConfig(
+        batch_size=1,
+        gradient_accumulation_steps=2,
+        num_epochs=1,
+        lora_r=8,
+        lora_alpha=16,
+        logging_steps=5,
+        save_steps=50,
+    )
 
-PRODUCTION_CONFIG = TrainingConfig(
-    batch_size=2,
-    gradient_accumulation_steps=16,
-    num_epochs=5,
-    learning_rate=1e-4,
-    lora_r=32,
-    lora_alpha=64,
-    weight_decay=0.05,
-)
+def get_production_config() -> TrainingConfig:
+    """Get production configuration."""
+    return TrainingConfig(
+        batch_size=2,
+        gradient_accumulation_steps=16,
+        num_epochs=5,
+        learning_rate=1e-4,
+        lora_r=32,
+        lora_alpha=64,
+        weight_decay=0.05,
+    )

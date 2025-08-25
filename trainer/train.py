@@ -40,13 +40,33 @@ import os
 import sys
 from pathlib import Path
 from typing import Optional
-import torch
+
+# Conditional imports for ML dependencies
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
 # Add current directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from trainer import HiggsAudioTrainer, TrainingConfig
-from trainer.dataset import create_sample_data, validate_dataset_format
+# Import utility functions directly (no ML dependencies)
+try:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from utils import create_sample_data, validate_dataset_format
+    DATASET_UTILS_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Could not import utils: {e}")
+    DATASET_UTILS_AVAILABLE = False
+
+# Conditional imports for training components
+try:
+    from trainer import HiggsAudioTrainer, TrainingConfig
+    TRAINER_AVAILABLE = True
+except ImportError:
+    TRAINER_AVAILABLE = False
 
 
 def parse_arguments():
@@ -61,7 +81,6 @@ def parse_arguments():
     parser.add_argument(
         "--train_data",
         type=str,
-        required=True,
         help="Path to training data JSON file (ChatML format)"
     )
     
@@ -268,7 +287,7 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def create_config_from_args(args) -> TrainingConfig:
+def create_config_from_args(args):
     """Create training configuration from command line arguments."""
     
     # Apply quick test settings if requested
@@ -282,7 +301,10 @@ def create_config_from_args(args) -> TrainingConfig:
         args.save_steps = 50
         args.eval_steps = 25
     
-    # Create configuration
+    # Create configuration without validation (validation happens later if needed)
+    if not TRAINER_AVAILABLE:
+        raise ImportError("Training components not available. Install dependencies: torch, transformers, peft")
+    
     config = TrainingConfig(
         # Data
         train_data_path=args.train_data,
@@ -331,17 +353,21 @@ def validate_environment():
     print("🔍 Validating environment...")
     
     # Check PyTorch
-    print(f"   PyTorch: {torch.__version__}")
-    print(f"   CUDA available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        print(f"   CUDA version: {torch.version.cuda}")
-        print(f"   GPU count: {torch.cuda.device_count()}")
-        for i in range(torch.cuda.device_count()):
-            print(f"   GPU {i}: {torch.cuda.get_device_name(i)}")
-    
-    # Check MPS (Apple Silicon)
-    if torch.backends.mps.is_available():
-        print(f"   MPS available: True")
+    if TORCH_AVAILABLE:
+        print(f"   PyTorch: {torch.__version__}")
+        print(f"   CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"   CUDA version: {torch.version.cuda}")
+            print(f"   GPU count: {torch.cuda.device_count()}")
+            for i in range(torch.cuda.device_count()):
+                print(f"   GPU {i}: {torch.cuda.get_device_name(i)}")
+        
+        # Check MPS (Apple Silicon)
+        if torch.backends.mps.is_available():
+            print(f"   MPS available: True")
+    else:
+        print("   ❌ PyTorch not found")
+        return False
     
     # Check key dependencies
     try:
@@ -359,10 +385,13 @@ def validate_environment():
         return False
     
     try:
-        from boson_multimodal.model.higgs_audio import HiggsAudioModel
-        print("   ✅ boson_multimodal import successful")
-    except ImportError as e:
-        print(f"   ❌ boson_multimodal import failed: {e}")
+        if TRAINER_AVAILABLE:
+            print("   ✅ Trainer components available")
+        else:
+            print("   ❌ Trainer components not available")
+            return False
+    except Exception as e:
+        print(f"   ❌ Trainer import failed: {e}")
         return False
     
     print("✅ Environment validation passed")
@@ -376,14 +405,20 @@ def main():
     print("🎵 Higgs-Audio LoRA Training Pipeline")
     print("=" * 50)
     
-    # Handle utility commands first
+    # Handle utility commands first (these don't need full validation)
     if args.create_sample_data:
+        if not DATASET_UTILS_AVAILABLE:
+            print("❌ Dataset utilities not available")
+            sys.exit(1)
         print(f"📝 Creating sample training data at {args.create_sample_data}")
         create_sample_data(args.create_sample_data, num_samples=10)
         print("✅ Sample data created successfully")
         return
     
     if args.validate_data_only:
+        if not DATASET_UTILS_AVAILABLE:
+            print("❌ Dataset utilities not available")
+            sys.exit(1)
         print(f"🔍 Validating dataset: {args.train_data}")
         if validate_dataset_format(args.train_data):
             print("✅ Dataset validation passed")
@@ -392,12 +427,16 @@ def main():
             print("❌ Dataset validation failed")
             sys.exit(1)
     
-    # Validate environment
+    # For training operations, validate environment and data
     if not validate_environment():
         print("❌ Environment validation failed")
         sys.exit(1)
     
-    # Validate training data
+    # Validate training data exists for training operations
+    if not args.train_data:
+        print("❌ --train_data is required for training operations")
+        sys.exit(1)
+        
     if not os.path.exists(args.train_data):
         print(f"❌ Training data not found: {args.train_data}")
         sys.exit(1)
@@ -408,6 +447,10 @@ def main():
     
     # Create configuration
     try:
+        if not TRAINER_AVAILABLE:
+            print("❌ Training components not available. Install dependencies: torch, transformers, peft")
+            sys.exit(1)
+            
         config = create_config_from_args(args)
         print("📋 Training Configuration:")
         config_dict = config.to_dict()
@@ -426,6 +469,10 @@ def main():
     
     # Initialize trainer
     try:
+        if not TRAINER_AVAILABLE:
+            print("❌ Training components not available")
+            sys.exit(1)
+            
         print("\n🚀 Initializing trainer...")
         trainer = HiggsAudioTrainer(config)
         

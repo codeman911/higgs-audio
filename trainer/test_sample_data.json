@@ -1,0 +1,252 @@
+[
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Generate speech in the provided voice."
+      },
+      {
+        "role": "user",
+        "content": "This is reference text number 1 for voice cloning."
+      },
+      {
+        "role": "assistant",
+        "content": {
+          "type": "audio",
+          "audio_url": "data/reference_audio/speaker_0_ref.wav"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Now generate speech for this target text: Hello, this is generated speech sample 1."
+      }
+    ],
+    "speaker": "speaker_0",
+    "start_index": 3
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Generate speech in the provided voice."
+      },
+      {
+        "role": "user",
+        "content": "This is reference text number 2 for voice cloning."
+      },
+      {
+        "role": "assistant",
+        "content": {
+          "type": "audio",
+          "audio_url": "data/reference_audio/speaker_1_ref.wav"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Now generate speech for this target text: Hello, this is generated speech sample 2."
+      }
+    ],
+    "speaker": "speaker_1",
+    "start_index": 3
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Generate speech in the provided voice."
+      },
+      {
+        "role": "user",
+        "content": "This is reference text number 3 for voice cloning."
+      },
+      {
+        "role": "assistant",
+        "content": {
+          "type": "audio",
+          "audio_url": "data/reference_audio/speaker_2_ref.wav"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Now generate speech for this target text: Hello, this is generated speech sample 3."
+      }
+    ],
+    "speaker": "speaker_2",
+    "start_index": 3
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Generate speech in the provided voice."
+      },
+      {
+        "role": "user",
+        "content": "This is reference text number 4 for voice cloning."
+      },
+      {
+        "role": "assistant",
+        "content": {
+          "type": "audio",
+          "audio_url": "data/reference_audio/speaker_0_ref.wav"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Now generate speech for this target text: Hello, this is generated speech sample 4."
+      }
+    ],
+    "speaker": "speaker_0",
+    "start_index": 3
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Generate speech in the provided voice."
+      },
+      {
+        "role": "user",
+        "content": "This is reference text number 5 for voice cloning."
+      },
+      {
+        "role": "assistant",
+        "content": {
+          "type": "audio",
+          "audio_url": "data/reference_audio/speaker_1_ref.wav"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Now generate speech for this target text: Hello, this is generated speech sample 5."
+      }
+    ],
+    "speaker": "speaker_1",
+    "start_index": 3
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Generate speech in the provided voice."
+      },
+      {
+        "role": "user",
+        "content": "This is reference text number 6 for voice cloning."
+      },
+      {
+        "role": "assistant",
+        "content": {
+          "type": "audio",
+          "audio_url": "data/reference_audio/speaker_2_ref.wav"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Now generate speech for this target text: Hello, this is generated speech sample 6."
+      }
+    ],
+    "speaker": "speaker_2",
+    "start_index": 3
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Generate speech in the provided voice."
+      },
+      {
+        "role": "user",
+        "content": "This is reference text number 7 for voice cloning."
+      },
+      {
+        "role": "assistant",
+        "content": {
+          "type": "audio",
+          "audio_url": "data/reference_audio/speaker_0_ref.wav"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Now generate speech for this target text: Hello, this is generated speech sample 7."
+      }
+    ],
+    "speaker": "speaker_0",
+    "start_index": 3
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Generate speech in the provided voice."
+      },
+      {
+        "role": "user",
+        "content": "This is reference text number 8 for voice cloning."
+      },
+      {
+        "role": "assistant",
+        "content": {
+          "type": "audio",
+          "audio_url": "data/reference_audio/speaker_1_ref.wav"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Now generate speech for this target text: Hello, this is generated speech sample 8."
+      }
+    ],
+    "speaker": "speaker_1",
+    "start_index": 3
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Generate speech in the provided voice."
+      },
+      {
+        "role": "user",
+        "content": "This is reference text number 9 for voice cloning."
+      },
+      {
+        "role": "assistant",
+        "content": {
+          "type": "audio",
+          "audio_url": "data/reference_audio/speaker_2_ref.wav"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Now generate speech for this target text: Hello, this is generated speech sample 9."
+      }
+    ],
+    "speaker": "speaker_2",
+    "start_index": 3
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Generate speech in the provided voice."
+      },
+      {
+        "role": "user",
+        "content": "This is reference text number 10 for voice cloning."
+      },
+      {
+        "role": "assistant",
+        "content": {
+          "type": "audio",
+          "audio_url": "data/reference_audio/speaker_0_ref.wav"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Now generate speech for this target text: Hello, this is generated speech sample 10."
+      }
+    ],
+    "speaker": "speaker_0",
+    "start_index": 3
+  }
+]

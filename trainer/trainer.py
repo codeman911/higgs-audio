@@ -53,6 +53,10 @@ class HiggsAudioTrainer:
         logger.info(f"   Model: {config.model_path}")
         logger.info(f"   Audio Tokenizer: {config.audio_tokenizer_path}")
         
+        # Validate configuration for training if needed
+        # Note: Skip validation for utility operations like sample data creation
+        self.config_validated = False
+        
         # Setup model and tokenizers (exact match with generation.py)
         self._setup_model()
         self._setup_tokenizers()
@@ -227,6 +231,12 @@ class HiggsAudioTrainer:
     
     def train(self):
         """Main training loop with robust dual-loss computation."""
+        # Validate configuration before training
+        if not self.config_validated:
+            logger.info("🔍 Validating configuration for training...")
+            self.config.validate_for_training()
+            self.config_validated = True
+        
         logger.info("🎯 Starting training")
         
         # Setup optimizer and scheduler
