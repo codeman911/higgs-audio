@@ -40,7 +40,7 @@ class HiggsAudioTrainingBatch:
     # Standard batch inputs
     input_ids: torch.LongTensor  # shape (bsz, seq_len)
     attention_mask: torch.Tensor  # shape (bsz, seq_len)
-    labels: Optional[torch.LongTensor]  # shape (bsz, seq_len) - text labels
+    label_ids: Optional[torch.LongTensor]  # shape (bsz, seq_len) - text labels (matches model API)
     
     # Audio features for conditioning
     audio_features: Optional[torch.Tensor]  # shape (num_audio_in, feature_dim, max_mel_seq_len)
@@ -55,8 +55,8 @@ class HiggsAudioTrainingBatch:
     audio_in_ids: Optional[torch.LongTensor]  # shape (num_codebooks, audio_in_total_length)
     audio_in_ids_start: Optional[torch.LongTensor]  # shape (num_audio_in,)
     
-    # Audio labels for teacher forcing
-    audio_labels: Optional[torch.LongTensor]  # shape (num_codebooks, audio_out_total_length)
+    # Audio labels for teacher forcing (matches model API)
+    label_audio_ids: Optional[torch.LongTensor]  # shape (num_codebooks, audio_out_total_length)
     
     # Additional training metadata
     sample_ids: Optional[List[str]] = None
@@ -234,7 +234,7 @@ class ArabicVoiceCloningTrainingCollator:
         return HiggsAudioTrainingBatch(
             input_ids=base_batch.input_ids,
             attention_mask=enhanced_attention_mask,
-            labels=base_batch.label_ids,
+            label_ids=base_batch.label_ids,  # Use correct parameter name for model
             audio_features=base_batch.audio_features,
             audio_feature_attention_mask=base_batch.audio_feature_attention_mask,
             audio_out_ids=base_batch.audio_out_ids,
@@ -242,7 +242,7 @@ class ArabicVoiceCloningTrainingCollator:
             audio_out_ids_start_group_loc=base_batch.audio_out_ids_start_group_loc,
             audio_in_ids=base_batch.audio_in_ids,
             audio_in_ids_start=base_batch.audio_in_ids_start,
-            audio_labels=audio_labels,
+            label_audio_ids=audio_labels,  # Use correct parameter name for model
             sample_ids=sample_ids,
             loss_weights=loss_weights
         )
@@ -291,11 +291,14 @@ class ArabicVoiceCloningTrainingCollator:
             num_codebooks, seq_len = audio_labels.shape
             
             # Build delay pattern mask matching the model's configuration
+            # Note: build_delay_pattern_mask doesn't accept device parameter
             delay_pattern = build_delay_pattern_mask(
                 num_codebooks, 
-                seq_len, 
-                device=audio_labels.device
+                seq_len
             )
+            
+            # Move delay pattern to same device as audio_labels
+            delay_pattern = delay_pattern.to(audio_labels.device)
             
             # Apply delay pattern to labels
             delayed_labels = audio_labels.clone()
@@ -371,8 +374,8 @@ class ArabicVoiceCloningTrainingCollator:
         if batch.input_ids.shape != batch.attention_mask.shape:
             raise ValueError(f"Shape mismatch: input_ids {batch.input_ids.shape} vs attention_mask {batch.attention_mask.shape}")
         
-        if batch.labels is not None and batch.labels.shape != batch.input_ids.shape:
-            raise ValueError(f"Shape mismatch: input_ids {batch.input_ids.shape} vs labels {batch.labels.shape}")
+        if batch.label_ids is not None and batch.label_ids.shape != batch.input_ids.shape:
+            raise ValueError(f"Shape mismatch: input_ids {batch.input_ids.shape} vs label_ids {batch.label_ids.shape}")
         
         # Validate audio components
         if batch.audio_out_ids is not None:
@@ -384,9 +387,9 @@ class ArabicVoiceCloningTrainingCollator:
                 raise ValueError(f"Expected {expected_codebooks} codebooks, got {batch.audio_out_ids.shape[0]}")
         
         # Validate audio labels if present
-        if batch.audio_labels is not None and batch.audio_out_ids is not None:
-            if batch.audio_labels.shape != batch.audio_out_ids.shape:
-                raise ValueError(f"Audio labels shape {batch.audio_labels.shape} doesn't match audio_out_ids {batch.audio_out_ids.shape}")
+        if batch.label_audio_ids is not None and batch.audio_out_ids is not None:
+            if batch.label_audio_ids.shape != batch.audio_out_ids.shape:
+                raise ValueError(f"Audio labels shape {batch.label_audio_ids.shape} doesn't match audio_out_ids {batch.audio_out_ids.shape}")
         
         logger.debug(f"Training batch validation passed:")
         logger.debug(f"  - Batch size: {batch.input_ids.shape[0]}")
@@ -423,12 +426,12 @@ def validate_training_batch(batch: HiggsAudioTrainingBatch) -> bool:
         if batch.input_ids.shape != batch.attention_mask.shape:
             return False
         
-        if batch.labels is not None and batch.labels.shape != batch.input_ids.shape:
+        if batch.label_ids is not None and batch.label_ids.shape != batch.input_ids.shape:
             return False
         
         # Audio consistency checks
-        if batch.audio_out_ids is not None and batch.audio_labels is not None:
-            if batch.audio_out_ids.shape != batch.audio_labels.shape:
+        if batch.audio_out_ids is not None and batch.label_audio_ids is not None:
+            if batch.audio_out_ids.shape != batch.label_audio_ids.shape:
                 return False
         
         return True
