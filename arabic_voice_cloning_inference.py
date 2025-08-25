@@ -38,6 +38,8 @@ from typing import List, Dict, Any, Optional
 from dataclasses import asdict
 from loguru import logger
 
+import shutil  # Added for file copying
+
 # Higgs Audio imports
 from boson_multimodal.model.higgs_audio import HiggsAudioConfig, HiggsAudioModel
 from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
@@ -65,8 +67,10 @@ class ArabicVoiceCloningInference:
         audio_tokenizer_path: str = "bosonai/higgs-audio-v2-tokenizer",
         device: str = "auto",
         device_id: Optional[int] = None,
-        max_new_tokens: int = 2048,
+        max_new_tokens: int = 512,  # Reduced from 2048 to prevent extended generation
         use_static_kv_cache: bool = True,
+        adaptive_max_tokens: bool = True,  # Enable adaptive token calculation
+        base_tokens_per_second: int = 25,  # 25Hz token rate for audio
     ):
         """
         Initialize the Arabic voice cloning inference engine.
@@ -81,6 +85,8 @@ class ArabicVoiceCloningInference:
         """
         self.max_new_tokens = max_new_tokens
         self.use_static_kv_cache = use_static_kv_cache
+        self.adaptive_max_tokens = adaptive_max_tokens
+        self.base_tokens_per_second = base_tokens_per_second
         
         # Setup device
         self._setup_device(device, device_id)
@@ -132,6 +138,7 @@ class ArabicVoiceCloningInference:
         )
         
         logger.info(f"Arabic Voice Cloning Inference Engine initialized on {self._device}")
+        logger.info(f"Audio generation settings: max_tokens={max_new_tokens}, adaptive={adaptive_max_tokens}")
     
     def _setup_device(self, device: str, device_id: Optional[int]):
         """Setup the compute device."""
@@ -157,6 +164,47 @@ class ArabicVoiceCloningInference:
             self.use_static_kv_cache = False
             
         logger.info(f"Using device: {self._device}")
+    
+    def calculate_adaptive_max_tokens(self, target_text: str) -> int:
+        """
+        Calculate appropriate max tokens based on target text length.
+        
+        Args:
+            target_text: Text to generate audio for
+            
+        Returns:
+            Calculated max tokens for generation
+        """
+        if not self.adaptive_max_tokens:
+            return self.max_new_tokens
+            
+        # Estimate speaking rate: ~150 words per minute for Arabic
+        word_count = len(target_text.split())
+        
+        # For Arabic, account for script complexity
+        char_count = len(target_text)
+        
+        # Estimate duration based on both words and characters
+        word_duration = (word_count / 150) * 60  # seconds
+        char_duration = (char_count / 8) * 60 / 150  # approximate character rate
+        
+        # Use the longer estimate for better coverage
+        estimated_duration = max(word_duration, char_duration)
+        
+        # Add buffer for natural speech variations (1.5x)
+        buffer_factor = 1.5
+        max_duration = estimated_duration * buffer_factor
+        
+        # Convert to tokens (25 Hz rate)
+        calculated_tokens = int(max_duration * self.base_tokens_per_second)
+        
+        # Apply reasonable bounds: minimum 64, maximum 512 for Arabic
+        bounded_tokens = max(min(calculated_tokens, self.max_new_tokens), 64)
+        
+        logger.info(f"Text length: {word_count} words, {char_count} chars")
+        logger.info(f"Estimated duration: {estimated_duration:.1f}s -> {bounded_tokens} tokens")
+        
+        return bounded_tokens
     
     def process_chatml_sample(self, sample: Dict[str, Any]) -> tuple:
         """
@@ -219,7 +267,7 @@ class ArabicVoiceCloningInference:
         target_text: str
     ) -> tuple:
         """
-        Create the message structure for generation, following the pattern from generation.py.
+        Create the message structure for generation, following Higgs Audio v2 voice cloning patterns.
         
         Args:
             ref_text: Reference text that was spoken in reference audio
@@ -227,34 +275,35 @@ class ArabicVoiceCloningInference:
             target_text: Text to generate in the reference voice
             
         Returns:
-            Tuple of (messages, audio_ids)
+            Tuple of (messages, audio_ids, ref_waveform, sample_rate)
         """
-        # Create system message for Arabic voice cloning
+        # Create system message for Arabic voice cloning - keep it concise
         system_message = Message(
             role="system",
-            content="You are a helpful assistant capable of generating speech in the voice of the provided reference audio. Generate natural-sounding Arabic speech."
+            content="Generate speech in the provided voice."
         )
         
-        # Create user message with reference text and reference audio
-        # This follows the proper ChatML format for voice cloning
+        # Create user message with reference text and audio token placeholder
+        # This follows the proper ChatML format for voice cloning conditioning
         user_ref_message = Message(
             role="user",
-            content=f"{ref_text} <|AUDIO|>"
+            content=f"{ref_text} <|audio_bos|><|AUDIO|><|audio_eos|>"
         )
         
-        # Create assistant confirmation (can be empty or acknowledgment)
-        ref_audio_message = Message(
+        # Create assistant message with reference audio using AudioContent
+        # This is the key difference - using AudioContent instead of text confirmation
+        assistant_ref_message = Message(
             role="assistant",
-            content="I understand the reference voice."
+            content=AudioContent(audio_url=ref_audio_path)
         )
         
-        # Create user message with target text
+        # Create user message with target text for generation
         user_target_message = Message(
             role="user", 
             content=target_text
         )
         
-        messages = [system_message, user_ref_message, ref_audio_message, user_target_message]
+        messages = [system_message, user_ref_message, assistant_ref_message, user_target_message]
         
         # Load and prepare reference audio waveform for Whisper processing
         logger.info(f"Loading reference audio waveform: {ref_audio_path}")
@@ -300,6 +349,7 @@ class ArabicVoiceCloningInference:
         audio_ids: List[torch.Tensor],
         ref_waveform: Optional[torch.Tensor] = None,
         ref_sample_rate: Optional[int] = None,
+        target_text: str = "",  # Added for adaptive token calculation
         temperature: float = 0.3,
         top_k: int = 50,
         top_p: float = 0.95,
@@ -311,6 +361,9 @@ class ArabicVoiceCloningInference:
         Args:
             messages: List of Message objects for generation context
             audio_ids: List of audio token tensors
+            ref_waveform: Reference audio waveform for Whisper conditioning
+            ref_sample_rate: Sample rate of reference waveform
+            target_text: Target text for adaptive token calculation
             temperature: Sampling temperature
             top_k: Top-k sampling parameter
             top_p: Top-p sampling parameter
@@ -340,35 +393,41 @@ class ArabicVoiceCloningInference:
             logger.info(self.tokenizer.decode(input_tokens))
             
             # Create dataset sample with proper audio waveform for Whisper processing
+            logger.info(f"Creating dataset sample with Whisper conditioning: {self.config.encode_whisper_embed}")
+            
             if ref_waveform is not None and self.config.encode_whisper_embed:
-                # Include reference waveform for Whisper embeddings
+                # Dual pathway: Whisper embeddings + DAC tokens for proper voice cloning
                 curr_sample = ChatMLDatasetSample(
                     input_ids=torch.LongTensor(input_tokens),
                     label_ids=None,
-                    audio_ids_concat=torch.concat([ele.cpu() for ele in audio_ids], dim=1) if audio_ids else None,
+                    # DAC audio tokens for generation context
+                    audio_ids_concat=torch.concat([ele.cpu() for ele in audio_ids], dim=1) if audio_ids else torch.empty(0, 0, dtype=torch.long),
                     audio_ids_start=torch.cumsum(
                         torch.tensor([0] + [ele.shape[1] for ele in audio_ids], dtype=torch.long), 
                         dim=0
-                    ) if audio_ids else None,
+                    ) if audio_ids else torch.empty(0, dtype=torch.long),
+                    # Reference waveform for Whisper feature extraction (key for voice cloning)
                     audio_waveforms_concat=ref_waveform,
                     audio_waveforms_start=torch.tensor([0, len(ref_waveform)], dtype=torch.long),
-                    audio_sample_rate=torch.tensor([ref_sample_rate], dtype=torch.float32) if ref_sample_rate else None,
-                    audio_speaker_indices=None,
+                    audio_sample_rate=torch.tensor([ref_sample_rate], dtype=torch.float32),
+                    audio_speaker_indices=torch.empty(0, dtype=torch.long),
                 )
+                logger.info(f"Sample created with Whisper waveform: {ref_waveform.shape}, DAC tokens: {audio_ids[0].shape if audio_ids else 'None'}")
             else:
-                # Fallback to audio tokens only (original behavior)
+                # Fallback to audio tokens only (original behavior) - less optimal for voice cloning
+                logger.warning("Creating sample without Whisper embeddings - voice similarity may be reduced")
                 curr_sample = ChatMLDatasetSample(
                     input_ids=torch.LongTensor(input_tokens),
                     label_ids=None,
-                    audio_ids_concat=torch.concat([ele.cpu() for ele in audio_ids], dim=1) if audio_ids else None,
+                    audio_ids_concat=torch.concat([ele.cpu() for ele in audio_ids], dim=1) if audio_ids else torch.empty(0, 0, dtype=torch.long),
                     audio_ids_start=torch.cumsum(
                         torch.tensor([0] + [ele.shape[1] for ele in audio_ids], dtype=torch.long), 
                         dim=0
-                    ) if audio_ids else None,
-                    audio_waveforms_concat=None,
-                    audio_waveforms_start=None,
-                    audio_sample_rate=None,
-                    audio_speaker_indices=None,
+                    ) if audio_ids else torch.empty(0, dtype=torch.long),
+                    audio_waveforms_concat=torch.empty(0, dtype=torch.float32),
+                    audio_waveforms_start=torch.empty(0, dtype=torch.long),
+                    audio_sample_rate=torch.empty(0, dtype=torch.float32),
+                    audio_speaker_indices=torch.empty(0, dtype=torch.long),
                 )
             
             # Collate data
@@ -378,17 +437,20 @@ class ArabicVoiceCloningInference:
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.contiguous().to(self._device)
             
+            # Calculate adaptive max tokens based on target text
+            adaptive_max_tokens = self.calculate_adaptive_max_tokens(target_text)
+            
             # Generate
-            logger.info("Starting generation...")
+            logger.info(f"Starting generation with {adaptive_max_tokens} max tokens...")
             outputs = self.model.generate(
                 **batch,
-                max_new_tokens=self.max_new_tokens,
+                max_new_tokens=adaptive_max_tokens,
                 use_cache=True,
                 do_sample=True,
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
-                stop_strings=["<|end_of_text|>", "<|eot_id|>"],
+                stop_strings=["<|end_of_text|>", "<|eot_id|>", "<|audio_eos|>"],  # Added audio_eos
                 tokenizer=self.tokenizer,
                 seed=seed,
             )
@@ -433,6 +495,56 @@ class ArabicVoiceCloningInference:
             import traceback
             traceback.print_exc()
             return None, None, None
+    
+    def save_reference_and_generated_audio(
+        self,
+        ref_audio_path: str,
+        generated_waveform: np.ndarray,
+        sample_rate: int,
+        output_dir: str,
+        sample_id: int,
+        speaker_id: str
+    ) -> dict:
+        """
+        Save both reference and generated audio with consistent naming.
+        
+        Args:
+            ref_audio_path: Path to reference audio file
+            generated_waveform: Generated audio waveform
+            sample_rate: Sample rate for generated audio
+            output_dir: Output directory
+            sample_id: Sample identifier
+            speaker_id: Speaker identifier
+            
+        Returns:
+            Dictionary with file paths and metadata
+        """
+        # Create filenames
+        base_filename = f"arabic_generated_{sample_id:03d}_{speaker_id}"
+        generated_file = os.path.join(output_dir, f"{base_filename}.wav")
+        reference_file = os.path.join(output_dir, f"{base_filename}_ref.wav")
+        
+        # Save generated audio
+        sf.write(generated_file, generated_waveform, sample_rate)
+        logger.info(f"Saved generated audio to {generated_file}")
+        
+        # Copy reference audio
+        if os.path.exists(ref_audio_path):
+            try:
+                shutil.copy2(ref_audio_path, reference_file)
+                logger.info(f"Saved reference audio to {reference_file}")
+            except Exception as e:
+                logger.warning(f"Failed to copy reference audio: {e}")
+                reference_file = None
+        else:
+            logger.warning(f"Reference audio file not found: {ref_audio_path}")
+            reference_file = None
+        
+        return {
+            "generated_audio": generated_file,
+            "reference_audio": reference_file,
+            "sample_rate": sample_rate
+        }
     
     def process_chatml_file(
         self,
@@ -503,25 +615,26 @@ class ArabicVoiceCloningInference:
             
             # Generate speech
             waveform, sample_rate, text_output = self.generate_arabic_speech(
-                messages, audio_ids, ref_waveform, ref_sr, temperature, top_k, top_p, seed
+                messages, audio_ids, ref_waveform, ref_sr, target_text, temperature, top_k, top_p, seed
             )
             
             if waveform is not None:
-                # Save generated audio
-                output_file = os.path.join(output_dir, f"arabic_generated_{i:03d}_{speaker_id}.wav")
-                sf.write(output_file, waveform, sample_rate)
-                
-                logger.info(f"Saved generated audio to {output_file}")
+                # Save both generated and reference audio
+                file_info = self.save_reference_and_generated_audio(
+                    ref_audio_path, waveform, sample_rate, output_dir, i, speaker_id
+                )
                 
                 results.append({
                     "sample_id": i,
                     "status": "success",
-                    "output_file": output_file,
+                    "output_file": file_info["generated_audio"],
+                    "reference_file": file_info["reference_audio"],
                     "speaker_id": speaker_id,
                     "ref_audio": ref_audio_path,
                     "ref_text": ref_text,
                     "target_text": target_text,
-                    "generated_text": text_output
+                    "generated_text": text_output,
+                    "duration_estimate": f"{len(target_text.split())} words"
                 })
             else:
                 logger.error(f"Generation failed for sample {i}")
@@ -605,8 +718,14 @@ class ArabicVoiceCloningInference:
 @click.option(
     "--max_new_tokens",
     type=int,
-    default=2048,
-    help="Maximum number of tokens to generate"
+    default=512,
+    help="Maximum number of tokens to generate (reduced from 2048 for better control)"
+)
+@click.option(
+    "--adaptive_max_tokens",
+    type=bool,
+    default=True,
+    help="Enable adaptive token calculation based on text length"
 )
 def main(
     chatml_file,
@@ -619,7 +738,8 @@ def main(
     top_k,
     top_p,
     seed,
-    max_new_tokens
+    max_new_tokens,
+    adaptive_max_tokens
 ):
     """
     Arabic Zero-Shot Voice Cloning Inference Script
@@ -635,7 +755,8 @@ def main(
         device=device,
         device_id=device_id,
         max_new_tokens=max_new_tokens,
-        use_static_kv_cache=True
+        use_static_kv_cache=True,
+        adaptive_max_tokens=adaptive_max_tokens
     )
     
     # Process ChatML file
