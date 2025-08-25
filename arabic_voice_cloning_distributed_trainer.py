@@ -108,19 +108,26 @@ class ArabicVoiceCloningDistributedTrainer:
     def _setup_device(self):
         """Setup device and CUDA optimization."""
         if torch.cuda.is_available():
-            self.device = torch.device(f"cuda:{self.training_config.local_rank}")
+            # Fix device selection for single GPU mode (local_rank = -1)
+            if self.training_config.local_rank == -1:
+                device_id = 0  # Use GPU 0 for single GPU
+            else:
+                device_id = self.training_config.local_rank
+                
+            self.device = torch.device(f"cuda:{device_id}")
             torch.cuda.set_device(self.device)
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             torch.backends.cudnn.benchmark = True
             torch.cuda.empty_cache()
-            logger.info(f"GPU {self.training_config.local_rank}: {torch.cuda.get_device_name()}")
+            logger.info(f"GPU {device_id}: {torch.cuda.get_device_name()}")
         else:
             self.device = torch.device("cpu")
     
     def _initialize_components(self):
         """Initialize model, data, and training components."""
         # Load model with LoRA
+        logger.info("🔧 Loading HiggsAudioModel with LoRA (validating compatibility)...")
         self.model, self.model_config, _ = create_higgs_audio_lora_model(
             model_path=self.training_config.model_path,
             custom_config=self.lora_config,
@@ -128,6 +135,39 @@ class ArabicVoiceCloningDistributedTrainer:
             torch_dtype=torch.bfloat16,
             enable_gradient_checkpointing=self.training_config.gradient_checkpointing
         )
+        
+        # CRITICAL: Validate model compatibility
+        import inspect
+        from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioModel as CorrectHiggsAudioModel
+        
+        # Check if we're using the correct model version
+        base_model = self.model.base_model if hasattr(self.model, 'base_model') else self.model
+        if isinstance(base_model, CorrectHiggsAudioModel):
+            logger.info("✅ Using correct boson_multimodal.HiggsAudioModel")
+        else:
+            logger.warning(f"⚠️ Unexpected model type: {type(base_model)}")
+        
+        # Validate forward signature
+        sig = inspect.signature(base_model.forward)
+        params = list(sig.parameters.keys())
+        
+        if 'labels' in params:
+            logger.error("❌ CRITICAL: Model has 'labels' parameter - wrong version!")
+            logger.error("❌ Expected: label_ids, label_audio_ids")
+            logger.error("❌ Found: labels parameter (incompatible version)")
+            raise RuntimeError("Model version incompatible - has 'labels' parameter")
+        else:
+            logger.info("✅ CORRECT: Model does NOT have 'labels' parameter")
+            
+        required_params = ['label_ids', 'label_audio_ids', 'audio_out_ids', 'audio_features']
+        missing_params = [p for p in required_params if p not in params]
+        
+        if missing_params:
+            logger.error(f"❌ Missing required parameters: {missing_params}")
+            raise RuntimeError(f"Model missing required parameters: {missing_params}")
+        else:
+            logger.info("✅ All required parameters present in model forward signature")
+        
         self.model = self.model.to(self.device)
         
         # Load tokenizers
@@ -138,12 +178,13 @@ class ArabicVoiceCloningDistributedTrainer:
             device=audio_device
         )
         
-        # Setup DDP
+        # Setup DDP (fix device ID for single GPU mode)
         if self.training_config.world_size > 1:
+            device_id = 0 if self.training_config.local_rank == -1 else self.training_config.local_rank
             self.model = DDP(
                 self.model,
-                device_ids=[self.training_config.local_rank],
-                output_device=self.training_config.local_rank,
+                device_ids=[device_id],
+                output_device=device_id,
                 find_unused_parameters=False,
                 gradient_as_bucket_view=True
             )
@@ -175,12 +216,33 @@ class ArabicVoiceCloningDistributedTrainer:
         else:
             self.sampler = None
         
-        # Setup collator first
+        # Setup Whisper processor for zero-shot voice cloning (CRITICAL FIX)
+        logger.info("🎤 Setting up Whisper processor for zero-shot voice cloning...")
         try:
             from transformers import AutoProcessor
-            whisper_processor = AutoProcessor.from_pretrained("openai/whisper-large-v3")
-        except:
-            whisper_processor = None
+            whisper_processor = AutoProcessor.from_pretrained(
+                "openai/whisper-large-v3", 
+                trust_remote_code=True
+            )
+            logger.info("✅ Whisper-large-v3 processor loaded successfully")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load Whisper-large-v3: {e}")
+            try:
+                whisper_processor = AutoProcessor.from_pretrained(
+                    "openai/whisper-base", 
+                    trust_remote_code=True
+                )
+                logger.info("✅ Whisper-base processor loaded as fallback")
+            except Exception as e2:
+                logger.error(f"❌ Failed to load any Whisper processor: {e2}")
+                whisper_processor = None
+        
+        # Force enable Whisper embeddings in model config (CRITICAL FIX)
+        if hasattr(self.model_config, 'encode_whisper_embed'):
+            original_value = self.model_config.encode_whisper_embed
+            self.model_config.encode_whisper_embed = True
+            if not original_value:
+                logger.info("✅ ENABLED encode_whisper_embed for zero-shot voice cloning")
         
         self.collator = ArabicVoiceCloningTrainingCollator(
             config=self.model_config,
@@ -300,7 +362,20 @@ class ArabicVoiceCloningDistributedTrainer:
             # The batch is already collated by the DataLoader's collate_fn
             training_batch = self._move_batch_to_device(batch)
             
+            # CRITICAL: Validate model compatibility before forward pass
+            import inspect
+            model_forward = self.model.forward if hasattr(self.model, 'forward') else self.model.module.forward
+            sig = inspect.signature(model_forward)
+            params = list(sig.parameters.keys())
+            
+            if 'labels' in params:
+                logger.error("❌ CRITICAL: Model has 'labels' parameter - wrong version!")
+                logger.error("❌ Expected: label_ids, label_audio_ids")
+                logger.error("❌ Found: labels parameter (incompatible version)")
+                raise RuntimeError("Model version incompatible - has 'labels' parameter")
+            
             with torch.amp.autocast('cuda', enabled=self.training_config.use_mixed_precision):
+                # DEFINITIVE model forward call - NO 'labels' parameter
                 outputs = self.model(
                     input_ids=training_batch.input_ids,
                     attention_mask=training_batch.attention_mask,
@@ -311,8 +386,9 @@ class ArabicVoiceCloningDistributedTrainer:
                     audio_out_ids_start_group_loc=training_batch.audio_out_ids_start_group_loc,
                     audio_in_ids=training_batch.audio_in_ids,
                     audio_in_ids_start=training_batch.audio_in_ids_start,
-                    label_ids=training_batch.label_ids,
-                    label_audio_ids=training_batch.label_audio_ids,
+                    label_ids=training_batch.label_ids,           # ✅ CORRECT parameter name
+                    label_audio_ids=training_batch.label_audio_ids,  # ✅ CORRECT parameter name
+                    # NO 'labels' parameter anywhere ✅
                 )
                 
                 loss_dict = self.loss_fn(
@@ -351,7 +427,21 @@ class ArabicVoiceCloningDistributedTrainer:
             return loss_dict
             
         except Exception as e:
-            logger.error(f"Training step failed: {e}")
+            logger.error(f"❌ Training step {self.current_step} failed: {e}")
+            logger.error(f"❌ Batch type: {type(batch)}")
+            if hasattr(batch, '__dict__'):
+                logger.error(f"❌ Batch fields: {list(batch.__dict__.keys())}")
+            
+            # Log model forward signature for debugging
+            import inspect
+            try:
+                model_forward = self.model.forward if hasattr(self.model, 'forward') else self.model.module.forward
+                sig = inspect.signature(model_forward)
+                params = list(sig.parameters.keys())
+                logger.error(f"❌ Model forward parameters: {params[:10]}...")  # Show first 10
+            except:
+                pass
+                
             return None
     
     def _move_batch_to_device(self, batch):
@@ -385,7 +475,7 @@ class ArabicVoiceCloningDistributedTrainer:
             metrics["gpu_memory_gb"] = torch.cuda.memory_allocated(self.device) / 1e9
         
         if self.current_step % (self.training_config.logging_steps * 5) == 0:
-            logger.info(f"Step {self.current_step}: Total Loss {metrics.get('loss/total_loss', 0):.6f}, "
+            logger.info(f"✅ Step {self.current_step}: Total Loss {metrics.get('loss/total_loss', 0):.6f}, "
                        f"LR {metrics['learning_rate']:.6e}, GPU {metrics.get('gpu_memory_gb', 0):.1f}GB")
         
         if self.training_config.use_wandb:
@@ -416,7 +506,7 @@ class ArabicVoiceCloningDistributedTrainer:
         }
         torch.save(state, checkpoint_dir / "training_state.pt")
         
-        logger.info(f"Checkpoint saved: {checkpoint_dir}")
+        logger.info(f"✅ Checkpoint saved: {checkpoint_dir}")
     
     def cleanup(self):
         """Cleanup resources."""
