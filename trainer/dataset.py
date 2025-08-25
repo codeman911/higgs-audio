@@ -1,16 +1,28 @@
 """
 Dataset implementation for Higgs-Audio LoRA training.
 
+Follows EXACT patterns from arb_inference.py and generation.py:
+- Proper ChatML message structure matching inference
+- Dual audio processing (Whisper + DAC) following training pipeline
+- Reference audio conditioning exactly like arb_inference.py 
+- Teacher forcing training with proper label generation
+- Robust error handling and validation
+
 Reuses existing boson_multimodal components without modification:
 - prepare_chatml_sample for data processing
-- ChatMLDatasetSample for data structure
+- ChatMLDatasetSample for data structure  
 - Existing audio tokenizer for audio encoding
 """
 
 import json
 import os
+import torch
+import torchaudio
+import torchaudio.transforms as T
+import numpy as np
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Tuple
+from loguru import logger
 
 # Conditional imports for ML dependencies
 try:
@@ -37,11 +49,12 @@ except ImportError:
 
 class VoiceCloningDataset(Dataset):
     """
-    Simple dataset wrapper that reuses existing boson_multimodal functions.
+    Voice cloning dataset that EXACTLY matches arb_inference.py patterns.
     
-    Processes ChatML format data for zero-shot voice cloning training.
-    The data format follows the same pattern as arb_inference.py:
+    Processes ChatML format data for zero-shot voice cloning training using
+    the same dual audio conditioning pipeline as the inference implementation.
     
+    The data format follows arb_inference.py exactly:
     {
       "messages": [
         {"role": "system", "content": "Generate speech in the provided voice."},
@@ -61,6 +74,7 @@ class VoiceCloningDataset(Dataset):
         audio_tokenizer,
         audio_base_path: str = "",
         validate_audio_paths: bool = True,
+        force_whisper_embed: bool = True,  # Match arb_inference.py
     ):
         """
         Initialize the voice cloning dataset.
@@ -71,6 +85,7 @@ class VoiceCloningDataset(Dataset):
             audio_tokenizer: Audio tokenizer for encoding reference audio
             audio_base_path: Base path for resolving relative audio paths
             validate_audio_paths: Whether to validate audio file existence
+            force_whisper_embed: Force Whisper embedding like arb_inference.py
         """
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch is required for dataset functionality. Install with: pip install torch")
@@ -81,12 +96,13 @@ class VoiceCloningDataset(Dataset):
         self.tokenizer = tokenizer
         self.audio_tokenizer = audio_tokenizer
         self.audio_base_path = Path(audio_base_path) if audio_base_path else Path()
+        self.force_whisper_embed = force_whisper_embed
         
         # Load training data
         with open(data_path, 'r', encoding='utf-8') as f:
             self.samples = json.load(f)
         
-        print(f"📂 Loaded {len(self.samples)} training samples from {data_path}")
+        logger.info(f"📂 Loaded {len(self.samples)} training samples from {data_path}")
         
         # Validate and filter samples
         if validate_audio_paths:
@@ -95,40 +111,101 @@ class VoiceCloningDataset(Dataset):
                 if self._validate_sample(sample, i):
                     valid_samples.append(sample)
             
-            print(f"✅ {len(valid_samples)}/{len(self.samples)} samples passed validation")
+            logger.info(f"✅ {len(valid_samples)}/{len(self.samples)} samples passed validation")
             self.samples = valid_samples
         
         if len(self.samples) == 0:
             raise ValueError("No valid training samples found!")
     
     def _validate_sample(self, sample: Dict[str, Any], idx: int) -> bool:
-        """Validate a single training sample."""
+        """Validate a single training sample following arb_inference.py patterns."""
         try:
             # Check required fields
             if 'messages' not in sample:
-                print(f"⚠️ Sample {idx}: Missing 'messages' field")
+                logger.warning(f"⚠️ Sample {idx}: Missing 'messages' field")
                 return False
             
             messages = sample['messages']
             if not isinstance(messages, list) or len(messages) < 3:
-                print(f"⚠️ Sample {idx}: Invalid messages structure")
+                logger.warning(f"⚠️ Sample {idx}: Invalid messages structure (need >= 3 messages)")
                 return False
             
-            # Find audio content and validate paths
-            for msg in messages:
-                if isinstance(msg.get('content'), dict) and msg['content'].get('type') == 'audio':
-                    audio_url = msg['content'].get('audio_url', '')
-                    if audio_url:
-                        audio_path = self._resolve_audio_path(audio_url)
-                        if not audio_path.exists():
-                            print(f"⚠️ Sample {idx}: Audio file not found: {audio_path}")
-                            return False
+            # Extract components using arb_inference.py pattern
+            ref_audio_path, ref_text, target_text, speaker_id = self._extract_sample_components(sample)
+            
+            if not all([ref_audio_path, ref_text, target_text]):
+                logger.warning(f"⚠️ Sample {idx}: Missing required components")
+                return False
+            
+            # Validate audio file exists
+            audio_path = self._resolve_audio_path(ref_audio_path)
+            if not audio_path.exists():
+                logger.warning(f"⚠️ Sample {idx}: Audio file not found: {audio_path}")
+                return False
             
             return True
         
         except Exception as e:
-            print(f"⚠️ Sample {idx}: Validation error: {e}")
+            logger.warning(f"⚠️ Sample {idx}: Validation error: {e}")
             return False
+    
+    def _extract_sample_components(self, sample: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+        """
+        Extract components exactly like arb_inference.py process_chatml_sample method.
+        
+        Returns:
+            Tuple of (ref_audio_path, ref_text, target_text, speaker_id)
+        """
+        try:
+            messages = sample["messages"]
+            
+            ref_audio_path = None
+            ref_text = None
+            target_text = None
+            speaker_id = sample.get("speaker", "unknown")
+            
+            # Parse messages following arb_inference.py pattern
+            for message in messages:
+                if message["role"] == "user":
+                    content = message["content"]
+                    if isinstance(content, list):
+                        # Look for text and audio content
+                        text_parts = []
+                        for item in content:
+                            if item["type"] == "text":
+                                text_parts.append(item["text"])
+                            elif item["type"] == "audio":
+                                if ref_audio_path is None:  # First audio is reference
+                                    ref_audio_path = item["audio_url"]
+                        
+                        if len(text_parts) >= 2:
+                            ref_text = text_parts[0]  # First text is reference
+                            # Look for target text in the format "Please generate speech for given text..."
+                            for text_part in text_parts[1:]:
+                                if "Please generate speech" in text_part:
+                                    # Extract target text after the instruction
+                                    target_text = text_part.split(":")[-1].strip()
+                                    break
+                            if target_text is None and len(text_parts) > 1:
+                                target_text = text_parts[-1]  # Last text as fallback
+                    elif isinstance(content, str):
+                        # Simple string content - determine if it's reference or target
+                        if ref_text is None:
+                            ref_text = content
+                        else:
+                            target_text = content
+                
+                elif message["role"] == "assistant":
+                    content = message["content"]
+                    if isinstance(content, dict) and content.get("type") == "audio":
+                        if ref_audio_path is None:
+                            ref_audio_path = content["audio_url"]
+            
+            return ref_audio_path, ref_text, target_text, speaker_id
+            
+        except Exception as e:
+            logger.error(f"Error extracting sample components: {e}")
+            return None, None, None, None
     
     def _resolve_audio_path(self, audio_url: str) -> Path:
         """Resolve audio path (handle both absolute and relative paths)."""
@@ -137,76 +214,205 @@ class VoiceCloningDataset(Dataset):
             audio_path = self.audio_base_path / audio_path
         return audio_path
     
+    def _create_inference_aligned_messages(
+        self, 
+        ref_text: str, 
+        ref_audio_path: str, 
+        target_text: str
+    ) -> List[Message]:
+        """
+        Create messages following EXACT arb_inference.py patterns.
+        
+        This matches the _prepare_generation_context method in arb_inference.py.
+        """
+        messages = [
+            # System message (concise like arb_inference.py)
+            Message(
+                role="system",
+                content="Generate speech in the provided voice."
+            ),
+            # User message with reference text and audio token
+            Message(
+                role="user", 
+                content=f"{ref_text} <|audio_bos|><|AUDIO|><|audio_eos|>"
+            ),
+            # Assistant message with reference audio
+            Message(
+                role="assistant",
+                content=AudioContent(audio_url=ref_audio_path)
+            ),
+            # User message with target text
+            Message(
+                role="user",
+                content=target_text
+            )
+        ]
+        
+        return messages
+    
+    def _process_reference_audio_dual_pathway(
+        self, 
+        ref_audio_path: str
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], int]:
+        """
+        Process reference audio through dual pathway exactly like arb_inference.py.
+        
+        Returns:
+            Tuple of (ref_waveform, audio_tokens, sample_rate)
+        """
+        try:
+            # Load audio file
+            waveform, sr = torchaudio.load(ref_audio_path)
+            
+            # Convert to mono if stereo
+            if waveform.shape[0] > 1:
+                waveform = waveform.mean(dim=0, keepdim=True)
+            
+            # Resample to 16kHz for Whisper (matching arb_inference.py)
+            target_sr = 16000
+            if sr != target_sr:
+                resampler = T.Resample(sr, target_sr)
+                waveform_16k = resampler(waveform)
+            else:
+                waveform_16k = waveform
+            
+            # Encode audio tokens using DAC tokenizer
+            audio_tokens = self.audio_tokenizer.encode(ref_audio_path)
+            
+            return waveform_16k.squeeze(0), audio_tokens, target_sr
+        
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to process reference audio {ref_audio_path}: {e}")
+            return None, None, 16000
+    
+    def _create_training_sample(
+        self,
+        input_tokens: List[int],
+        label_tokens: List[int],
+        audio_tokens: Optional[torch.Tensor],
+        ref_waveform: Optional[torch.Tensor],
+        ref_sample_rate: int,
+        sample_idx: int
+    ) -> ChatMLDatasetSample:
+        """
+        Create ChatMLDatasetSample for training with proper teacher forcing setup.
+        
+        This method creates the sample structure needed for teacher forcing training
+        while maintaining compatibility with the collator used in inference.
+        """
+        # Process DAC tokens
+        if audio_tokens is not None:
+            audio_ids_concat = audio_tokens.cpu()
+            audio_ids_start = torch.tensor([0], dtype=torch.long)
+        else:
+            # Empty tensors if no audio (fallback)
+            audio_ids_concat = torch.zeros((12, 0), dtype=torch.long)  # 12 codebooks
+            audio_ids_start = torch.tensor([], dtype=torch.long)
+        
+        # Create sample with conditional Whisper processing
+        if self.force_whisper_embed and ref_waveform is not None:
+            # Full pipeline mode: include waveforms for Whisper conditioning
+            logger.debug(f"✅ Creating training sample {sample_idx} with Whisper conditioning: waveform shape={ref_waveform.shape}")
+            
+            sample = ChatMLDatasetSample(
+                input_ids=torch.LongTensor(input_tokens),
+                label_ids=torch.LongTensor(label_tokens) if label_tokens else None,
+                audio_ids_concat=audio_ids_concat,
+                audio_ids_start=audio_ids_start,
+                audio_waveforms_concat=ref_waveform,
+                audio_waveforms_start=torch.tensor([0], dtype=torch.long),
+                audio_sample_rate=torch.tensor([ref_sample_rate], dtype=torch.float32),
+                audio_speaker_indices=torch.tensor([0], dtype=torch.long),
+                # Add target audio tokens as labels for teacher forcing
+                audio_label_ids_concat=audio_ids_concat if audio_tokens is not None else None,
+            )
+        else:
+            # DAC-only mode: follow serve_engine.py pattern
+            logger.debug(f"✅ Creating training sample {sample_idx} in DAC-only mode: DAC tokens shape={audio_ids_concat.shape}")
+            
+            sample = ChatMLDatasetSample(
+                input_ids=torch.LongTensor(input_tokens),
+                label_ids=torch.LongTensor(label_tokens) if label_tokens else None,
+                audio_ids_concat=audio_ids_concat,
+                audio_ids_start=audio_ids_start,
+                audio_waveforms_concat=torch.tensor([]),  # Empty tensor
+                audio_waveforms_start=torch.tensor([], dtype=torch.long),
+                audio_sample_rate=torch.tensor([], dtype=torch.float32),
+                audio_speaker_indices=torch.tensor([], dtype=torch.long),
+                # Add target audio tokens as labels for teacher forcing
+                audio_label_ids_concat=audio_ids_concat if audio_tokens is not None else None,
+            )
+        
+        return sample
+    
     def __len__(self):
         return len(self.samples)
     
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, idx: int) -> ChatMLDatasetSample:
         """
-        Get a training sample processed through prepare_chatml_sample.
+        Get a training sample processed exactly like arb_inference.py.
         
-        Returns:
-            Dictionary containing:
-            - input_tokens: Input token sequence
-            - label_tokens: Label token sequence  
-            - audio_contents: List of AudioContent objects
-            - speaker_id: Speaker identifier
-            - audio_ids: List of encoded audio token sequences
+        This method follows the same pipeline as the inference implementation
+        to ensure perfect alignment between training and inference.
         """
         try:
             sample = self.samples[idx]
             
-            # Use existing prepare_chatml_sample function
-            input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
-                sample, self.tokenizer
+            # Extract components using arb_inference.py pattern
+            ref_audio_path, ref_text, target_text, speaker_id = self._extract_sample_components(sample)
+            
+            if not all([ref_audio_path, ref_text, target_text]):
+                logger.warning(f"⚠️ Failed to extract components from sample {idx}, using empty sample")
+                return self._create_empty_sample(idx)
+            
+            # Resolve audio path
+            resolved_audio_path = str(self._resolve_audio_path(ref_audio_path))
+            
+            # Create messages following arb_inference.py patterns
+            messages = self._create_inference_aligned_messages(ref_text, resolved_audio_path, target_text)
+            
+            # Prepare tokens using existing prepare_chatml_sample function
+            input_tokens, label_tokens, audio_contents, _ = prepare_chatml_sample(
+                ChatMLSample(messages=messages), self.tokenizer
             )
             
-            # Handle None returns from prepare_chatml_sample
             if input_tokens is None:
-                print(f"⚠️ Failed to process sample {idx}, using empty tokens")
-                input_tokens = []
-                label_tokens = []
-                audio_contents = []
-                speaker_id = None
+                logger.warning(f"⚠️ Failed to process tokens for sample {idx}, using empty sample")
+                return self._create_empty_sample(idx)
             
-            # Process audio using existing audio_tokenizer
-            audio_ids_list = []
-            processed_audio_contents = []
+            # Process reference audio through dual pathway
+            ref_waveform, audio_tokens, ref_sample_rate = self._process_reference_audio_dual_pathway(resolved_audio_path)
             
-            for audio_content in audio_contents:
-                if audio_content and hasattr(audio_content, 'audio_url') and audio_content.audio_url:
-                    try:
-                        audio_path = self._resolve_audio_path(audio_content.audio_url)
-                        
-                        # Encode audio using existing audio tokenizer
-                        audio_codes = self.audio_tokenizer.encode(str(audio_path))
-                        audio_ids_list.append(audio_codes)
-                        processed_audio_contents.append(audio_content)
-                        
-                    except Exception as e:
-                        print(f"⚠️ Failed to encode audio {audio_content.audio_url}: {e}")
-                        # Continue without this audio
-                        continue
+            # Create training sample with teacher forcing setup
+            training_sample = self._create_training_sample(
+                input_tokens=input_tokens,
+                label_tokens=label_tokens or [],
+                audio_tokens=audio_tokens,
+                ref_waveform=ref_waveform,
+                ref_sample_rate=ref_sample_rate,
+                sample_idx=idx
+            )
             
-            return {
-                'input_tokens': torch.tensor(input_tokens, dtype=torch.long) if input_tokens and TORCH_AVAILABLE else input_tokens,
-                'label_tokens': torch.tensor(label_tokens, dtype=torch.long) if label_tokens and TORCH_AVAILABLE else label_tokens,
-                'audio_contents': processed_audio_contents,
-                'speaker_id': speaker_id,
-                'audio_ids': audio_ids_list,
-                'sample_idx': idx,
-            }
+            return training_sample
         
         except Exception as e:
-            print(f"⚠️ Error processing sample {idx}: {e}")
-            # Return empty sample to prevent training failure
-            return {
-                'input_tokens': torch.tensor([], dtype=torch.long) if TORCH_AVAILABLE else [],
-                'label_tokens': torch.tensor([], dtype=torch.long) if TORCH_AVAILABLE else [],
-                'audio_contents': [],
-                'speaker_id': None,
-                'audio_ids': [],
-                'sample_idx': idx,
-            }
+            logger.error(f"⚠️ Error processing sample {idx}: {e}")
+            return self._create_empty_sample(idx)
+    
+    def _create_empty_sample(self, idx: int) -> ChatMLDatasetSample:
+        """Create an empty sample as fallback to prevent training failure."""
+        logger.debug(f"Creating empty fallback sample for index {idx}")
+        
+        return ChatMLDatasetSample(
+            input_ids=torch.tensor([], dtype=torch.long),
+            label_ids=torch.tensor([], dtype=torch.long),
+            audio_ids_concat=torch.zeros((12, 0), dtype=torch.long),
+            audio_ids_start=torch.tensor([], dtype=torch.long),
+            audio_waveforms_concat=torch.tensor([]),
+            audio_waveforms_start=torch.tensor([], dtype=torch.long),
+            audio_sample_rate=torch.tensor([], dtype=torch.float32),
+            audio_speaker_indices=torch.tensor([], dtype=torch.long),
+        )
 
 
 def create_sample_data(output_path: str, num_samples: int = 10):

@@ -1,0 +1,88 @@
+"""
+Audio Quality Validation and Silence Detection for Higgs-Audio Training.
+
+Provides debugging capabilities for audio generation issues:
+- Silence detection and analysis
+- Audio quality metrics validation
+- Reference audio conditioning verification
+- Token sequence integrity checking
+- Audio generation termination validation
+
+Based on patterns from silence-detection-debug quest document and arb_inference.py.
+"""
+
+import torch
+import torch.nn.functional as F
+import numpy as np
+import torchaudio
+from typing import Dict, Any, Optional, List, Tuple
+from pathlib import Path
+from loguru import logger
+import json
+
+
+class AudioQualityValidator:
+    """
+    Comprehensive audio quality validation for training debugging.
+    
+    Provides detailed analysis of audio generation issues, particularly
+    silence generation problems identified in the quest documents.
+    """
+    
+    def __init__(
+        self,
+        silence_threshold: float = 1e-6,
+        min_audio_length: float = 1.0,  # seconds
+        max_audio_length: float = 30.0,  # seconds
+        max_silence_ratio: float = 0.3,
+        target_sample_rate: int = 24000
+    ):
+        """
+        Initialize audio quality validator.
+        
+        Args:
+            silence_threshold: Energy threshold below which audio is considered silence
+            min_audio_length: Minimum acceptable audio length in seconds
+            max_audio_length: Maximum acceptable audio length in seconds
+            max_silence_ratio: Maximum ratio of silence allowed in audio
+            target_sample_rate: Expected output sample rate
+        """
+        self.silence_threshold = silence_threshold
+        self.min_audio_length = min_audio_length
+        self.max_audio_length = max_audio_length
+        self.max_silence_ratio = max_silence_ratio
+        self.target_sample_rate = target_sample_rate
+        
+        self.validation_results = []
+    
+    def validate_audio_waveform(
+        self,
+        waveform: np.ndarray,
+        sample_rate: int,
+        audio_id: str = "unknown"
+    ) -> Dict[str, Any]:
+        """
+        Comprehensive validation of generated audio waveform.
+        
+        Args:
+            waveform: Audio waveform as numpy array
+            sample_rate: Sample rate of the audio
+            audio_id: Identifier for this audio sample
+            
+        Returns:
+            Dictionary containing validation results and metrics
+        """
+        results = {
+            'audio_id': audio_id,
+            'sample_rate': sample_rate,
+            'duration': len(waveform) / sample_rate,
+            'valid': True,
+            'issues': [],
+            'metrics': {}
+        }
+        
+        # 1. Basic waveform validation
+        self._validate_basic_properties(waveform, results)\n        \n        # 2. Silence detection and analysis\n        self._analyze_silence(waveform, sample_rate, results)\n        \n        # 3. Audio quality metrics\n        self._compute_quality_metrics(waveform, sample_rate, results)\n        \n        # 4. Duration validation\n        self._validate_duration(results)\n        \n        # 5. Dynamic range analysis\n        self._analyze_dynamic_range(waveform, results)\n        \n        # Log results\n        self._log_validation_results(results)\n        \n        # Store for batch analysis\n        self.validation_results.append(results)\n        \n        return results\n    \n    def _validate_basic_properties(self, waveform: np.ndarray, results: Dict[str, Any]):\n        \"\"\"Validate basic waveform properties.\"\"\"\n        # Check for NaN or infinite values\n        if np.isnan(waveform).any():\n            results['issues'].append('Contains NaN values')\n            results['valid'] = False\n        \n        if np.isinf(waveform).any():\n            results['issues'].append('Contains infinite values')\n            results['valid'] = False\n        \n        # Check waveform amplitude range\n        max_amplitude = np.abs(waveform).max()\n        results['metrics']['max_amplitude'] = float(max_amplitude)\n        \n        if max_amplitude > 1.0:\n            results['issues'].append(f'Amplitude clipping detected: {max_amplitude:.3f}')\n        elif max_amplitude < 1e-8:\n            results['issues'].append('Extremely low amplitude (near silence)')\n            results['valid'] = False\n    \n    def _analyze_silence(self, waveform: np.ndarray, sample_rate: int, results: Dict[str, Any]):\n        \"\"\"Analyze silence patterns in the audio.\"\"\"\n        # Compute RMS energy in sliding windows\n        window_size = int(0.1 * sample_rate)  # 100ms windows\n        hop_size = window_size // 2\n        \n        energies = []\n        for i in range(0, len(waveform) - window_size, hop_size):\n            window = waveform[i:i + window_size]\n            energy = np.sqrt(np.mean(window ** 2))\n            energies.append(energy)\n        \n        energies = np.array(energies)\n        \n        # Detect silence segments\n        silence_mask = energies < self.silence_threshold\n        silence_ratio = silence_mask.sum() / len(silence_mask)\n        \n        results['metrics']['silence_ratio'] = float(silence_ratio)\n        results['metrics']['avg_energy'] = float(energies.mean())\n        results['metrics']['min_energy'] = float(energies.min())\n        results['metrics']['max_energy'] = float(energies.max())\n        \n        # Check for problematic silence patterns\n        if silence_ratio > self.max_silence_ratio:\n            results['issues'].append(f'Excessive silence: {silence_ratio:.1%} (threshold: {self.max_silence_ratio:.1%})')\n            results['valid'] = False\n        \n        # Check for complete silence\n        if silence_ratio > 0.95:\n            results['issues'].append('Audio is almost completely silent')\n            results['valid'] = False\n        \n        # Analyze silence distribution\n        silence_segments = self._find_silence_segments(silence_mask, sample_rate, hop_size)\n        results['metrics']['silence_segments'] = silence_segments\n        \n        # Check for extended silence at the end (common issue)\n        if len(silence_segments) > 0:\n            last_segment = silence_segments[-1]\n            total_duration = len(waveform) / sample_rate\n            if last_segment['duration'] > total_duration * 0.3:\n                results['issues'].append(f'Extended silence at end: {last_segment[\"duration\"]:.1f}s')\n    \n    def _find_silence_segments(self, silence_mask: np.ndarray, sample_rate: int, hop_size: int) -> List[Dict]:\n        \"\"\"Find continuous silence segments.\"\"\"\n        segments = []\n        in_silence = False\n        start_idx = 0\n        \n        for i, is_silent in enumerate(silence_mask):\n            if is_silent and not in_silence:\n                # Start of silence segment\n                in_silence = True\n                start_idx = i\n            elif not is_silent and in_silence:\n                # End of silence segment\n                in_silence = False\n                duration = (i - start_idx) * hop_size / sample_rate\n                segments.append({\n                    'start_time': start_idx * hop_size / sample_rate,\n                    'duration': duration\n                })\n        \n        # Handle case where audio ends in silence\n        if in_silence:\n            duration = (len(silence_mask) - start_idx) * hop_size / sample_rate\n            segments.append({\n                'start_time': start_idx * hop_size / sample_rate,\n                'duration': duration\n            })\n        \n        return segments\n    \n    def _compute_quality_metrics(self, waveform: np.ndarray, sample_rate: int, results: Dict[str, Any]):\n        \"\"\"Compute audio quality metrics.\"\"\"\n        # Signal-to-noise ratio estimation\n        signal_power = np.mean(waveform ** 2)\n        results['metrics']['signal_power'] = float(signal_power)\n        \n        # Spectral analysis\n        if len(waveform) > 1024:\n            # Compute spectral centroid\n            stft = np.abs(np.fft.fft(waveform[:min(len(waveform), 2048)]))\n            freqs = np.fft.fftfreq(len(stft), 1/sample_rate)\n            \n            # Only use positive frequencies\n            positive_freqs = freqs[:len(freqs)//2]\n            positive_stft = stft[:len(stft)//2]\n            \n            if positive_stft.sum() > 0:\n                spectral_centroid = np.sum(positive_freqs * positive_stft) / positive_stft.sum()\n                results['metrics']['spectral_centroid'] = float(spectral_centroid)\n            \n            # High frequency content (above 8kHz)\n            high_freq_mask = positive_freqs > 8000\n            if high_freq_mask.any():\n                high_freq_energy = positive_stft[high_freq_mask].sum()\n                total_energy = positive_stft.sum()\n                high_freq_ratio = high_freq_energy / total_energy\n                results['metrics']['high_freq_ratio'] = float(high_freq_ratio)\n    \n    def _validate_duration(self, results: Dict[str, Any]):\n        \"\"\"Validate audio duration.\"\"\"\n        duration = results['duration']\n        \n        if duration < self.min_audio_length:\n            results['issues'].append(f'Audio too short: {duration:.1f}s (min: {self.min_audio_length}s)')\n        elif duration > self.max_audio_length:\n            results['issues'].append(f'Audio too long: {duration:.1f}s (max: {self.max_audio_length}s)')\n            \n        results['metrics']['duration_valid'] = self.min_audio_length <= duration <= self.max_audio_length\n    \n    def _analyze_dynamic_range(self, waveform: np.ndarray, results: Dict[str, Any]):\n        \"\"\"Analyze dynamic range of the audio.\"\"\"\n        if len(waveform) == 0:\n            return\n            \n        # RMS levels in dB\n        rms = np.sqrt(np.mean(waveform ** 2))\n        if rms > 0:\n            rms_db = 20 * np.log10(rms)\n            results['metrics']['rms_db'] = float(rms_db)\n            \n            # Peak levels\n            peak = np.abs(waveform).max()\n            if peak > 0:\n                peak_db = 20 * np.log10(peak)\n                crest_factor = peak_db - rms_db\n                results['metrics']['peak_db'] = float(peak_db)\n                results['metrics']['crest_factor'] = float(crest_factor)\n                \n                # Check for poor dynamic range\n                if crest_factor < 3:\n                    results['issues'].append(f'Low dynamic range: {crest_factor:.1f}dB crest factor')\n    \n    def _log_validation_results(self, results: Dict[str, Any]):\n        \"\"\"Log validation results.\"\"\"\n        audio_id = results['audio_id']\n        \n        if results['valid']:\n            logger.info(f\"✅ Audio {audio_id}: Valid ({results['duration']:.1f}s, {results['metrics']['silence_ratio']:.1%} silence)\")\n        else:\n            logger.error(f\"❌ Audio {audio_id}: Invalid - {', '.join(results['issues'])}\")\n            \n        # Log detailed metrics in debug mode\n        logger.debug(f\"📊 Audio {audio_id} metrics: {json.dumps(results['metrics'], indent=2)}\")\n    \n    def validate_audio_tokens(\n        self,\n        audio_tokens: torch.Tensor,\n        audio_id: str = \"unknown\"\n    ) -> Dict[str, Any]:\n        \"\"\"\n        Validate audio token sequence for generation issues.\n        \n        Args:\n            audio_tokens: Audio tokens tensor [num_codebooks, seq_len]\n            audio_id: Identifier for this audio\n            \n        Returns:\n            Dictionary containing token validation results\n        \"\"\"\n        results = {\n            'audio_id': audio_id,\n            'valid': True,\n            'issues': [],\n            'metrics': {}\n        }\n        \n        if audio_tokens is None or audio_tokens.numel() == 0:\n            results['issues'].append('Empty or None audio tokens')\n            results['valid'] = False\n            return results\n        \n        # Token sequence analysis\n        num_codebooks, seq_len = audio_tokens.shape\n        results['metrics']['num_codebooks'] = num_codebooks\n        results['metrics']['sequence_length'] = seq_len\n        \n        # Check for expected codebook count\n        if num_codebooks != 12:  # Standard DAC configuration\n            results['issues'].append(f'Unexpected codebook count: {num_codebooks} (expected 12)')\n        \n        # Token diversity analysis\n        unique_tokens_per_codebook = []\n        for cb in range(num_codebooks):\n            unique_tokens = torch.unique(audio_tokens[cb]).numel()\n            unique_tokens_per_codebook.append(unique_tokens)\n        \n        avg_unique_tokens = np.mean(unique_tokens_per_codebook)\n        results['metrics']['avg_unique_tokens'] = float(avg_unique_tokens)\n        results['metrics']['min_unique_tokens'] = int(min(unique_tokens_per_codebook))\n        results['metrics']['max_unique_tokens'] = int(max(unique_tokens_per_codebook))\n        \n        # Check for low diversity (indication of generation issues)\n        if avg_unique_tokens < seq_len * 0.1:\n            results['issues'].append(f'Low token diversity: {avg_unique_tokens:.1f} unique tokens per codebook')\n            results['valid'] = False\n        \n        # Check for repeated patterns (common in failed generation)\n        self._analyze_token_patterns(audio_tokens, results)\n        \n        logger.debug(f\"🎵 Token validation {audio_id}: {seq_len} tokens, {avg_unique_tokens:.1f} avg unique\")\n        \n        return results\n    \n    def _analyze_token_patterns(self, audio_tokens: torch.Tensor, results: Dict[str, Any]):\n        \"\"\"Analyze for problematic token patterns.\"\"\"\n        num_codebooks, seq_len = audio_tokens.shape\n        \n        # Check for excessive repetition in each codebook\n        for cb in range(min(num_codebooks, 4)):  # Check first 4 codebooks\n            tokens = audio_tokens[cb]\n            \n            # Simple repetition detection\n            if seq_len > 10:\n                # Check for runs of identical tokens\n                diff = torch.diff(tokens)\n                zero_diff_count = (diff == 0).sum().item()\n                repetition_ratio = zero_diff_count / (seq_len - 1)\n                \n                if repetition_ratio > 0.8:\n                    results['issues'].append(f'Codebook {cb}: Excessive repetition ({repetition_ratio:.1%})')\n                    results['valid'] = False\n    \n    def generate_validation_report(self, output_path: str):\n        \"\"\"Generate comprehensive validation report.\"\"\"\n        if not self.validation_results:\n            logger.warning(\"No validation results to report\")\n            return\n        \n        # Aggregate statistics\n        total_samples = len(self.validation_results)\n        valid_samples = sum(1 for r in self.validation_results if r['valid'])\n        \n        report = {\n            'summary': {\n                'total_samples': total_samples,\n                'valid_samples': valid_samples,\n                'validation_rate': valid_samples / total_samples,\n            },\n            'common_issues': self._analyze_common_issues(),\n            'quality_metrics': self._aggregate_quality_metrics(),\n            'detailed_results': self.validation_results\n        }\n        \n        # Save report\n        with open(output_path, 'w') as f:\n            json.dump(report, f, indent=2)\n        \n        logger.info(f\"📊 Validation report saved: {output_path}\")\n        logger.info(f\"   Valid samples: {valid_samples}/{total_samples} ({valid_samples/total_samples:.1%})\")\n    \n    def _analyze_common_issues(self) -> Dict[str, int]:\n        \"\"\"Analyze most common validation issues.\"\"\"\n        issue_counts = {}\n        \n        for result in self.validation_results:\n            for issue in result['issues']:\n                # Normalize issue text for counting\n                normalized_issue = issue.split(':')[0]  # Take part before colon\n                issue_counts[normalized_issue] = issue_counts.get(normalized_issue, 0) + 1\n        \n        return dict(sorted(issue_counts.items(), key=lambda x: x[1], reverse=True))\n    \n    def _aggregate_quality_metrics(self) -> Dict[str, float]:\n        \"\"\"Aggregate quality metrics across all samples.\"\"\"\n        if not self.validation_results:\n            return {}\n        \n        # Collect metrics\n        metrics_lists = {}\n        for result in self.validation_results:\n            for metric, value in result['metrics'].items():\n                if isinstance(value, (int, float)):\n                    if metric not in metrics_lists:\n                        metrics_lists[metric] = []\n                    metrics_lists[metric].append(value)\n        \n        # Compute aggregated statistics\n        aggregated = {}\n        for metric, values in metrics_lists.items():\n            if values:\n                aggregated[f'{metric}_mean'] = float(np.mean(values))\n                aggregated[f'{metric}_std'] = float(np.std(values))\n                aggregated[f'{metric}_min'] = float(np.min(values))\n                aggregated[f'{metric}_max'] = float(np.max(values))\n        \n        return aggregated
+
+
+# Global audio quality validator instance\naudio_validator = AudioQualityValidator()\n

@@ -28,6 +28,8 @@ from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_a
 from .config import TrainingConfig
 from .dataset import VoiceCloningDataset
 from .loss import compute_training_loss, log_training_metrics, validate_loss_computation
+from .logging_utils import training_logger
+from .audio_validation import audio_validator
 
 
 class HiggsAudioTrainer:
@@ -48,10 +50,17 @@ class HiggsAudioTrainer:
         self.config = config
         self.device = self._setup_device()
         
-        logger.info(f"🚀 Initializing Higgs-Audio LoRA Trainer")
-        logger.info(f"   Device: {self.device}")
-        logger.info(f"   Model: {config.model_path}")
-        logger.info(f"   Audio Tokenizer: {config.audio_tokenizer_path}")
+        # Initialize comprehensive logging
+        training_logger.log_pipeline_initialization(
+            model_path=config.model_path,
+            audio_tokenizer_path=config.audio_tokenizer_path,
+            device=self.device,
+            collator_config={
+                'return_audio_in_tokens': False,  # serve_engine.py alignment
+                'round_to': 1,                    # serve_engine.py alignment
+                'encode_whisper_embed': 'auto',   # Will be determined
+            }
+        )
         
         # Validate configuration for training if needed
         # Note: Skip validation for utility operations like sample data creation
@@ -63,6 +72,13 @@ class HiggsAudioTrainer:
         self._setup_lora()
         self._setup_collator()
         self._setup_data()
+        
+        # Comprehensive pipeline validation
+        validation_results = training_logger.validate_training_pipeline(self)
+        if not validation_results.is_valid():
+            failed_checks = validation_results.get_failed_checks()
+            logger.warning(f"⚠️ Some validation checks failed: {', '.join(failed_checks)}")
+            logger.warning("Training will continue but may have issues")
         
         logger.info("✅ Higgs-Audio LoRA Trainer initialized successfully")
     
@@ -173,7 +189,7 @@ class HiggsAudioTrainer:
         if encode_whisper_embed:
             logger.info("🎤 Whisper embedding enabled for reference audio conditioning")
         
-        # Setup collator with exact configuration from generation.py
+        # CRITICAL: Setup collator with exact serve_engine.py configuration for training/inference alignment
         self.collator = HiggsAudioSampleCollator(
             whisper_processor=whisper_processor,
             audio_in_token_id=self.model_config.audio_in_token_idx,
@@ -182,15 +198,19 @@ class HiggsAudioTrainer:
             audio_stream_eos_id=self.model_config.audio_stream_eos_id,
             encode_whisper_embed=encode_whisper_embed,
             pad_token_id=self.model_config.pad_token_id,
-            return_audio_in_tokens=False,  # Match generation.py
+            return_audio_in_tokens=False,  # CRITICAL: serve_engine.py uses False
             use_delay_pattern=self.model_config.use_delay_pattern,
-            round_to=1,  # Match generation.py
+            round_to=1,  # CRITICAL: serve_engine.py uses fixed round_to=1
             audio_num_codebooks=self.model_config.audio_num_codebooks,
         )
         
         logger.info("✅ Data collator setup complete")
         logger.info(f"   Whisper embedding: {encode_whisper_embed}")
         logger.info(f"   Audio codebooks: {self.model_config.audio_num_codebooks}")
+        
+        # Validate collator alignment with serve_engine.py
+        expected_config = {'encode_whisper_embed': encode_whisper_embed}
+        training_logger.validate_collator_alignment(self.collator, expected_config)
     
     def _setup_data(self):
         """Setup training and validation datasets."""
@@ -301,6 +321,10 @@ class HiggsAudioTrainer:
                             
                             # DualFFN balance monitoring (critical for voice cloning)
                             self._monitor_dualffn_balance(loss_components)
+                            
+                            # Audio quality validation (if we have audio outputs)
+                            if hasattr(batch, 'audio_out_ids') and batch.audio_out_ids is not None:
+                                self._validate_training_audio_quality(batch, global_step)
                         
                         # Validation
                         if global_step % self.config.eval_steps == 0 and global_step > 0:
@@ -345,6 +369,36 @@ class HiggsAudioTrainer:
             elif balance_ratio < 0.1:
                 logger.warning(f"⚠️ DualFFN imbalance! Audio dominance: {balance_ratio:.2f}")
                 logger.warning("   This may impact text understanding")
+    
+    def _validate_training_audio_quality(self, batch, step: int):
+        """Validate audio quality during training for debugging."""
+        try:
+            # Validate audio tokens from the batch
+            if hasattr(batch, 'audio_out_ids') and batch.audio_out_ids is not None:
+                audio_tokens = batch.audio_out_ids
+                
+                # Validate token sequences
+                validation_results = audio_validator.validate_audio_tokens(
+                    audio_tokens=audio_tokens,
+                    audio_id=f"step_{step}_batch"
+                )
+                
+                if not validation_results['valid']:
+                    logger.warning(f"🎵 Step {step}: Audio token validation issues: {', '.join(validation_results['issues'])}")
+                
+                # Log token diversity metrics
+                metrics = validation_results['metrics']
+                if 'avg_unique_tokens' in metrics:
+                    avg_unique = metrics['avg_unique_tokens']
+                    seq_len = metrics.get('sequence_length', 0)
+                    logger.debug(f"🎵 Step {step}: Token diversity: {avg_unique:.1f} unique tokens (seq_len: {seq_len})")
+            
+            # Validate reference audio waveforms if present
+            if hasattr(batch, 'audio_features') and batch.audio_features is not None:
+                training_logger.validate_whisper_conditioning(self.collator, batch)
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Audio quality validation error at step {step}: {e}")
     
     def _validate(self) -> float:
         """Run validation and return average loss."""
