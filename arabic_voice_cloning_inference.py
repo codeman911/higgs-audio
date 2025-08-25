@@ -250,6 +250,8 @@ class ArabicVoiceCloningInference:
         selected_text = random.choice(self._arabic_samples)
         logger.info(f"Selected random Arabic text: {selected_text[:50]}{'...' if len(selected_text) > 50 else ''}")
         return selected_text
+    
+    def calculate_adaptive_max_tokens(self, target_text: str) -> int:
         """
         Calculate appropriate max tokens based on target text length.
         
@@ -838,7 +840,7 @@ class ArabicVoiceCloningInference:
         output_dir: str,
         sample_id: int,
         speaker_id: str,
-        target_text: str = None  # Added target text parameter
+        target_text: Optional[str] = None  # Added target text parameter
     ) -> dict:
         """
         Save both reference and generated audio with consistent naming.
@@ -859,6 +861,7 @@ class ArabicVoiceCloningInference:
         base_filename = f"arabic_generated_{sample_id:03d}_{speaker_id}"
         generated_file = os.path.join(output_dir, f"{base_filename}.wav")
         reference_file = os.path.join(output_dir, f"{base_filename}_ref.wav")
+        target_text_file = os.path.join(output_dir, f"{base_filename}.txt")  # Added target text file
         
         # CRITICAL: Validate generated audio before saving
         logger.info(f"\n=== Audio Validation for Sample {sample_id} ===")
@@ -905,6 +908,18 @@ class ArabicVoiceCloningInference:
             logger.error(f"❌ Failed to save generated audio: {e}")
             generated_file = None
         
+        # Save target text alongside audio files
+        if target_text is not None:
+            try:
+                with open(target_text_file, 'w', encoding='utf-8') as f:
+                    f.write(target_text)
+                logger.info(f"✅ Saved target text to {target_text_file}")
+            except Exception as e:
+                logger.error(f"❌ Failed to save target text: {e}")
+                target_text_file = None
+        else:
+            target_text_file = None
+        
         # Copy and validate reference audio (CRITICAL: Added reference audio saving)
         if os.path.exists(ref_audio_path):
             try:
@@ -934,6 +949,7 @@ class ArabicVoiceCloningInference:
         return {
             "generated_audio": generated_file,
             "reference_audio": reference_file,
+            "target_text_file": target_text_file,  # Added target text file
             "sample_rate": sample_rate,
             "audio_duration": audio_duration,
             "audio_energy": audio_energy,
@@ -947,7 +963,8 @@ class ArabicVoiceCloningInference:
         temperature: float = 0.3,
         top_k: int = 50,
         top_p: float = 0.95,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        arabic_samples_file: str = "arabic_text_samples.txt"  # Added parameter
     ) -> List[Dict[str, Any]]:
         """
         Process a ChatML file and generate Arabic speech for all samples.
@@ -980,7 +997,10 @@ class ArabicVoiceCloningInference:
             logger.info(f"Processing sample {i+1}/{len(samples)}")
             
             # Extract components from ChatML sample
-            ref_audio_path, ref_text, target_text, speaker_id = self.process_chatml_sample(sample)
+            ref_audio_path, ref_text, _, speaker_id = self.process_chatml_sample(sample)  # Ignore original target_text
+            
+            # Get random Arabic text sample instead of using ChatML target text
+            target_text = self.get_random_arabic_text(arabic_samples_file)
             
             if not all([ref_audio_path, ref_text, target_text]):
                 logger.warning(f"Skipping sample {i} due to missing components")
@@ -1006,13 +1026,14 @@ class ArabicVoiceCloningInference:
             if waveform is not None:
                 # Save both generated and reference audio (CRITICAL: Added reference audio saving)
                 file_info = self.save_reference_and_generated_audio(
-                    ref_audio_path, waveform, sample_rate, output_dir, i, speaker_id
+                    ref_audio_path, waveform, sample_rate, output_dir, i, speaker_id, target_text
                 )
                 
                 # Add comprehensive logging for debugging silence issues
                 logger.info(f"✅ Sample {i} completed successfully:")
                 logger.info(f"   - Generated audio: {file_info['generated_audio']}")
                 logger.info(f"   - Reference audio: {file_info['reference_audio']}")
+                logger.info(f"   - Target text file: {file_info['target_text_file']}")
                 logger.info(f"   - Audio duration: {len(waveform) / sample_rate:.2f}s")
                 logger.info(f"   - Audio stats: min={waveform.min():.4f}, max={waveform.max():.4f}, mean={waveform.mean():.4f}")
                 
@@ -1028,10 +1049,11 @@ class ArabicVoiceCloningInference:
                     "status": "success",
                     "output_file": file_info["generated_audio"],
                     "reference_file": file_info["reference_audio"],
+                    "target_text_file": file_info["target_text_file"],  # Added target text file
                     "speaker_id": speaker_id,
                     "ref_audio": ref_audio_path,
                     "ref_text": ref_text,
-                    "target_text": target_text,
+                    "target_text": target_text,  # Now contains random Arabic text
                     "generated_text": text_output,
                     "duration_estimate": f"{len(target_text.split())} words"
                 })
@@ -1251,6 +1273,12 @@ class ArabicVoiceCloningInference:
     default=True,
     help="Enable adaptive token calculation based on text length"
 )
+@click.option(
+    "--arabic_text_samples",
+    type=str,
+    default="arabic_text_samples.txt",
+    help="Path to Arabic text samples file for random text selection"
+)
 def main(
     chatml_file,
     output_dir,
@@ -1263,14 +1291,16 @@ def main(
     top_p,
     seed,
     max_new_tokens,
-    adaptive_max_tokens
+    adaptive_max_tokens,
+    arabic_text_samples
 ):
     """
     Arabic Zero-Shot Voice Cloning Inference Script
     
     Process ChatML format data to generate Arabic speech with reference voice characteristics.
+    Uses random Arabic text samples from the specified file for target text generation.
     """
-    logger.info("Starting Arabic Voice Cloning Inference")
+    logger.info("Starting Arabic Voice Cloning Inference with Random Arabic Text Samples")
     
     # Initialize inference engine
     inference_engine = ArabicVoiceCloningInference(
@@ -1282,6 +1312,11 @@ def main(
         use_static_kv_cache=True,
         adaptive_max_tokens=adaptive_max_tokens
     )
+    
+    # Load Arabic text samples
+    logger.info(f"Loading Arabic text samples from: {arabic_text_samples}")
+    arabic_samples = inference_engine.load_arabic_text_samples(arabic_text_samples)
+    logger.info(f"Loaded {len(arabic_samples)} Arabic text samples")
     
     # CRITICAL: Validate pipeline configuration for debugging silence issues
     logger.info("\n🔍 Running comprehensive pipeline validation...")
@@ -1303,7 +1338,8 @@ def main(
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
-        seed=seed
+        seed=seed,
+        arabic_samples_file=arabic_text_samples
     )
     
     # Print comprehensive summary with debugging insights
@@ -1312,10 +1348,11 @@ def main(
     total = len(results)
     
     logger.info("\n" + "="*80)
-    logger.info("📊 ARABIC TTS PROCESSING SUMMARY")
+    logger.info("📊 ARABIC TTS PROCESSING SUMMARY (Random Text Mode)")
     logger.info("="*80)
     logger.info(f"📈 Overall Results: {successful}/{total} samples successful ({failed} failed)")
     logger.info(f"📋 Generated audio files saved in: {output_dir}")
+    logger.info(f"📝 Using random Arabic text samples from: {arabic_text_samples}")
     
     # Analyze results for silence issues
     if successful > 0:
@@ -1357,6 +1394,7 @@ def main(
             logger.info(f"   6. Address critical issues: {critical_issues}")
     
     logger.info("\n✨ Processing completed - check generated audio files for quality assessment")
+    logger.info("📝 Each audio file has corresponding .txt file with the target Arabic text used")
     logger.info("="*80)
 
 

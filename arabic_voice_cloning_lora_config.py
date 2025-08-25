@@ -16,7 +16,7 @@ Key Features:
 """
 
 import torch
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any, Union, Tuple
 from dataclasses import dataclass, field
 from loguru import logger
 
