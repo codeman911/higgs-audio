@@ -603,7 +603,7 @@ class ArabicVoiceCloningInference:
         # Create system message
         system_message = Message(
             role="system",
-            content="Generate speech in the provided voice."
+            content="Generate audio following instruction."
         )
         
         # Load and encode reference audio
@@ -713,7 +713,9 @@ class ArabicVoiceCloningInference:
         final_outputs = None
         
         for idx, chunk_text in enumerate(chunked_text):
-            logger.info(f"Processing chunk {idx}: {chunk_text[:100]}...")
+            logger.info(f"\n=== Processing Chunk {idx} ===")
+            logger.info(f"Target text: {chunk_text}")
+            logger.info(f"Target text length: {len(chunk_text)} chars, {len(chunk_text.split())} words")
             
             # Add user message with current chunk text
             generation_messages.append(
@@ -725,7 +727,12 @@ class ArabicVoiceCloningInference:
             
             # Create ChatML sample with accumulated context
             chatml_sample = ChatMLSample(messages=messages + generation_messages)
-            input_tokens, _, _, _ = prepare_chatml_sample(chatml_sample, self.tokenizer)
+            try:
+                input_tokens, _, _, _ = prepare_chatml_sample(chatml_sample, self.tokenizer)
+            except:
+                # Handle different function signature
+                result = prepare_chatml_sample(chatml_sample, self.tokenizer)
+                input_tokens = result[0]  # Take the first element which should be input_tokens
             
             # Add assistant header for generation
             postfix = self.tokenizer.encode(
@@ -779,6 +786,7 @@ class ArabicVoiceCloningInference:
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
+                past_key_values_buckets=None,  # We don't use static KV cache like generation.py
                 ras_win_len=7,  # generation.py default
                 ras_win_max_num_repeat=2,  # generation.py default
                 stop_strings=["<|end_of_text|>", "<|eot_id|>"],
@@ -796,7 +804,7 @@ class ArabicVoiceCloningInference:
                 if self.config.use_delay_pattern:
                     audio_out_ids = revert_delay_pattern(audio_out_ids)
                 # CRITICAL: generation.py exact pattern with BOS/EOS stripping
-                step_audio_out_ids_l.append(audio_out_ids.clip(0, self.audio_codebook_size - 1)[:, 1:-1])
+                step_audio_out_ids_l.append(audio_out_ids.clip(0, self.audio_tokenizer.codebook_size - 1)[:, 1:-1])
             
             audio_out_ids = torch.concat(step_audio_out_ids_l, dim=1)
             audio_out_ids_l.append(audio_out_ids)
@@ -813,7 +821,16 @@ class ArabicVoiceCloningInference:
         # Final processing following generation.py
         if final_outputs is not None:
             logger.info(f"========= Final Text output =========" )
-            logger.info(self.tokenizer.decode(final_outputs[0][0]))
+            generated_text = self.tokenizer.decode(final_outputs[0][0])
+            logger.info(f"Full generated text: {generated_text}")
+            
+            # Extract just the target text part (after the last assistant header)
+            assistant_header = "<|start_header_id|>assistant<|end_header_id|>"
+            if assistant_header in generated_text:
+                target_part = generated_text.split(assistant_header)[-1].strip()
+                logger.info(f"Target text part: {target_part}")
+            
+            logger.info(f"Expected target text: {chunked_text[0] if chunked_text else 'N/A'}")
             
             concat_audio_out_ids = torch.concat(audio_out_ids_l, dim=1)
             
