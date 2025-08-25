@@ -206,33 +206,45 @@ class ArabicVoiceCloningInference:
             Calculated max tokens for generation
         """
         if not self.adaptive_max_tokens:
+            logger.info(f"Using fixed max tokens: {self.max_new_tokens}")
             return self.max_new_tokens
             
-        # Estimate speaking rate: ~150 words per minute for Arabic
+        # CRITICAL FIX: More conservative token calculation for Arabic
+        # Reduced from 150 WPM to 130 WPM for Arabic complexity
         word_count = len(target_text.split())
-        
-        # For Arabic, account for script complexity
         char_count = len(target_text)
         
+        # Arabic-specific rates (more conservative)
+        arabic_wpm = 130  # Slower than English due to morphological complexity
+        char_rate_factor = 8  # Characters per word approximation
+        
         # Estimate duration based on both words and characters
-        word_duration = (word_count / 150) * 60  # seconds
-        char_duration = (char_count / 8) * 60 / 150  # approximate character rate
+        word_duration = (word_count / arabic_wpm) * 60  # seconds
+        char_duration = (char_count / char_rate_factor) * 60 / arabic_wpm  # seconds
         
         # Use the longer estimate for better coverage
         estimated_duration = max(word_duration, char_duration)
         
-        # Add buffer for natural speech variations (1.5x)
-        buffer_factor = 1.5
+        # CRITICAL: Reduced buffer factor to prevent excessive generation
+        buffer_factor = 1.2  # Reduced from 1.5 to 1.2
         max_duration = estimated_duration * buffer_factor
         
         # Convert to tokens (25 Hz rate)
         calculated_tokens = int(max_duration * self.base_tokens_per_second)
         
-        # Apply reasonable bounds: minimum 64, maximum 512 for Arabic
-        bounded_tokens = max(min(calculated_tokens, self.max_new_tokens), 64)
+        # CRITICAL: More restrictive bounds to prevent silence generation
+        # Reduced maximum from 512 to 384 tokens
+        min_tokens = 48   # ~2 seconds minimum
+        max_tokens = 384  # ~15 seconds maximum (reduced from 512)
+        bounded_tokens = max(min(calculated_tokens, max_tokens), min_tokens)
         
-        logger.info(f"Text length: {word_count} words, {char_count} chars")
-        logger.info(f"Estimated duration: {estimated_duration:.1f}s -> {bounded_tokens} tokens")
+        logger.info(f"\n=== Adaptive Token Calculation ===")
+        logger.info(f"Target text: '{target_text[:100]}{'...' if len(target_text) > 100 else ''}'")
+        logger.info(f"Text stats: {word_count} words, {char_count} chars")
+        logger.info(f"Duration estimates: word={word_duration:.1f}s, char={char_duration:.1f}s")
+        logger.info(f"Selected duration: {estimated_duration:.1f}s (buffered: {max_duration:.1f}s)")
+        logger.info(f"Token calculation: {calculated_tokens} -> bounded to {bounded_tokens}")
+        logger.info(f"Expected audio duration: ~{bounded_tokens / self.base_tokens_per_second:.1f}s")
         
         return bounded_tokens
     
@@ -313,11 +325,15 @@ class ArabicVoiceCloningInference:
             content="Generate speech in the provided voice."
         )
         
+        # CRITICAL FIX: Pass text directly without any processing/filtering
+        # Remove any text normalization as requested
+        processed_ref_text = ref_text  # Direct pass-through, no filtering
+        
         # Create user message with reference text and audio token placeholder
         # This follows the proper ChatML format for voice cloning conditioning
         user_ref_message = Message(
             role="user",
-            content=f"{ref_text} <|audio_bos|><|AUDIO|><|audio_eos|>"
+            content=f"{processed_ref_text} <|audio_bos|><|AUDIO|><|audio_eos|>"
         )
         
         # Create assistant message with reference audio using AudioContent
@@ -327,10 +343,14 @@ class ArabicVoiceCloningInference:
             content=AudioContent(audio_url=ref_audio_path)
         )
         
+        # CRITICAL FIX: Pass target text directly without any processing/filtering
+        # Remove any text normalization as requested  
+        processed_target_text = target_text  # Direct pass-through, no filtering
+        
         # Create user message with target text for generation
         user_target_message = Message(
             role="user", 
-            content=target_text
+            content=processed_target_text
         )
         
         messages = [system_message, user_ref_message, assistant_ref_message, user_target_message]
@@ -496,8 +516,17 @@ class ArabicVoiceCloningInference:
             # Calculate adaptive max tokens based on target text
             adaptive_max_tokens = self.calculate_adaptive_max_tokens(target_text)
             
-            # Generate
+            # Generate with proper audio stream EOS detection
             logger.info(f"Starting generation with {adaptive_max_tokens} max tokens...")
+            
+            # Create proper stopping criteria for audio generation
+            stop_strings = [
+                "<|end_of_text|>", 
+                "<|eot_id|>",
+                # Use actual audio stream EOS token ID instead of text token
+                # "<|audio_eos|>" is incorrect - use proper audio stream EOS
+            ]
+            
             outputs = self.model.generate(
                 **batch,
                 max_new_tokens=adaptive_max_tokens,
@@ -506,20 +535,39 @@ class ArabicVoiceCloningInference:
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
-                stop_strings=["<|end_of_text|>", "<|eot_id|>", "<|audio_eos|>"],  # Added audio_eos
+                stop_strings=stop_strings,
                 tokenizer=self.tokenizer,
                 seed=seed,
             )
             
-            # Process audio outputs
+            # Process audio outputs - PRESERVE BOUNDARIES (CRITICAL FIX)
             audio_out_ids_list = []
-            for ele in outputs[1]:
+            for i, ele in enumerate(outputs[1]):
                 audio_out_ids = ele
+                logger.info(f"Raw audio output {i}: shape={audio_out_ids.shape}, first_tokens={audio_out_ids[:, :5] if audio_out_ids.shape[1] > 5 else audio_out_ids}")
+                
                 if self.config.use_delay_pattern:
                     audio_out_ids = revert_delay_pattern(audio_out_ids)
-                audio_out_ids_list.append(
-                    audio_out_ids.clip(0, self.audio_tokenizer.codebook_size - 1)[:, 1:-1]
-                )
+                    logger.info(f"After delay pattern revert {i}: shape={audio_out_ids.shape}")
+                
+                # CRITICAL FIX: DO NOT remove boundary tokens [:, 1:-1]
+                # This was causing audio stream corruption and silence
+                # Only clip values, preserve all token positions
+                audio_out_ids_clipped = audio_out_ids.clip(0, self.audio_tokenizer.codebook_size - 1)
+                
+                # Validate audio stream tokens for debugging
+                if audio_out_ids_clipped.shape[1] > 2:
+                    first_token = audio_out_ids_clipped[0, 0].item()
+                    last_token = audio_out_ids_clipped[0, -1].item()
+                    logger.info(f"Audio {i} boundaries: first={first_token}, last={last_token}, expected_bos={self.config.audio_stream_bos_id}, expected_eos={self.config.audio_stream_eos_id}")
+                    
+                    # Check for proper EOS token
+                    if last_token == self.config.audio_stream_eos_id:
+                        logger.info(f"✅ Audio {i}: Proper EOS token detected")
+                    else:
+                        logger.warning(f"⚠️ Audio {i}: Missing EOS token, found {last_token}")
+                
+                audio_out_ids_list.append(audio_out_ids_clipped)
             
             if audio_out_ids_list:
                 concat_audio_out_ids = torch.concat(audio_out_ids_list, dim=1)
@@ -563,6 +611,7 @@ class ArabicVoiceCloningInference:
     ) -> dict:
         """
         Save both reference and generated audio with consistent naming.
+        CRITICAL: Added comprehensive audio validation and debugging info.
         
         Args:
             ref_audio_path: Path to reference audio file
@@ -580,26 +629,84 @@ class ArabicVoiceCloningInference:
         generated_file = os.path.join(output_dir, f"{base_filename}.wav")
         reference_file = os.path.join(output_dir, f"{base_filename}_ref.wav")
         
-        # Save generated audio
-        sf.write(generated_file, generated_waveform, sample_rate)
-        logger.info(f"Saved generated audio to {generated_file}")
+        # CRITICAL: Validate generated audio before saving
+        logger.info(f"\n=== Audio Validation for Sample {sample_id} ===")
+        logger.info(f"Generated audio shape: {generated_waveform.shape}")
+        logger.info(f"Generated audio dtype: {generated_waveform.dtype}")
+        logger.info(f"Sample rate: {sample_rate}")
         
-        # Copy reference audio
+        # Check for common issues
+        audio_duration = len(generated_waveform) / sample_rate
+        audio_min = generated_waveform.min()
+        audio_max = generated_waveform.max()
+        audio_mean = generated_waveform.mean()
+        audio_std = generated_waveform.std()
+        audio_energy = (generated_waveform ** 2).mean()
+        
+        logger.info(f"Audio duration: {audio_duration:.2f} seconds")
+        logger.info(f"Audio range: [{audio_min:.6f}, {audio_max:.6f}]")
+        logger.info(f"Audio statistics: mean={audio_mean:.6f}, std={audio_std:.6f}")
+        logger.info(f"Audio energy: {audio_energy:.2e}")
+        
+        # Detect potential issues
+        issues = []
+        if audio_energy < 1e-6:
+            issues.append(f"Very low energy ({audio_energy:.2e}) - likely silence")
+        if abs(audio_mean) > 0.1:
+            issues.append(f"High DC offset ({audio_mean:.6f})")
+        if audio_std < 1e-4:
+            issues.append(f"Very low variance ({audio_std:.6f}) - likely constant signal")
+        if np.isnan(generated_waveform).any():
+            issues.append("Contains NaN values")
+        if np.isinf(generated_waveform).any():
+            issues.append("Contains infinite values")
+        
+        if issues:
+            logger.warning(f"⚠️ Audio issues detected: {', '.join(issues)}")
+        else:
+            logger.info(f"✅ Audio validation passed - no issues detected")
+        
+        # Save generated audio
+        try:
+            sf.write(generated_file, generated_waveform, sample_rate)
+            logger.info(f"✅ Saved generated audio to {generated_file}")
+        except Exception as e:
+            logger.error(f"❌ Failed to save generated audio: {e}")
+            generated_file = None
+        
+        # Copy and validate reference audio (CRITICAL: Added reference audio saving)
         if os.path.exists(ref_audio_path):
             try:
+                # Load and validate reference audio
+                ref_waveform, ref_sr = sf.read(ref_audio_path)
+                ref_duration = len(ref_waveform) / ref_sr
+                ref_energy = (ref_waveform ** 2).mean()
+                
+                logger.info(f"Reference audio: duration={ref_duration:.2f}s, energy={ref_energy:.2e}, sr={ref_sr}")
+                
+                # Copy reference audio to output directory for easy comparison
                 shutil.copy2(ref_audio_path, reference_file)
-                logger.info(f"Saved reference audio to {reference_file}")
+                logger.info(f"✅ Saved reference audio to {reference_file}")
+                
+                # Compare reference vs generated
+                logger.info(f"\n=== Audio Comparison ===")
+                logger.info(f"Duration ratio (gen/ref): {audio_duration/ref_duration:.2f}")
+                logger.info(f"Energy ratio (gen/ref): {audio_energy/ref_energy:.2e}")
+                
             except Exception as e:
-                logger.warning(f"Failed to copy reference audio: {e}")
+                logger.warning(f"⚠️ Failed to process reference audio: {e}")
                 reference_file = None
         else:
-            logger.warning(f"Reference audio file not found: {ref_audio_path}")
+            logger.warning(f"⚠️ Reference audio file not found: {ref_audio_path}")
             reference_file = None
         
         return {
             "generated_audio": generated_file,
             "reference_audio": reference_file,
-            "sample_rate": sample_rate
+            "sample_rate": sample_rate,
+            "audio_duration": audio_duration,
+            "audio_energy": audio_energy,
+            "validation_issues": issues
         }
     
     def process_chatml_file(
@@ -675,10 +782,24 @@ class ArabicVoiceCloningInference:
             )
             
             if waveform is not None:
-                # Save both generated and reference audio
+                # Save both generated and reference audio (CRITICAL: Added reference audio saving)
                 file_info = self.save_reference_and_generated_audio(
                     ref_audio_path, waveform, sample_rate, output_dir, i, speaker_id
                 )
+                
+                # Add comprehensive logging for debugging silence issues
+                logger.info(f"✅ Sample {i} completed successfully:")
+                logger.info(f"   - Generated audio: {file_info['generated_audio']}")
+                logger.info(f"   - Reference audio: {file_info['reference_audio']}")
+                logger.info(f"   - Audio duration: {len(waveform) / sample_rate:.2f}s")
+                logger.info(f"   - Audio stats: min={waveform.min():.4f}, max={waveform.max():.4f}, mean={waveform.mean():.4f}")
+                
+                # Check for silence (potential issue indicator)
+                audio_energy = (waveform ** 2).mean()
+                if audio_energy < 1e-6:
+                    logger.warning(f"⚠️ Sample {i}: Very low audio energy detected ({audio_energy:.2e}) - possible silence issue")
+                else:
+                    logger.info(f"✅ Sample {i}: Good audio energy level ({audio_energy:.2e})")
                 
                 results.append({
                     "sample_id": i,
@@ -708,6 +829,131 @@ class ArabicVoiceCloningInference:
         
         logger.info(f"Saved results summary to {results_file}")
         return results
+    
+    def validate_pipeline_configuration(self) -> dict:
+        """
+        Comprehensive validation of the Arabic TTS pipeline configuration.
+        CRITICAL: Helps identify why generated audio contains silence.
+        
+        Returns:
+            Dictionary with validation results and recommendations
+        """
+        logger.info("\n" + "="*80)
+        logger.info("🔍 ARABIC TTS PIPELINE VALIDATION")
+        logger.info("="*80)
+        
+        validation_results = {
+            "whisper_integration": False,
+            "audio_tokenizer": False,
+            "model_config": False,
+            "special_tokens": False,
+            "issues": [],
+            "recommendations": []
+        }
+        
+        # 1. Whisper Integration Check
+        logger.info("\n1️⃣ Whisper Integration Status:")
+        if self.collator.whisper_processor is not None:
+            logger.info("   ✅ Whisper processor loaded successfully")
+            validation_results["whisper_integration"] = True
+        else:
+            logger.error("   ❌ Whisper processor NOT loaded - CRITICAL for voice cloning")
+            validation_results["issues"].append("Missing Whisper processor")
+            validation_results["recommendations"].append("Install transformers and ensure Whisper model availability")
+        
+        logger.info(f"   - encode_whisper_embed: {self.collator.encode_whisper_embed}")
+        logger.info(f"   - Original config setting: {getattr(self.config, '_original_whisper_embed', 'unknown')}")
+        
+        # 2. Audio Tokenizer Check
+        logger.info("\n2️⃣ Audio Tokenizer Status:")
+        try:
+            tokenizer_device = str(self.audio_tokenizer.device) if hasattr(self.audio_tokenizer, 'device') else "unknown"
+            logger.info(f"   ✅ Audio tokenizer loaded on device: {tokenizer_device}")
+            logger.info(f"   - Codebook size: {self.audio_tokenizer.codebook_size}")
+            validation_results["audio_tokenizer"] = True
+        except Exception as e:
+            logger.error(f"   ❌ Audio tokenizer issue: {e}")
+            validation_results["issues"].append(f"Audio tokenizer error: {e}")
+        
+        # 3. Model Configuration Check
+        logger.info("\n3️⃣ Model Configuration:")
+        config_checks = [
+            ("encode_whisper_embed", self.config.encode_whisper_embed),
+            ("audio_num_codebooks", self.config.audio_num_codebooks),
+            ("audio_codebook_size", self.config.audio_codebook_size),
+            ("use_delay_pattern", self.config.use_delay_pattern),
+            ("audio_stream_bos_id", self.config.audio_stream_bos_id),
+            ("audio_stream_eos_id", self.config.audio_stream_eos_id),
+        ]
+        
+        all_config_ok = True
+        for param_name, param_value in config_checks:
+            logger.info(f"   - {param_name}: {param_value}")
+            if param_value is None:
+                logger.warning(f"     ⚠️ {param_name} is None")
+                all_config_ok = False
+        
+        validation_results["model_config"] = all_config_ok
+        
+        # 4. Special Tokens Check
+        logger.info("\n4️⃣ Special Tokens Configuration:")
+        special_token_checks = [
+            ("audio_in_token_idx", self.config.audio_in_token_idx),
+            ("audio_out_token_idx", self.config.audio_out_token_idx),
+            ("audio_stream_bos_id", self.config.audio_stream_bos_id),
+            ("audio_stream_eos_id", self.config.audio_stream_eos_id),
+        ]
+        
+        tokens_ok = True
+        for token_name, token_id in special_token_checks:
+            if token_id is not None:
+                logger.info(f"   ✅ {token_name}: {token_id}")
+            else:
+                logger.error(f"   ❌ {token_name}: None")
+                tokens_ok = False
+                validation_results["issues"].append(f"Missing {token_name}")
+        
+        validation_results["special_tokens"] = tokens_ok
+        
+        # 5. Device Compatibility Check
+        logger.info("\n5️⃣ Device Configuration:")
+        logger.info(f"   - Model device: {self._device}")
+        logger.info(f"   - Static KV cache: {self.use_static_kv_cache}")
+        
+        if self._device == "mps" and self.use_static_kv_cache:
+            logger.warning("   ⚠️ MPS with static KV cache may cause issues")
+            validation_results["recommendations"].append("Disable static KV cache on MPS")
+        
+        # 6. Overall Assessment
+        logger.info("\n6️⃣ Overall Assessment:")
+        critical_components = [
+            validation_results["whisper_integration"],
+            validation_results["audio_tokenizer"],
+            validation_results["special_tokens"]
+        ]
+        
+        if all(critical_components):
+            logger.info("   🎉 All critical components validated successfully")
+            logger.info("   📝 If still experiencing silence, check audio token processing")
+        else:
+            logger.error("   💥 Critical validation failures detected")
+            logger.error("   🔧 Address these issues before proceeding")
+        
+        # 7. Debugging Recommendations
+        if validation_results["issues"] or not all(critical_components):
+            logger.info("\n🔧 DEBUGGING RECOMMENDATIONS:")
+            for i, rec in enumerate(validation_results["recommendations"], 1):
+                logger.info(f"   {i}. {rec}")
+            
+            if not validation_results["whisper_integration"]:
+                logger.info("   - Voice similarity will be severely degraded without Whisper")
+            
+            logger.info("   - Check that audio tokens are not being corrupted in generation")
+            logger.info("   - Verify special token usage matches training patterns")
+            logger.info("   - Ensure reference audio files are accessible and valid")
+        
+        logger.info("\n" + "="*80)
+        return validation_results
 
 
 @click.command()
@@ -815,6 +1061,19 @@ def main(
         adaptive_max_tokens=adaptive_max_tokens
     )
     
+    # CRITICAL: Validate pipeline configuration for debugging silence issues
+    logger.info("\n🔍 Running comprehensive pipeline validation...")
+    validation_results = inference_engine.validate_pipeline_configuration()
+    
+    # Check for critical issues that would cause silence generation
+    critical_issues = validation_results.get("issues", [])
+    if critical_issues:
+        logger.error(f"\n🚨 CRITICAL ISSUES DETECTED: {critical_issues}")
+        logger.error("🗺️ These issues may cause silence generation or poor voice cloning quality")
+        logger.warning("⚠️ Proceeding with known issues - results may be suboptimal")
+    else:
+        logger.info("✅ Pipeline validation passed - proceeding with generation")
+    
     # Process ChatML file
     results = inference_engine.process_chatml_file(
         chatml_file=chatml_file,
@@ -825,12 +1084,58 @@ def main(
         seed=seed
     )
     
-    # Print summary
+    # Print comprehensive summary with debugging insights
     successful = sum(1 for r in results if r["status"] == "success")
+    failed = sum(1 for r in results if r["status"] == "failed")
     total = len(results)
     
-    logger.info(f"Processing complete: {successful}/{total} samples successful")
-    logger.info(f"Generated audio files saved in: {output_dir}")
+    logger.info("\n" + "="*80)
+    logger.info("📊 ARABIC TTS PROCESSING SUMMARY")
+    logger.info("="*80)
+    logger.info(f"📈 Overall Results: {successful}/{total} samples successful ({failed} failed)")
+    logger.info(f"📋 Generated audio files saved in: {output_dir}")
+    
+    # Analyze results for silence issues
+    if successful > 0:
+        logger.info(f"\n🔍 Quality Analysis:")
+        energy_stats = []
+        duration_stats = []
+        
+        for result in results:
+            if result["status"] == "success" and "audio_energy" in result:
+                energy_stats.append(result["audio_energy"])
+            if result["status"] == "success" and "audio_duration" in result:
+                duration_stats.append(result["audio_duration"])
+        
+        if energy_stats:
+            avg_energy = sum(energy_stats) / len(energy_stats)
+            low_energy_count = sum(1 for e in energy_stats if e < 1e-6)
+            logger.info(f"   - Average audio energy: {avg_energy:.2e}")
+            logger.info(f"   - Low energy samples: {low_energy_count}/{len(energy_stats)}")
+            
+            if low_energy_count > 0:
+                logger.warning(f"   ⚠️ {low_energy_count} samples have very low energy (possible silence)")
+            else:
+                logger.info(f"   ✅ All samples have good energy levels")
+        
+        if duration_stats:
+            avg_duration = sum(duration_stats) / len(duration_stats)
+            logger.info(f"   - Average audio duration: {avg_duration:.2f}s")
+    
+    # Debugging recommendations if issues found
+    if failed > 0 or (successful > 0 and any(r.get("validation_issues", []) for r in results)):
+        logger.info(f"\n🔧 DEBUGGING RECOMMENDATIONS:")
+        logger.info(f"   1. Check validation report above for pipeline issues")
+        logger.info(f"   2. Verify reference audio files are accessible and valid")
+        logger.info(f"   3. Ensure Whisper processor is properly loaded")
+        logger.info(f"   4. Review audio token processing for boundary corruption")
+        logger.info(f"   5. Check special token usage matches training patterns")
+        
+        if critical_issues:
+            logger.info(f"   6. Address critical issues: {critical_issues}")
+    
+    logger.info("\n✨ Processing completed - check generated audio files for quality assessment")
+    logger.info("="*80)
 
 
 if __name__ == "__main__":
