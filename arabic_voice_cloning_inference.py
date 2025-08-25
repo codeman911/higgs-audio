@@ -539,10 +539,6 @@ class ArabicVoiceCloningInference:
                 stop_strings=stop_strings,
                 tokenizer=self.tokenizer,
                 seed=seed,
-                # Add repetition penalty to avoid token loops
-                repetition_penalty=1.05,
-                # Early stopping when EOS is hit
-                early_stopping=True,
             )
             
             # Process audio outputs - CRITICAL FIX: Follow official implementation pattern
