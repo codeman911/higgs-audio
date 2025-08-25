@@ -540,7 +540,7 @@ class ArabicVoiceCloningInference:
                 seed=seed,
             )
             
-            # Process audio outputs - PRESERVE BOUNDARIES (CRITICAL FIX)
+            # Process audio outputs - CRITICAL FIX: Follow official implementation pattern
             audio_out_ids_list = []
             for i, ele in enumerate(outputs[1]):
                 audio_out_ids = ele
@@ -550,9 +550,8 @@ class ArabicVoiceCloningInference:
                     audio_out_ids = revert_delay_pattern(audio_out_ids)
                     logger.info(f"After delay pattern revert {i}: shape={audio_out_ids.shape}")
                 
-                # CRITICAL FIX: DO NOT remove boundary tokens [:, 1:-1]
-                # This was causing audio stream corruption and silence
-                # Only clip values, preserve all token positions
+                # CRITICAL FIX: Follow official serve_engine.py pattern
+                # Strip BOS/EOS tokens and clip values (like official implementation)
                 audio_out_ids_clipped = audio_out_ids.clip(0, self.audio_tokenizer.codebook_size - 1)
                 
                 # Validate audio stream tokens for debugging
@@ -567,7 +566,15 @@ class ArabicVoiceCloningInference:
                     else:
                         logger.warning(f"⚠️ Audio {i}: Missing EOS token, found {last_token}")
                 
-                audio_out_ids_list.append(audio_out_ids_clipped)
+                # Strip boundary tokens like official implementation (serve_engine.py)
+                if audio_out_ids_clipped.shape[1] > 2:
+                    audio_out_ids_stripped = audio_out_ids_clipped[:, 1:-1]  # Remove BOS and EOS
+                    logger.info(f"Audio {i} after stripping boundaries: shape={audio_out_ids_stripped.shape}")
+                else:
+                    logger.warning(f"⚠️ Audio {i}: Sequence too short ({audio_out_ids_clipped.shape[1]}) to strip boundaries")
+                    audio_out_ids_stripped = audio_out_ids_clipped
+                
+                audio_out_ids_list.append(audio_out_ids_stripped)
             
             if audio_out_ids_list:
                 concat_audio_out_ids = torch.concat(audio_out_ids_list, dim=1)
