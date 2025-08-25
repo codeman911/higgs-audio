@@ -1,0 +1,82 @@
+# Arabic Voice Cloning Training Configuration
+# Optimized for 8xH200 GPU setup with 800 hours of training data
+
+# Model and data paths
+model_path: "bosonai/higgs-audio-v2-generation-3B-base"
+audio_tokenizer_path: "bosonai/higgs-audio-v2-tokenizer"
+data_path: "data/arabic_voice_cloning_chatml.json"
+output_dir: "./outputs/arabic_voice_cloning"
+
+# Training configuration
+training:
+  num_epochs: 3
+  batch_size: 1                    # Per GPU batch size
+  gradient_accumulation_steps: 8   # Effective batch size = 1 * 8 * 8 = 64
+  learning_rate: 2e-4
+  weight_decay: 0.01
+  warmup_steps: 500
+  max_grad_norm: 1.0
+  use_mixed_precision: true
+  gradient_checkpointing: true
+  dataloader_num_workers: 16       # Per GPU workers (16 * 8 = 128 total)
+  save_steps: 500
+  eval_steps: 250
+  logging_steps: 10
+  save_total_limit: 3
+
+# Dataset configuration  
+dataset:
+  max_audio_duration: 30.0         # Maximum audio duration in seconds
+  target_sample_rate: 16000        # Target sample rate for Whisper
+  min_audio_duration: 0.5          # Minimum audio duration
+  max_text_length: 512             # Maximum text length in tokens
+  min_text_length: 5               # Minimum text length in tokens
+  validate_on_init: true           # Validate all samples on initialization
+  teacher_forcing: true            # Use teacher forcing for training
+  return_labels: true              # Return labels for loss computation
+
+# LoRA configuration (optimized for voice cloning)
+lora:
+  r: 16                            # LoRA rank
+  lora_alpha: 32                   # LoRA scaling parameter  
+  lora_dropout: 0.1                # LoRA dropout
+  target_modules_mode: "comprehensive"  # Target both text and audio pathways
+  bias: "none"                     # No bias training
+  use_rslora: false                # Rank-stabilized LoRA
+  modules_to_save: ["audio_head", "lm_head"]  # Save these modules completely
+  enable_lora_for_audio_head: true # Enable LoRA for audio generation head
+  enable_lora_for_audio_projector: true  # Enable LoRA for audio projector
+
+# Loss function configuration
+loss:
+  text_loss_weight: 1.0            # Weight for text generation loss
+  audio_loss_weight: 1.0           # Weight for audio generation loss
+  contrastive_loss_weight: 0.1     # Weight for voice similarity loss
+  consistency_loss_weight: 0.05    # Weight for audio-text consistency
+  l2_regularization: 0.0           # L2 regularization strength
+  label_smoothing: 0.0             # Label smoothing for text tokens
+  audio_label_smoothing: 0.0       # Label smoothing for audio tokens
+  enable_curriculum_learning: true # Enable curriculum learning
+  curriculum_steps: 10000          # Steps to reach final curriculum weight
+
+# Distributed training (auto-detected from environment)
+distributed:
+  backend: "nccl"                  # Distributed backend
+  world_size: 8                    # Number of GPUs (auto-detected)
+  local_rank: -1                   # Local rank (auto-detected)
+
+# Monitoring and logging
+monitoring:
+  use_wandb: true                  # Use Weights & Biases
+  wandb_project: "higgs-audio-arabic-voice-cloning"
+  wandb_run_name: null             # Auto-generated if null
+  log_level: "INFO"                # Logging level
+
+# Hardware optimization for 8xH200
+hardware:
+  max_memory_usage: 0.95           # Maximum GPU memory usage (95%)
+  enable_cpu_offload: false        # CPU offloading for large models
+  prefetch_factor: 4               # Data loading prefetch factor
+  pin_memory: true                 # Pin memory for faster GPU transfer
+  compile_model: false             # Torch compile (experimental)
+  use_flash_attention: true        # Use Flash Attention for efficiency
