@@ -302,21 +302,52 @@ class HiggsAudioLoRAConfigurator:
         
         # Enable gradient checkpointing if requested
         if enable_gradient_checkpointing:
-            # Note: Higgs Audio doesn't support enable_input_require_grads() due to missing get_input_embeddings()
-            # Instead, we'll enable gradient checkpointing directly on the model
-            if hasattr(lora_model, 'gradient_checkpointing_enable'):
-                lora_model.gradient_checkpointing_enable()
-                logger.info("Gradient checkpointing enabled")
-            elif hasattr(lora_model, 'enable_gradient_checkpointing'):
-                lora_model.enable_gradient_checkpointing()
-                logger.info("Gradient checkpointing enabled (alternative method)")
+            # Check if the model supports gradient checkpointing
+            if self._supports_gradient_checkpointing(lora_model):
+                try:
+                    if hasattr(lora_model, 'gradient_checkpointing_enable'):
+                        lora_model.gradient_checkpointing_enable()
+                        logger.info("Gradient checkpointing enabled successfully")
+                    elif hasattr(lora_model, 'enable_gradient_checkpointing'):
+                        lora_model.enable_gradient_checkpointing()
+                        logger.info("Gradient checkpointing enabled (alternative method)")
+                    else:
+                        logger.warning("Gradient checkpointing method not found")
+                except ValueError as e:
+                    if "gradient_checkpointing" in str(e).lower():
+                        logger.warning(f"Higgs Audio model doesn't support gradient checkpointing: {e}")
+                        logger.info("Training will continue without gradient checkpointing")
+                    else:
+                        raise e
+                except Exception as e:
+                    logger.error(f"Failed to enable gradient checkpointing: {e}")
+                    logger.info("Training will continue without gradient checkpointing")
             else:
-                logger.warning("Gradient checkpointing not available for this model")
+                logger.warning("Model architecture doesn't support gradient checkpointing")
+                logger.info("Training will continue without gradient checkpointing")
         
         # Log parameter statistics
         self._log_parameter_statistics(lora_model)
         
         return lora_model
+    
+    def _supports_gradient_checkpointing(self, model) -> bool:
+        """Check if the model supports gradient checkpointing."""
+        # Check if model has gradient_checkpointing attribute
+        if hasattr(model, 'gradient_checkpointing'):
+            return True
+        
+        # Check if underlying model (for PEFT models) supports it
+        if hasattr(model, 'base_model') and hasattr(model.base_model, 'gradient_checkpointing'):
+            return True
+            
+        # Check if any of the model's modules support gradient checkpointing
+        for module in model.modules():
+            if hasattr(module, 'gradient_checkpointing'):
+                return True
+                
+        # Higgs Audio models typically don't support gradient checkpointing
+        return False
     
     def _configure_audio_module_gradients(
         self, 
@@ -414,7 +445,7 @@ def create_higgs_audio_lora_model(
     custom_config: Optional[HiggsAudioLoRATrainingConfig] = None,
     device_map: str = "auto",
     torch_dtype: torch.dtype = torch.bfloat16,
-    enable_gradient_checkpointing: bool = False
+    enable_gradient_checkpointing: bool = False  # Disabled by default for Higgs Audio
 ) -> Tuple[PeftModel, HiggsAudioConfig, HiggsAudioLoRATrainingConfig]:
     """
     Factory function to create a LoRA-adapted Higgs Audio model.
@@ -466,7 +497,7 @@ if __name__ == "__main__":
         # Create LoRA-adapted model for voice cloning
         lora_model, config, lora_config = create_higgs_audio_lora_model(
             training_scenario="voice_cloning",
-            enable_gradient_checkpointing=True
+            enable_gradient_checkpointing=False  # Disabled for Higgs Audio compatibility
         )
         
         logger.info("✅ LoRA configuration test completed successfully")
