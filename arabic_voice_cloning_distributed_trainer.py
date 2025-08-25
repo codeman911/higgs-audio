@@ -159,20 +159,18 @@ class ArabicVoiceCloningDistributedTrainer:
         else:
             logger.info("✅ CORRECT: Model does NOT have 'labels' parameter")
             
-        required_params = ['label_ids', 'label_audio_ids', 'audio_out_ids', 'audio_features']
-        missing_params = [p for p in required_params if p not in params]
+        # Check for critical parameters that we absolutely need
+        critical_params = ['label_ids', 'label_audio_ids']
+        missing_critical = [p for p in critical_params if p not in params]
         
-        if missing_params:
-            logger.error(f"❌ Missing required parameters: {missing_params}")
-            # Only raise error for critical parameters that are absolutely necessary
-            critical_params = ['label_ids', 'label_audio_ids']
-            missing_critical = [p for p in critical_params if p in missing_params]
-            if missing_critical:
-                raise RuntimeError(f"Model missing critical parameters: {missing_critical}")
-            else:
-                logger.warning("⚠️ Some non-critical parameters missing, continuing...")
+        if missing_critical:
+            logger.error(f"❌ Missing critical parameters: {missing_critical}")
+            raise RuntimeError(f"Model missing critical parameters: {missing_critical}")
         else:
-            logger.info("✅ All required parameters present in model forward signature")
+            logger.info("✅ All critical parameters present in model forward signature")
+            
+        # Log some of the parameters for debugging
+        logger.debug(f"Model forward parameters: {params[:10]}... (showing first 10)")
         
         self.model = self.model.to(self.device)
         
@@ -370,7 +368,9 @@ class ArabicVoiceCloningDistributedTrainer:
             
             # CRITICAL: Validate model compatibility before forward pass
             import inspect
-            model_forward = self.model.forward if hasattr(self.model, 'forward') else self.model.module.forward
+            # Get the base model (not the LoRA wrapper)
+            base_model = self.model.base_model if hasattr(self.model, 'base_model') else self.model
+            model_forward = base_model.forward
             sig = inspect.signature(model_forward)
             params = list(sig.parameters.keys())
             

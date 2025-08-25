@@ -46,6 +46,13 @@ params = list(sig.parameters.keys())
 
 if 'labels' in params:
     raise RuntimeError("Model version incompatible - has 'labels' parameter")
+
+# Check for critical parameters that we absolutely need
+critical_params = ['label_ids', 'label_audio_ids']
+missing_critical = [p for p in critical_params if p not in params]
+
+if missing_critical:
+    raise RuntimeError(f"Model missing critical parameters: {missing_critical}")
 ```
 
 #### **Whisper Processor Setup:**
