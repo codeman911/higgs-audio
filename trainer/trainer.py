@@ -15,14 +15,37 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoConfig, AutoProcessor
 from peft import LoraConfig, get_peft_model, TaskType
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from loguru import logger
 
-# Import existing boson_multimodal components (no modifications)
-from boson_multimodal.model.higgs_audio import HiggsAudioModel
-from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
-from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
+# Add parent directory to path for boson_multimodal imports
+current_dir = Path(__file__).parent
+parent_dir = current_dir.parent
+if str(parent_dir) not in sys.path:
+    sys.path.insert(0, str(parent_dir))
+
+# Import existing boson_multimodal components (conditional for better error handling)
+try:
+    from boson_multimodal.model.higgs_audio import HiggsAudioModel
+    from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
+    from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
+    BOSON_AVAILABLE = True
+except ImportError as e:
+    logger.error(f"❌ Failed to import boson_multimodal components: {e}")
+    logger.error(f"   Make sure you're running from the higgs-audio directory")
+    logger.error(f"   Current working directory: {os.getcwd()}")
+    logger.error(f"   Python path includes: {[p for p in sys.path if 'higgs' in p]}")
+    BOSON_AVAILABLE = False
+    
+    # Create dummy classes to prevent import errors
+    class HiggsAudioModel:
+        pass
+    class HiggsAudioSampleCollator:
+        pass
+    def load_higgs_audio_tokenizer(*args, **kwargs):
+        return None
 
 # Import our custom components
 from .config import TrainingConfig

@@ -48,13 +48,13 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-# Add current directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add current directory and parent directory to path for imports
+trainer_dir = Path(__file__).parent
+sys.path.insert(0, str(trainer_dir.parent))  # Add higgs-audio root
+sys.path.insert(0, str(trainer_dir))         # Add trainer directory
 
 # Import utility functions directly (no ML dependencies)
 try:
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent))
     from utils import create_sample_data, validate_dataset_format
     DATASET_UTILS_AVAILABLE = True
 except ImportError as e:
@@ -63,9 +63,21 @@ except ImportError as e:
 
 # Conditional imports for training components
 try:
-    from trainer import HiggsAudioTrainer, TrainingConfig
+    # Try different import patterns to find the trainer module
+    try:
+        from trainer.trainer import HiggsAudioTrainer
+        from trainer.config import TrainingConfig
+    except ImportError:
+        try:
+            from trainer import HiggsAudioTrainer
+            from config import TrainingConfig
+        except ImportError:
+            # Direct imports as last resort
+            from .trainer import HiggsAudioTrainer
+            from .config import TrainingConfig
     TRAINER_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    print(f"Debug: Trainer import error: {e}")
     TRAINER_AVAILABLE = False
 
 
@@ -384,14 +396,44 @@ def validate_environment():
         print("   ❌ PEFT not found")
         return False
     
+    # Debug trainer import issues
+    print("   🔍 Debugging trainer imports...")
+    trainer_dir = Path(__file__).parent
+    print(f"      Trainer directory: {trainer_dir}")
+    print(f"      Python path includes: {[p for p in sys.path if 'trainer' in p or 'higgs-audio' in p]}")
+    
+    # Test individual module imports
     try:
-        if TRAINER_AVAILABLE:
-            print("   ✅ Trainer components available")
-        else:
-            print("   ❌ Trainer components not available")
-            return False
-    except Exception as e:
-        print(f"   ❌ Trainer import failed: {e}")
+        print("      Testing config import...")
+        from config import TrainingConfig
+        print("      ✅ Config import successful")
+    except ImportError as e:
+        print(f"      ❌ Config import failed: {e}")
+        try:
+            from trainer.config import TrainingConfig
+            print("      ✅ trainer.config import successful")
+        except ImportError as e2:
+            print(f"      ❌ trainer.config import also failed: {e2}")
+    
+    try:
+        print("      Testing trainer import...")
+        from trainer import HiggsAudioTrainer
+        print("      ✅ Trainer import successful")
+    except ImportError as e:
+        print(f"      ❌ Trainer import failed: {e}")
+        try:
+            from trainer.trainer import HiggsAudioTrainer
+            print("      ✅ trainer.trainer import successful")
+        except ImportError as e2:
+            print(f"      ❌ trainer.trainer import also failed: {e2}")
+            # Show more detailed error
+            import traceback
+            print(f"      Full traceback: {traceback.format_exc()}")
+    
+    if TRAINER_AVAILABLE:
+        print("   ✅ Trainer components available")
+    else:
+        print("   ❌ Trainer components not available")
         return False
     
     print("✅ Environment validation passed")
