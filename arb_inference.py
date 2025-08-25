@@ -30,7 +30,6 @@ mechanism where reference audio is processed through both:
 import click
 import json
 import os
-import random
 import shutil
 import torch
 import torchaudio
@@ -203,53 +202,7 @@ class ArabicVoiceCloningInference:
             
         logger.info(f"Using device: {self._device}")
     
-    def load_arabic_text_samples(self, samples_file: str = "arabic_text_samples.txt") -> List[str]:
-        """
-        Load Arabic text samples from file.
-        
-        Args:
-            samples_file: Path to the Arabic text samples file
-            
-        Returns:
-            List of Arabic text samples
-        """
-        if not os.path.exists(samples_file):
-            logger.error(f"Arabic text samples file not found: {samples_file}")
-            # Fallback samples
-            return [
-                "أَهْلاً وَسَهْلاً بِكُم.",
-                "مَرْحَباً، كَيْفَ حَالُكُم الْيَوْم؟",
-                "هَذَا الْمَشْرُوعُ رَائِعٌ جِدّاً."
-            ]
-        
-        try:
-            with open(samples_file, 'r', encoding='utf-8') as f:
-                samples = [line.strip() for line in f.readlines() if line.strip()]
-            logger.info(f"Loaded {len(samples)} Arabic text samples from {samples_file}")
-            return samples
-        except Exception as e:
-            logger.error(f"Failed to load Arabic text samples: {e}")
-            return ["أَهْلاً وَسَهْلاً بِكُم."]
-    
-    def get_random_arabic_text(self, samples_file: str = "arabic_text_samples.txt") -> str:
-        """
-        Get a random Arabic text sample.
-        
-        Args:
-            samples_file: Path to the Arabic text samples file
-            
-        Returns:
-            Random Arabic text sample
-        """
-        if not hasattr(self, '_arabic_samples'):
-            self._arabic_samples = self.load_arabic_text_samples(samples_file)
-        
-        if not self._arabic_samples:
-            return "أَهْلاً وَسَهْلاً بِكُم."
-        
-        selected_text = random.choice(self._arabic_samples)
-        logger.info(f"Selected random Arabic text: {selected_text[:50]}{'...' if len(selected_text) > 50 else ''}")
-        return selected_text
+    def calculate_adaptive_max_tokens(self, target_text: str) -> int:
         """
         Calculate appropriate max tokens based on target text length.
         
@@ -837,8 +790,7 @@ class ArabicVoiceCloningInference:
         sample_rate: int,
         output_dir: str,
         sample_id: int,
-        speaker_id: str,
-        target_text: str = None  # Added target text parameter
+        speaker_id: str
     ) -> dict:
         """
         Save both reference and generated audio with consistent naming.
