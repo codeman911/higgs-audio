@@ -123,7 +123,7 @@ class ArabicVoiceCloningDistributedTrainer:
         self.model, self.model_config, _ = create_higgs_audio_lora_model(
             model_path=self.training_config.model_path,
             custom_config=self.lora_config,
-            device_map=None,
+            device_map="cpu",  # Use CPU first, then move to device
             torch_dtype=torch.bfloat16,
             enable_gradient_checkpointing=self.training_config.gradient_checkpointing
         )
