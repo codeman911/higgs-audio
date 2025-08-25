@@ -334,16 +334,60 @@ class ArabicVoiceCloningDataset(Dataset):
                 metadata['target_audio_path']
             )
             
-            # Skip audio tokenization in dataset to avoid CUDA multiprocessing issues
-            # The collator will handle audio tokenization instead
-            audio_ids_concat = torch.tensor([], dtype=torch.long)
-            audio_ids_start = torch.tensor([0], dtype=torch.long)
-            audio_label_ids_concat = None
+            # Perform audio tokenization on CPU to avoid CUDA multiprocessing issues
+            # Get actual codebook count from audio tokenizer if available
+            if self.audio_tokenizer is not None:
+                num_codebooks = getattr(self.audio_tokenizer, 'num_codebooks', 8)
+            else:
+                num_codebooks = 8  # Default for Higgs Audio
+            
+            audio_tokens_ref = None
+            audio_tokens_target = None
+            
+            if self.audio_tokenizer is not None:
+                try:
+                    # Tokenize reference audio (CPU only)
+                    audio_tokens_ref = self._tokenize_audio_cpu(metadata['ref_audio_path'])
+                    # Tokenize target audio (CPU only)  
+                    audio_tokens_target = self._tokenize_audio_cpu(metadata['target_audio_path'])
+                    
+                    # Concatenate audio tokens if both successful
+                    if audio_tokens_ref is not None and audio_tokens_target is not None:
+                        audio_ids_concat = torch.cat([audio_tokens_ref, audio_tokens_target], dim=1)
+                        audio_ids_start = torch.tensor([0, audio_tokens_ref.shape[1]], dtype=torch.long)
+                        audio_label_ids_concat = audio_tokens_target  # Target for teacher forcing
+                    else:
+                        logger.warning(f"Failed to tokenize audio for sample {idx}, using empty tensors")
+                        # Create properly shaped empty tensor (2D: codebooks x sequence)
+                        audio_ids_concat = torch.empty((num_codebooks, 0), dtype=torch.long)
+                        audio_ids_start = torch.tensor([0], dtype=torch.long)
+                        audio_label_ids_concat = None
+                
+                except Exception as e:
+                    logger.warning(f"Audio tokenization failed for sample {idx}: {e}")
+                    # Create properly shaped empty tensor (2D: codebooks x sequence)
+                    audio_ids_concat = torch.empty((num_codebooks, 0), dtype=torch.long)
+                    audio_ids_start = torch.tensor([0], dtype=torch.long)
+                    audio_label_ids_concat = None
+            else:
+                # No audio tokenizer available, create empty tensors
+                audio_ids_concat = torch.empty((num_codebooks, 0), dtype=torch.long)
+                audio_ids_start = torch.tensor([0], dtype=torch.long)
+                audio_label_ids_concat = None
             
             # Concatenate waveforms 
             waveforms_concat = torch.cat([ref_waveform, target_waveform], dim=0)
             waveforms_start = torch.tensor([0, len(ref_waveform)], dtype=torch.long)
             
+            # Validate tensor shapes before creating ChatMLDatasetSample
+            if audio_ids_concat.dim() != 2:
+                logger.error(f"audio_ids_concat has wrong dimensions: {audio_ids_concat.shape}")
+                audio_ids_concat = torch.empty((num_codebooks, 0), dtype=torch.long)
+            
+            if audio_ids_concat.shape[0] != num_codebooks:
+                logger.error(f"audio_ids_concat wrong codebook count: {audio_ids_concat.shape[0]} vs {num_codebooks}")
+                audio_ids_concat = torch.empty((num_codebooks, 0), dtype=torch.long)
+
             # Create ChatMLDatasetSample
             return ChatMLDatasetSample(
                 input_ids=torch.LongTensor(input_tokens),
@@ -362,6 +406,47 @@ class ArabicVoiceCloningDataset(Dataset):
             # Return a minimal valid sample to prevent training crashes
             return self._create_fallback_sample()
     
+    def _tokenize_audio_cpu(self, audio_path: str) -> Optional[torch.Tensor]:
+        """Tokenize audio on CPU to avoid CUDA multiprocessing issues."""
+        try:
+            if not os.path.exists(audio_path):
+                logger.warning(f"Audio file not found: {audio_path}")
+                return None
+            
+            # Load audio on CPU
+            import librosa
+            waveform, sr = librosa.load(audio_path, sr=self.audio_tokenizer.sampling_rate, mono=True)
+            
+            # Convert to tensor on CPU
+            waveform_tensor = torch.tensor(waveform, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+            
+            # Move tokenizer to CPU temporarily for encoding
+            original_device = next(self.audio_tokenizer.parameters()).device
+            self.audio_tokenizer.cpu()
+            
+            # Tokenize on CPU
+            with torch.no_grad():
+                encoded_result = self.audio_tokenizer._xcodec_encode(waveform_tensor)
+                audio_codes = encoded_result.audio_codes
+            
+            # Move tokenizer back to original device
+            self.audio_tokenizer.to(original_device)
+            
+            # Ensure proper shape: [num_codebooks, sequence_length]
+            if audio_codes.dim() == 3:
+                audio_codes = audio_codes.squeeze(0)  # Remove batch dimension
+            
+            # Validate shape
+            expected_codebooks = getattr(self.audio_tokenizer, 'num_codebooks', 8)
+            if audio_codes.shape[0] != expected_codebooks:
+                logger.warning(f"Unexpected codebook count: {audio_codes.shape[0]} vs {expected_codebooks}")
+            
+            return audio_codes.cpu()  # Keep on CPU
+            
+        except Exception as e:
+            logger.error(f"Failed to tokenize audio {audio_path}: {e}")
+            return None
+
     def _create_training_messages(self, sample_data: Dict[str, Any], metadata: Dict[str, Any]) -> List[Message]:
         """Create ChatML messages for training following proven inference pattern."""
         
@@ -427,10 +512,15 @@ class ArabicVoiceCloningDataset(Dataset):
     
     def _create_fallback_sample(self) -> ChatMLDatasetSample:
         """Create a minimal fallback sample to prevent training crashes."""
+        # Get actual codebook count from audio tokenizer if available
+        if self.audio_tokenizer is not None:
+            num_codebooks = getattr(self.audio_tokenizer, 'num_codebooks', 8)
+        else:
+            num_codebooks = 8  # Default for Higgs Audio
         return ChatMLDatasetSample(
             input_ids=torch.tensor([1, 2, 3], dtype=torch.long),  # Minimal tokens
             label_ids=torch.tensor([1, 2, 3], dtype=torch.long) if self.config.return_labels else None,
-            audio_ids_concat=torch.tensor([[]], dtype=torch.long),
+            audio_ids_concat=torch.empty((num_codebooks, 0), dtype=torch.long),  # Correct 2D shape
             audio_ids_start=torch.tensor([0], dtype=torch.long),
             audio_waveforms_concat=torch.zeros(1000, dtype=torch.float32),
             audio_waveforms_start=torch.tensor([0], dtype=torch.long),
