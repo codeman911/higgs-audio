@@ -139,9 +139,54 @@ class ArabicVoiceCloningTrainingCollator:
         if self.validate_batches:
             self._validate_input_batch(batch)
         
-        # Use base collator for complex audio processing
-        logger.debug(f"Processing batch of {len(batch)} samples")
-        base_batch = self.base_collator(batch)
+        # Defensive handling for tensor dimension issues
+        for i, sample in enumerate(batch):
+            if sample.audio_ids_concat is not None:
+                # Fix 1D to 2D tensor issue
+                if sample.audio_ids_concat.dim() == 1:
+                    logger.warning(f"Sample {i}: Converting 1D audio_ids_concat to 2D")
+                    # If we have tokens but wrong shape, reshape assuming 8 codebooks
+                    if len(sample.audio_ids_concat) > 0:
+                        # Try to reshape, but if not divisible by 8, create empty 2D tensor
+                        if len(sample.audio_ids_concat) % 8 == 0:
+                            sample.audio_ids_concat = sample.audio_ids_concat.reshape(8, -1)
+                        else:
+                            logger.warning(f"Sample {i}: Cannot reshape audio tokens, using empty tensor")
+                            sample.audio_ids_concat = torch.empty((8, 0), dtype=torch.long)
+                    else:
+                        # Empty 1D tensor, convert to empty 2D
+                        sample.audio_ids_concat = torch.empty((8, 0), dtype=torch.long)
+                
+                # Validate codebook dimension
+                if sample.audio_ids_concat.shape[0] != self.config.audio_num_codebooks:
+                    logger.warning(f"Sample {i}: Wrong codebook count {sample.audio_ids_concat.shape[0]}, expected {self.config.audio_num_codebooks}")
+                    # Create properly shaped empty tensor
+                    sample.audio_ids_concat = torch.empty((self.config.audio_num_codebooks, 0), dtype=torch.long)
+                    sample.audio_ids_start = torch.tensor([0], dtype=torch.long)
+        
+        try:
+            # Use base collator for complex audio processing
+            logger.debug(f"Processing batch of {len(batch)} samples")
+            base_batch = self.base_collator(batch)
+        except IndexError as e:
+            if "too many indices for tensor of dimension 1" in str(e):
+                logger.error(f"Tensor dimension error in base collator: {e}")
+                logger.info("Attempting to fix tensor dimensions and retry...")
+                
+                # Fix tensor dimensions in batch
+                for i, sample in enumerate(batch):
+                    if hasattr(sample, 'audio_ids_concat') and sample.audio_ids_concat is not None:
+                        if sample.audio_ids_concat.dim() == 1:
+                            # Convert 1D to proper 2D shape
+                            num_codebooks = self.config.audio_num_codebooks
+                            sample.audio_ids_concat = torch.empty((num_codebooks, 0), dtype=torch.long)
+                            sample.audio_ids_start = torch.tensor([0], dtype=torch.long)
+                            logger.info(f"Fixed sample {i} tensor dimensions")
+                
+                # Retry with fixed tensors
+                base_batch = self.base_collator(batch)
+            else:
+                raise
         
         # Create enhanced training batch
         training_batch = self._create_training_batch(base_batch, batch)
