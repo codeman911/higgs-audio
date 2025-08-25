@@ -520,13 +520,14 @@ class ArabicVoiceCloningInference:
             logger.info(f"Starting generation with {adaptive_max_tokens} max tokens...")
             
             # Create proper stopping criteria for audio generation
+            # Include text-based stopping and let model handle audio stream EOS internally
             stop_strings = [
                 "<|end_of_text|>", 
                 "<|eot_id|>",
-                # Use actual audio stream EOS token ID instead of text token
-                # "<|audio_eos|>" is incorrect - use proper audio stream EOS
+                # Don't include audio tokens in stop_strings as they're handled by the model
             ]
             
+            # Improved generation parameters for better audio quality
             outputs = self.model.generate(
                 **batch,
                 max_new_tokens=adaptive_max_tokens,
@@ -538,6 +539,10 @@ class ArabicVoiceCloningInference:
                 stop_strings=stop_strings,
                 tokenizer=self.tokenizer,
                 seed=seed,
+                # Add repetition penalty to avoid token loops
+                repetition_penalty=1.05,
+                # Early stopping when EOS is hit
+                early_stopping=True,
             )
             
             # Process audio outputs - CRITICAL FIX: Follow official implementation pattern
@@ -578,6 +583,18 @@ class ArabicVoiceCloningInference:
             
             if audio_out_ids_list:
                 concat_audio_out_ids = torch.concat(audio_out_ids_list, dim=1)
+                logger.info(f"Concatenated audio shape: {concat_audio_out_ids.shape}")
+                
+                # Enhanced debugging: Check token distribution
+                unique_tokens = torch.unique(concat_audio_out_ids)
+                logger.info(f"Unique audio tokens: count={len(unique_tokens)}, first_10={unique_tokens[:10].tolist()}")
+                
+                # Check for potential silence indicators
+                bos_count = (concat_audio_out_ids == self.config.audio_stream_bos_id).sum().item()
+                eos_count = (concat_audio_out_ids == self.config.audio_stream_eos_id).sum().item()
+                zero_count = (concat_audio_out_ids == 0).sum().item()
+                
+                logger.info(f"Token analysis: BOS={bos_count}, EOS={eos_count}, zeros={zero_count}, total={concat_audio_out_ids.numel()}")
                 
                 # Handle MPS compatibility
                 if concat_audio_out_ids.device.type == "mps":
@@ -585,9 +602,46 @@ class ArabicVoiceCloningInference:
                 else:
                     concat_audio_out_ids_cpu = concat_audio_out_ids
                 
-                # Decode audio
+                # Decode audio with enhanced error handling
                 logger.info("Decoding generated audio...")
-                waveform = self.audio_tokenizer.decode(concat_audio_out_ids_cpu.unsqueeze(0))[0, 0]
+                decode_input = None  # Initialize for error handling
+                try:
+                    # CRITICAL: Ensure proper tensor shape for decoding
+                    if concat_audio_out_ids_cpu.dim() == 2:
+                        decode_input = concat_audio_out_ids_cpu.unsqueeze(0)  # Add batch dimension
+                    else:
+                        decode_input = concat_audio_out_ids_cpu
+                    
+                    logger.info(f"Decoder input shape: {decode_input.shape}")
+                    waveform = self.audio_tokenizer.decode(decode_input)[0, 0]
+                    
+                    # Immediate audio validation
+                    if isinstance(waveform, torch.Tensor):
+                        waveform_np = waveform.detach().cpu().numpy()
+                    else:
+                        waveform_np = waveform
+                    
+                    audio_energy = (waveform_np ** 2).mean()
+                    audio_max = np.abs(waveform_np).max()
+                    
+                    logger.info(f"Decoded audio: energy={audio_energy:.2e}, max_amplitude={audio_max:.6f}, duration={len(waveform_np)/24000:.2f}s")
+                    
+                    if audio_energy < 1e-8:
+                        logger.error(f"🚨 CRITICAL: Generated audio has extremely low energy ({audio_energy:.2e}) - likely silence")
+                    elif audio_energy < 1e-6:
+                        logger.warning(f"⚠️ Generated audio has very low energy ({audio_energy:.2e}) - may be too quiet")
+                    else:
+                        logger.info(f"✅ Audio energy looks good: {audio_energy:.2e}")
+                        
+                except Exception as decode_error:
+                    logger.error(f"❌ Audio decoding failed: {decode_error}")
+                    if decode_input is not None:
+                        logger.error(f"Decoder input shape: {decode_input.shape}, dtype: {decode_input.dtype}")
+                        logger.error(f"Token range: min={decode_input.min()}, max={decode_input.max()}")
+                    else:
+                        logger.error("Failed before tensor preparation")
+                    return None, None, None
+                
                 sample_rate = 24000  # Higgs Audio output sample rate
                 
                 # Get text output
@@ -596,7 +650,7 @@ class ArabicVoiceCloningInference:
                 logger.info("=== Generation Output Text ===")
                 logger.info(text_result)
                 
-                return waveform, sample_rate, text_result
+                return waveform_np, sample_rate, text_result
             else:
                 logger.error("No audio output generated")
                 return None, None, None
