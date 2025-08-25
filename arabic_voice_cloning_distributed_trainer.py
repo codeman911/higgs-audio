@@ -174,18 +174,7 @@ class ArabicVoiceCloningDistributedTrainer:
         else:
             self.sampler = None
         
-        self.dataloader = DataLoader(
-            self.dataset,
-            batch_size=self.training_config.batch_size,
-            sampler=self.sampler,
-            shuffle=(self.sampler is None),
-            num_workers=self.training_config.dataloader_num_workers,
-            pin_memory=True,
-            drop_last=True,
-            persistent_workers=True
-        )
-        
-        # Setup collator
+        # Setup collator first
         try:
             from transformers import AutoProcessor
             whisper_processor = AutoProcessor.from_pretrained("openai/whisper-large-v3")
@@ -196,6 +185,18 @@ class ArabicVoiceCloningDistributedTrainer:
             config=self.model_config,
             whisper_processor=whisper_processor,
             enable_teacher_forcing=True
+        )
+        
+        self.dataloader = DataLoader(
+            self.dataset,
+            batch_size=self.training_config.batch_size,
+            sampler=self.sampler,
+            shuffle=(self.sampler is None),
+            num_workers=0,  # Force single-process to avoid CUDA multiprocessing errors
+            pin_memory=True,
+            drop_last=True,
+            persistent_workers=False,  # No workers = no persistence needed
+            collate_fn=self.collator  # Use our custom collator
         )
         
         self.effective_batch_size = (
@@ -292,11 +293,11 @@ class ArabicVoiceCloningDistributedTrainer:
         self._save_checkpoint(is_final=True)
         logger.info("Training completed!")
     
-    def _training_step(self, batch: List) -> Optional[Dict[str, Any]]:
+    def _training_step(self, batch) -> Optional[Dict[str, Any]]:
         """Execute training step."""
         try:
-            training_batch = self.collator(batch)
-            training_batch = self._move_batch_to_device(training_batch)
+            # The batch is already collated by the DataLoader's collate_fn
+            training_batch = self._move_batch_to_device(batch)
             
             with autocast(enabled=self.training_config.use_mixed_precision):
                 outputs = self.model(

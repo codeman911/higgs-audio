@@ -334,29 +334,11 @@ class ArabicVoiceCloningDataset(Dataset):
                 metadata['target_audio_path']
             )
             
-            # Tokenize audio if tokenizer is available
+            # Skip audio tokenization in dataset to avoid CUDA multiprocessing issues
+            # The collator will handle audio tokenization instead
             audio_ids_concat = torch.tensor([], dtype=torch.long)
             audio_ids_start = torch.tensor([0], dtype=torch.long)
             audio_label_ids_concat = None
-            
-            if self.audio_tokenizer is not None:
-                try:
-                    # Tokenize reference audio (using direct path)
-                    ref_audio_tokens = self.audio_tokenizer.encode(metadata['ref_audio_path'])
-                    
-                    # Tokenize target audio for labels (using direct path)
-                    target_audio_tokens = self.audio_tokenizer.encode(metadata['target_audio_path'])
-                    
-                    # Concatenate audio tokens (reference first, then target)
-                    audio_ids_concat = torch.cat([ref_audio_tokens, target_audio_tokens], dim=1)
-                    audio_ids_start = torch.tensor([0, ref_audio_tokens.shape[1]], dtype=torch.long)
-                    
-                    # Use target audio tokens as labels for teacher forcing
-                    if self.config.teacher_forcing and self.config.return_labels:
-                        audio_label_ids_concat = target_audio_tokens
-                        
-                except Exception as e:
-                    logger.warning(f"Failed to tokenize audio for sample {idx}: {e}")
             
             # Concatenate waveforms 
             waveforms_concat = torch.cat([ref_waveform, target_waveform], dim=0)
