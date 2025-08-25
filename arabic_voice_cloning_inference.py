@@ -343,11 +343,12 @@ class ArabicVoiceCloningInference:
             content=f"{processed_ref_text} <|audio_bos|><|AUDIO|><|audio_eos|>"
         )
         
-        # Create assistant message with reference audio using AudioContent
-        # This is the key difference - using AudioContent instead of text confirmation
+        # Create assistant message that acknowledges the reference audio
+        # CRITICAL FIX: Use text response instead of AudioContent to avoid AUDIO_OUT tokens in input
+        # For voice cloning inference, we don't want AUDIO_OUT in the input sequence
         assistant_ref_message = Message(
             role="assistant",
-            content=AudioContent(audio_url=ref_audio_path)
+            content="I understand the reference voice."
         )
         
         # CRITICAL FIX: Pass target text directly without any processing/filtering
@@ -501,9 +502,43 @@ class ArabicVoiceCloningInference:
             Validated or corrected ChatMLDatasetSample
         """
         try:
+            # CRITICAL FIX: Check for audio token count mismatch
+            audio_in_mask = sample.input_ids == self.collator.audio_in_token_id
+            audio_out_mask = sample.input_ids == self.collator.audio_out_token_id
+            
+            num_audio_in_tokens = audio_in_mask.sum().item()
+            num_audio_out_tokens = audio_out_mask.sum().item()
+            num_provided_audio_segments = len(sample.audio_ids_start) if sample.audio_ids_start is not None else 0
+            
+            logger.info(f"Audio token validation: AUDIO_IN={num_audio_in_tokens}, AUDIO_OUT={num_audio_out_tokens}, provided_segments={num_provided_audio_segments}")
+            
+            # For voice cloning inference, we should only have AUDIO_IN tokens, not AUDIO_OUT
+            # The AUDIO_OUT tokens will be generated during inference
+            if num_audio_in_tokens != num_provided_audio_segments:
+                logger.error(f"Mismatch: {num_audio_in_tokens} AUDIO_IN tokens but {num_provided_audio_segments} audio segments provided")
+                
+                # If we have more tokens than segments, this is likely the IndexError case
+                if num_audio_in_tokens > 0 and num_provided_audio_segments > 0:
+                    logger.warning("Adjusting audio_ids_start to match expected number of segments")
+                    # Keep only the segments we actually have data for
+                    max_segments = min(num_audio_in_tokens, num_provided_audio_segments)
+                    if max_segments < len(sample.audio_ids_start):
+                        new_audio_ids_start = sample.audio_ids_start[:max_segments]
+                        logger.info(f"Trimmed audio_ids_start from {len(sample.audio_ids_start)} to {len(new_audio_ids_start)}")
+                        
+                        return ChatMLDatasetSample(
+                            input_ids=sample.input_ids,
+                            label_ids=sample.label_ids,
+                            audio_ids_concat=sample.audio_ids_concat,
+                            audio_ids_start=new_audio_ids_start,
+                            audio_waveforms_concat=sample.audio_waveforms_concat,
+                            audio_waveforms_start=sample.audio_waveforms_start,
+                            audio_sample_rate=sample.audio_sample_rate,
+                            audio_speaker_indices=sample.audio_speaker_indices,
+                        )
+            
             # Check for Whisper configuration mismatch
             if self.collator.encode_whisper_embed:
-                audio_in_mask = sample.input_ids == self.collator.audio_in_token_id
                 has_audio_tokens = audio_in_mask.any()
                 
                 if has_audio_tokens:
