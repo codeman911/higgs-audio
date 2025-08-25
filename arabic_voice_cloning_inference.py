@@ -164,7 +164,7 @@ class ArabicVoiceCloningInference:
             pad_token_id=self.config.pad_token_id,
             return_audio_in_tokens=False,  # CRITICAL: serve_engine.py uses False
             use_delay_pattern=self.config.use_delay_pattern,
-            round_to=1,  # CRITICAL: serve_engine.py uses fixed round_to=1
+            round_to=8,  # CRITICAL: serve_engine.py uses fixed round_to=1
             audio_num_codebooks=self.config.audio_num_codebooks,
         )
         
