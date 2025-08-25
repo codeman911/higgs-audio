@@ -26,13 +26,36 @@ from tqdm import tqdm
 import inspect
 
 # CRITICAL: Force correct model import path
-current_dir = Path(__file__).parent
+# Remove any conflicting paths and ensure we import from the correct location
+current_dir = Path(__file__).parent.resolve()
 project_root = current_dir
+
+# Remove any existing boson_multimodal paths from sys.path to avoid conflicts
+sys_path_cleaned = []
+for path in sys.path:
+    path_obj = Path(path).resolve()
+    # Remove paths that contain train-higgs-audio to avoid wrong model imports
+    if "train-higgs-audio" not in str(path_obj):
+        sys_path_cleaned.append(path)
+sys.path = sys_path_cleaned
+
+# Insert our project root at the beginning to ensure correct imports
 sys.path.insert(0, str(project_root))
 
-# Import from CORRECT boson_multimodal path (not train-higgs-audio)
-from boson_multimodal.model.higgs_audio import HiggsAudioModel, HiggsAudioConfig
-from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioModel as DirectHiggsAudioModel
+# CRITICAL: Import from CORRECT boson_multimodal path (not train-higgs-audio)
+# Force import the correct version by directly importing from the file
+correct_model_path = current_dir / "boson_multimodal" / "model" / "higgs_audio" / "modeling_higgs_audio.py"
+if correct_model_path.exists():
+    # Import the correct model directly
+    from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioModel as DirectHiggsAudioModel
+    # Also import the config
+    from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
+    # For compatibility, also create an alias
+    HiggsAudioModel = DirectHiggsAudioModel
+else:
+    # Fallback to standard import
+    from boson_multimodal.model.higgs_audio import HiggsAudioModel, HiggsAudioConfig
+    from boson_multimodal.model.higgs_audio.modeling_higgs_audio import HiggsAudioModel as DirectHiggsAudioModel
 
 # Import our custom modules
 from arabic_voice_cloning_dataset import *
@@ -189,11 +212,12 @@ class ArabicVoiceCloningDistributedTrainer:
             enable_gradient_checkpointing=self.training_config.gradient_checkpointing
         )
         
-        # CRITICAL: Validate model instance
-        if isinstance(self.model.base_model, DirectHiggsAudioModel):
+        # CRITICAL: Validate model instance - check the base model, not the LoRA wrapper
+        base_model = self.model.base_model if hasattr(self.model, 'base_model') else self.model
+        if isinstance(base_model, DirectHiggsAudioModel):
             logger.info("✅ Using correct boson_multimodal.HiggsAudioModel")
         else:
-            logger.warning(f"⚠️ Unexpected model type: {type(self.model.base_model)}")
+            logger.warning(f"⚠️ Unexpected base model type: {type(base_model)}")
             logger.warning("⚠️ This may cause compatibility issues - expected DirectHiggsAudioModel")
         
         self.model = self.model.to(self.device)

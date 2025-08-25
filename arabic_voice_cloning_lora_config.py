@@ -16,16 +16,46 @@ Key Features:
 """
 
 import torch
+import sys
+from pathlib import Path
 from typing import List, Dict, Optional, Any, Union, Tuple
 from dataclasses import dataclass, field
 from loguru import logger
 
+# CRITICAL: Force correct model import path for LoRA config
+current_dir = Path(__file__).parent.resolve()
+
+# Remove any existing boson_multimodal paths from sys.path to avoid conflicts
+sys_path_cleaned = []
+for path in sys.path:
+    path_obj = Path(path).resolve()
+    # Remove paths that contain train-higgs-audio to avoid wrong model imports
+    if "train-higgs-audio" not in str(path_obj):
+        sys_path_cleaned.append(path)
+sys.path = sys_path_cleaned
+
+# Insert our project root at the beginning to ensure correct imports
+sys.path.insert(0, str(current_dir))
+
+# CRITICAL: Import from CORRECT boson_multimodal path (not train-higgs-audio)
+# Force import the correct version by directly importing from the file
+correct_model_path = current_dir / "boson_multimodal" / "model" / "higgs_audio" / "modeling_higgs_audio.py"
+if correct_model_path.exists():
+    # Import the correct model directly
+    from boson_multimodal.model.higgs_audio.modeling_higgs_audio import (
+        HiggsAudioModel, 
+        HiggsAudioDualFFNDecoderLayer
+    )
+    from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
+else:
+    # Fallback to standard import
+    from boson_multimodal.model.higgs_audio.modeling_higgs_audio import (
+        HiggsAudioModel, 
+        HiggsAudioDualFFNDecoderLayer
+    )
+    from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
+
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
-from boson_multimodal.model.higgs_audio.configuration_higgs_audio import HiggsAudioConfig
-from boson_multimodal.model.higgs_audio.modeling_higgs_audio import (
-    HiggsAudioModel, 
-    HiggsAudioDualFFNDecoderLayer
-)
 
 
 @dataclass
