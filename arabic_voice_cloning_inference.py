@@ -5,6 +5,24 @@ Based on Higgs Audio v2 architecture and generation.py patterns
 
 This script processes ChatML format data to perform zero-shot voice cloning
 for Arabic language text using reference audio conditioning.
+
+KEY FIXES IMPLEMENTED:
+1. **Whisper Processor Integration**: Added proper Whisper processor loading 
+   for reference audio conditioning (encode_whisper_embed=True)
+2. **Reference Audio Waveform Processing**: Load and process reference audio
+   waveforms for Whisper feature extraction at 16kHz
+3. **Proper ChatML Structure**: Use <|AUDIO|> tokens for reference audio
+   instead of only DAC codes in generation context
+4. **Dual Audio Pathway**: 
+   - Whisper embeddings for reference audio conditioning (via <|AUDIO|> tokens)
+   - DAC codes for generation context (via audio_ids)
+5. **Audio-Text Conditioning**: Proper integration of reference audio features
+   with text tokens for cross-modal attention
+
+The script now properly follows the training pipeline's audio conditioning
+mechanism where reference audio is processed through both:
+- Whisper encoder (for semantic conditioning)
+- DAC encoder (for acoustic tokens)
 """
 
 import click
@@ -12,6 +30,7 @@ import json
 import os
 import torch
 import torchaudio
+import torchaudio.transforms as T
 import soundfile as sf
 import numpy as np
 from pathlib import Path
@@ -29,7 +48,7 @@ from boson_multimodal.dataset.chatml_dataset import (
 )
 from boson_multimodal.data_types import Message, ChatMLSample, AudioContent, TextContent
 from boson_multimodal.model.higgs_audio.utils import revert_delay_pattern
-from transformers import AutoConfig, AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer, AutoProcessor
 
 
 class ArabicVoiceCloningInference:
@@ -87,9 +106,19 @@ class ArabicVoiceCloningInference:
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.config = AutoConfig.from_pretrained(model_path)
         
+        # Load Whisper processor for reference audio conditioning
+        if self.config.encode_whisper_embed:
+            logger.info("Loading Whisper processor for reference audio conditioning")
+            whisper_processor = AutoProcessor.from_pretrained(
+                "openai/whisper-large-v3-turbo",
+                trust_remote_code=True
+            )
+        else:
+            whisper_processor = None
+        
         # Setup collator
         self.collator = HiggsAudioSampleCollator(
-            whisper_processor=None,
+            whisper_processor=whisper_processor,
             audio_in_token_id=self.config.audio_in_token_idx,
             audio_out_token_id=self.config.audio_out_token_idx,
             audio_stream_bos_id=self.config.audio_stream_bos_id,
@@ -206,16 +235,17 @@ class ArabicVoiceCloningInference:
             content="You are a helpful assistant capable of generating speech in the voice of the provided reference audio. Generate natural-sounding Arabic speech."
         )
         
-        # Create user message with reference text
+        # Create user message with reference text and reference audio
+        # This follows the proper ChatML format for voice cloning
         user_ref_message = Message(
             role="user",
-            content=ref_text
+            content=f"{ref_text} <|AUDIO|>"
         )
         
-        # Create assistant message with reference audio
+        # Create assistant confirmation (can be empty or acknowledgment)
         ref_audio_message = Message(
             role="assistant",
-            content=AudioContent(audio_url=ref_audio_path)
+            content="I understand the reference voice."
         )
         
         # Create user message with target text
@@ -226,27 +256,50 @@ class ArabicVoiceCloningInference:
         
         messages = [system_message, user_ref_message, ref_audio_message, user_target_message]
         
-        # Encode reference audio
-        logger.info(f"Encoding reference audio: {ref_audio_path}")
+        # Load and prepare reference audio waveform for Whisper processing
+        logger.info(f"Loading reference audio waveform: {ref_audio_path}")
         if not os.path.exists(ref_audio_path):
             logger.error(f"Reference audio file not found: {ref_audio_path}")
             return messages, []
             
         try:
+            # Load audio waveform for Whisper embeddings
+            waveform, sr = torchaudio.load(ref_audio_path)
+            
+            # Convert to mono if stereo
+            if waveform.shape[0] > 1:
+                waveform = waveform.mean(dim=0, keepdim=True)
+            
+            # Resample to 16kHz for Whisper if needed
+            target_sr = 16000
+            if sr != target_sr:
+                resampler = T.Resample(sr, target_sr)
+                waveform = resampler(waveform)
+                sr = target_sr
+            
+            # Encode reference audio for DAC tokens (for context)
             audio_tokens = self.audio_tokenizer.encode(ref_audio_path)
             audio_ids = [audio_tokens]
             logger.info(f"Audio tokens shape: {audio_tokens.shape}")
+            
+            # Store waveform for Whisper processing in dataset sample
+            ref_waveform = waveform.squeeze(0)  # Remove channel dimension
+            
         except Exception as e:
-            logger.error(f"Error encoding audio: {e}")
+            logger.error(f"Error loading audio: {e}")
             audio_ids = []
+            ref_waveform = None
+            sr = None
         
-        return messages, audio_ids
+        return messages, audio_ids, ref_waveform, sr
     
     @torch.inference_mode()
     def generate_arabic_speech(
         self,
         messages: List[Message],
         audio_ids: List[torch.Tensor],
+        ref_waveform: Optional[torch.Tensor] = None,
+        ref_sample_rate: Optional[int] = None,
         temperature: float = 0.3,
         top_k: int = 50,
         top_p: float = 0.95,
@@ -286,20 +339,37 @@ class ArabicVoiceCloningInference:
             logger.info("=== Generation Input ===")
             logger.info(self.tokenizer.decode(input_tokens))
             
-            # Create dataset sample
-            curr_sample = ChatMLDatasetSample(
-                input_ids=torch.LongTensor(input_tokens),
-                label_ids=None,
-                audio_ids_concat=torch.concat([ele.cpu() for ele in audio_ids], dim=1) if audio_ids else None,
-                audio_ids_start=torch.cumsum(
-                    torch.tensor([0] + [ele.shape[1] for ele in audio_ids], dtype=torch.long), 
-                    dim=0
-                ) if audio_ids else None,
-                audio_waveforms_concat=None,
-                audio_waveforms_start=None,
-                audio_sample_rate=None,
-                audio_speaker_indices=None,
-            )
+            # Create dataset sample with proper audio waveform for Whisper processing
+            if ref_waveform is not None and self.config.encode_whisper_embed:
+                # Include reference waveform for Whisper embeddings
+                curr_sample = ChatMLDatasetSample(
+                    input_ids=torch.LongTensor(input_tokens),
+                    label_ids=None,
+                    audio_ids_concat=torch.concat([ele.cpu() for ele in audio_ids], dim=1) if audio_ids else None,
+                    audio_ids_start=torch.cumsum(
+                        torch.tensor([0] + [ele.shape[1] for ele in audio_ids], dtype=torch.long), 
+                        dim=0
+                    ) if audio_ids else None,
+                    audio_waveforms_concat=ref_waveform,
+                    audio_waveforms_start=torch.tensor([0, len(ref_waveform)], dtype=torch.long),
+                    audio_sample_rate=torch.tensor([ref_sample_rate], dtype=torch.float32) if ref_sample_rate else None,
+                    audio_speaker_indices=None,
+                )
+            else:
+                # Fallback to audio tokens only (original behavior)
+                curr_sample = ChatMLDatasetSample(
+                    input_ids=torch.LongTensor(input_tokens),
+                    label_ids=None,
+                    audio_ids_concat=torch.concat([ele.cpu() for ele in audio_ids], dim=1) if audio_ids else None,
+                    audio_ids_start=torch.cumsum(
+                        torch.tensor([0] + [ele.shape[1] for ele in audio_ids], dtype=torch.long), 
+                        dim=0
+                    ) if audio_ids else None,
+                    audio_waveforms_concat=None,
+                    audio_waveforms_start=None,
+                    audio_sample_rate=None,
+                    audio_speaker_indices=None,
+                )
             
             # Collate data
             batch_data = self.collator([curr_sample])
@@ -417,7 +487,7 @@ class ArabicVoiceCloningInference:
                 continue
             
             # Create generation messages
-            messages, audio_ids = self.create_generation_messages(
+            messages, audio_ids, ref_waveform, ref_sr = self.create_generation_messages(
                 ref_text, ref_audio_path, target_text
             )
             
@@ -433,7 +503,7 @@ class ArabicVoiceCloningInference:
             
             # Generate speech
             waveform, sample_rate, text_output = self.generate_arabic_speech(
-                messages, audio_ids, temperature, top_k, top_p, seed
+                messages, audio_ids, ref_waveform, ref_sr, temperature, top_k, top_p, seed
             )
             
             if waveform is not None:
