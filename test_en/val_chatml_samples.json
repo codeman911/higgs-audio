@@ -1,0 +1,2082 @@
+[
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And deprive myself of the pleasure of watching you squirm?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000160_default_1325397c.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Right now in New York, <laugh> there's snow, <breath> and a temperature of twenty five degrees. <breath>"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Right now in New York, <laugh> there's snow, <breath> and a temperature of twenty five degrees. <breath>"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000160_default_1325397c.wav",
+            "raw_audio": "",
+            "duration": 6.826666666666667,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000160",
+    "misc": {
+      "sample_id": "sample_00000160",
+      "ref_transcript": "And deprive myself of the pleasure of watching you squirm?",
+      "target_transcript": "Right now in New York, <laugh> there's snow, <breath> and a temperature of twenty five degrees. <breath>",
+      "duration": 6.826666666666667
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And deprive myself of the pleasure of watching you squirm?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000161_default_b839f2a1.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: The first will go off in sixteen hours and six minutes and the second is paused with seven hours and three minutes left."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "The first will go off in sixteen hours and six minutes and the second is paused with seven hours and three minutes left."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000161_default_b839f2a1.wav",
+            "raw_audio": "",
+            "duration": 9.045333333333334,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000161",
+    "misc": {
+      "sample_id": "sample_00000161",
+      "ref_transcript": "And deprive myself of the pleasure of watching you squirm?",
+      "target_transcript": "The first will go off in sixteen hours and six minutes and the second is paused with seven hours and three minutes left.",
+      "duration": 9.045333333333334
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And deprive myself of the pleasure of watching you squirm?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000162_default_298c07bf.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Dad, are you kidding me?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Dad, are you kidding me?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000162_default_298c07bf.wav",
+            "raw_audio": "",
+            "duration": 2.304,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000162",
+    "misc": {
+      "sample_id": "sample_00000162",
+      "ref_transcript": "And deprive myself of the pleasure of watching you squirm?",
+      "target_transcript": "Dad, are you kidding me?",
+      "duration": 2.304
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And deprive myself of the pleasure of watching you squirm?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000163_default_238dd57c.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Deed to Troy's loft."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Deed to Troy's loft."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000163_default_238dd57c.wav",
+            "raw_audio": "",
+            "duration": 2.6453333333333333,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000163",
+    "misc": {
+      "sample_id": "sample_00000163",
+      "ref_transcript": "And deprive myself of the pleasure of watching you squirm?",
+      "target_transcript": "Deed to Troy's loft.",
+      "duration": 2.6453333333333333
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And deprive myself of the pleasure of watching you squirm?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000164_default_c4850f23.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Frankly, it was worth the booking."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Frankly, it was worth the booking."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000164_default_c4850f23.wav",
+            "raw_audio": "",
+            "duration": 2.7306666666666666,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000164",
+    "misc": {
+      "sample_id": "sample_00000164",
+      "ref_transcript": "And deprive myself of the pleasure of watching you squirm?",
+      "target_transcript": "Frankly, it was worth the booking.",
+      "duration": 2.7306666666666666
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And Fee and Steffy, they're teenagers."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000165_default_a85e3ab1.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: I'm in the middle."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "I'm in the middle."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000165_default_a85e3ab1.wav",
+            "raw_audio": "",
+            "duration": 1.6213333333333333,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000165",
+    "misc": {
+      "sample_id": "sample_00000165",
+      "ref_transcript": "And Fee and Steffy, they're teenagers.",
+      "target_transcript": "I'm in the middle.",
+      "duration": 1.6213333333333333
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And Fee and Steffy, they're teenagers."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000166_default_3674084b.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: You could have *wrecked* his life."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "You could have *wrecked* his life."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000166_default_3674084b.wav",
+            "raw_audio": "",
+            "duration": 2.304,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000166",
+    "misc": {
+      "sample_id": "sample_00000166",
+      "ref_transcript": "And Fee and Steffy, they're teenagers.",
+      "target_transcript": "You could have *wrecked* his life.",
+      "duration": 2.304
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And Fee and Steffy, they're teenagers."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000167_default_1645892d.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: It's a busy work box, Jenna."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "It's a busy work box, Jenna."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000167_default_1645892d.wav",
+            "raw_audio": "",
+            "duration": 2.474666666666667,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000167",
+    "misc": {
+      "sample_id": "sample_00000167",
+      "ref_transcript": "And Fee and Steffy, they're teenagers.",
+      "target_transcript": "It's a busy work box, Jenna.",
+      "duration": 2.474666666666667
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And Fee and Steffy, they're teenagers."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000168_default_b714e04f.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Is she a qualified therapist?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Is she a qualified therapist?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000168_default_b714e04f.wav",
+            "raw_audio": "",
+            "duration": 1.8773333333333333,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000168",
+    "misc": {
+      "sample_id": "sample_00000168",
+      "ref_transcript": "And Fee and Steffy, they're teenagers.",
+      "target_transcript": "Is she a qualified therapist?",
+      "duration": 1.8773333333333333
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And Fee and Steffy, they're teenagers."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000169_default_42a978ba.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Where is the human rights?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Where is the human rights?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000169_default_42a978ba.wav",
+            "raw_audio": "",
+            "duration": 1.792,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000169",
+    "misc": {
+      "sample_id": "sample_00000169",
+      "ref_transcript": "And Fee and Steffy, they're teenagers.",
+      "target_transcript": "Where is the human rights?",
+      "duration": 1.792
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And he's not alone."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000170_default_818989c8.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Get me the waffle hook up."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Get me the waffle hook up."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000170_default_818989c8.wav",
+            "raw_audio": "",
+            "duration": 2.1333333333333333,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000170",
+    "misc": {
+      "sample_id": "sample_00000170",
+      "ref_transcript": "And he's not alone.",
+      "target_transcript": "Get me the waffle hook up.",
+      "duration": 2.1333333333333333
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And *holy shit*, I've never seen it."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000171_default_1074976a.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Happy holidays!"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Happy holidays!"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000171_default_1074976a.wav",
+            "raw_audio": "",
+            "duration": 1.7066666666666668,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000171",
+    "misc": {
+      "sample_id": "sample_00000171",
+      "ref_transcript": "And *holy shit*, I've never seen it.",
+      "target_transcript": "Happy holidays!",
+      "duration": 1.7066666666666668
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And he was talking specifically about the issue of can trans women compete with cis women."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000172_default_8297313c.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Hang gliding and bungee jumping sound scary."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Hang gliding and bungee jumping sound scary."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000172_default_8297313c.wav",
+            "raw_audio": "",
+            "duration": 3.072,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000172",
+    "misc": {
+      "sample_id": "sample_00000172",
+      "ref_transcript": "And he was talking specifically about the issue of can trans women compete with cis women.",
+      "target_transcript": "Hang gliding and bungee jumping sound scary.",
+      "duration": 3.072
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And he was talking specifically about the issue of can trans women compete with cis women."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000173_default_d8e3cce9.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: It's really hard because everyone looks pretty similar on television."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "It's really hard because everyone looks pretty similar on television."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000173_default_d8e3cce9.wav",
+            "raw_audio": "",
+            "duration": 6.570666666666667,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000173",
+    "misc": {
+      "sample_id": "sample_00000173",
+      "ref_transcript": "And he was talking specifically about the issue of can trans women compete with cis women.",
+      "target_transcript": "It's really hard because everyone looks pretty similar on television.",
+      "duration": 6.570666666666667
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And he was talking specifically about the issue of can trans women compete with cis women."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000174_default_61add7e0.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: She shoots, she scores!"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "She shoots, she scores!"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000174_default_61add7e0.wav",
+            "raw_audio": "",
+            "duration": 2.304,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000174",
+    "misc": {
+      "sample_id": "sample_00000174",
+      "ref_transcript": "And he was talking specifically about the issue of can trans women compete with cis women.",
+      "target_transcript": "She shoots, she scores!",
+      "duration": 2.304
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And he was talking specifically about the issue of can trans women compete with cis women."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000175_default_6134b854.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: You all right, Grace?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "You all right, Grace?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000175_default_6134b854.wav",
+            "raw_audio": "",
+            "duration": 1.792,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000175",
+    "misc": {
+      "sample_id": "sample_00000175",
+      "ref_transcript": "And he was talking specifically about the issue of can trans women compete with cis women.",
+      "target_transcript": "You all right, Grace?",
+      "duration": 1.792
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And he was talking specifically about the issue of can trans women compete with cis women."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000176_default_760d3a86.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: No, April Fools is Thursday, April first."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "No, April Fools is Thursday, April first."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000176_default_760d3a86.wav",
+            "raw_audio": "",
+            "duration": 5.290666666666667,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000176",
+    "misc": {
+      "sample_id": "sample_00000176",
+      "ref_transcript": "And he was talking specifically about the issue of can trans women compete with cis women.",
+      "target_transcript": "No, April Fools is Thursday, April first.",
+      "duration": 5.290666666666667
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And he was talking specifically about the issue of can trans women compete with cis women."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000177_default_c3b2749b.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: That's great!"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "That's great!"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000177_default_c3b2749b.wav",
+            "raw_audio": "",
+            "duration": 1.3653333333333333,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000177",
+    "misc": {
+      "sample_id": "sample_00000177",
+      "ref_transcript": "And he was talking specifically about the issue of can trans women compete with cis women.",
+      "target_transcript": "That's great!",
+      "duration": 1.3653333333333333
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And he was talking specifically about the issue of can trans women compete with cis women."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000178_default_047ccdb8.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: W W W dot facebook dot com."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "W W W dot facebook dot com."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000178_default_047ccdb8.wav",
+            "raw_audio": "",
+            "duration": 3.072,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000178",
+    "misc": {
+      "sample_id": "sample_00000178",
+      "ref_transcript": "And he was talking specifically about the issue of can trans women compete with cis women.",
+      "target_transcript": "W W W dot facebook dot com.",
+      "duration": 3.072
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And *holy shit*, I've never seen it."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000179_default_05dedfed.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Is SDS just a formality?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Is SDS just a formality?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000179_default_05dedfed.wav",
+            "raw_audio": "",
+            "duration": 2.3893333333333335,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000179",
+    "misc": {
+      "sample_id": "sample_00000179",
+      "ref_transcript": "And *holy shit*, I've never seen it.",
+      "target_transcript": "Is SDS just a formality?",
+      "duration": 2.3893333333333335
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I do believe that she will come back to us, you know?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000180_default_b8949a0b.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Add thirty two minutes and thirty eight seconds to your twenty six minute timer, right?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Add thirty two minutes and thirty eight seconds to your twenty six minute timer, right?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000180_default_b8949a0b.wav",
+            "raw_audio": "",
+            "duration": 4.778666666666667,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000180",
+    "misc": {
+      "sample_id": "sample_00000180",
+      "ref_transcript": "And I do believe that she will come back to us, you know?",
+      "target_transcript": "Add thirty two minutes and thirty eight seconds to your twenty six minute timer, right?",
+      "duration": 4.778666666666667
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I do believe that she will come back to us, you know?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000181_default_a1c86af1.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Who wrote the Black Circle?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Who wrote the Black Circle?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000181_default_a1c86af1.wav",
+            "raw_audio": "",
+            "duration": 1.6213333333333333,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000181",
+    "misc": {
+      "sample_id": "sample_00000181",
+      "ref_transcript": "And I do believe that she will come back to us, you know?",
+      "target_transcript": "Who wrote the Black Circle?",
+      "duration": 1.6213333333333333
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I do believe that she will come back to us, you know?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000182_default_99e41ef5.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Erase the barriers and take them away!"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Erase the barriers and take them away!"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000182_default_99e41ef5.wav",
+            "raw_audio": "",
+            "duration": 3.498666666666667,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000182",
+    "misc": {
+      "sample_id": "sample_00000182",
+      "ref_transcript": "And I do believe that she will come back to us, you know?",
+      "target_transcript": "Erase the barriers and take them away!",
+      "duration": 3.498666666666667
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I do believe that she will come back to us, you know?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000183_default_ca131e3e.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: <laugh> What's this author's name?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "<laugh> What's this author's name?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000183_default_ca131e3e.wav",
+            "raw_audio": "",
+            "duration": 2.2186666666666666,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000183",
+    "misc": {
+      "sample_id": "sample_00000183",
+      "ref_transcript": "And I do believe that she will come back to us, you know?",
+      "target_transcript": "<laugh> What's this author's name?",
+      "duration": 2.2186666666666666
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I do believe that she will come back to us, you know?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000184_default_e4abc533.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: You could have *wrecked* his life."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "You could have *wrecked* his life."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000184_default_e4abc533.wav",
+            "raw_audio": "",
+            "duration": 2.9013333333333335,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000184",
+    "misc": {
+      "sample_id": "sample_00000184",
+      "ref_transcript": "And I do believe that she will come back to us, you know?",
+      "target_transcript": "You could have *wrecked* his life.",
+      "duration": 2.9013333333333335
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I'm <breath> loitering around in the shadows just <breath> carrying that torch for him, right?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000185_default_779002b4.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: No, snow is *not* expected on Saturday."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "No, snow is *not* expected on Saturday."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000185_default_779002b4.wav",
+            "raw_audio": "",
+            "duration": 4.266666666666667,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000185",
+    "misc": {
+      "sample_id": "sample_00000185",
+      "ref_transcript": "And I'm <breath> loitering around in the shadows just <breath> carrying that torch for him, right?",
+      "target_transcript": "No, snow is *not* expected on Saturday.",
+      "duration": 4.266666666666667
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I'm loitering around in the shadows just carrying that torch for him, right?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000186_default_7a37a1e5.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Maybe you should change your priorities."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Maybe you should change your priorities."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000186_default_7a37a1e5.wav",
+            "raw_audio": "",
+            "duration": 2.474666666666667,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000186",
+    "misc": {
+      "sample_id": "sample_00000186",
+      "ref_transcript": "And I'm loitering around in the shadows just carrying that torch for him, right?",
+      "target_transcript": "Maybe you should change your priorities.",
+      "duration": 2.474666666666667
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I'm loitering around in the shadows just carrying that torch for him, right?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000187_default_5ef65fd3.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: But we turned it into just this."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "But we turned it into just this."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000187_default_5ef65fd3.wav",
+            "raw_audio": "",
+            "duration": 3.498666666666667,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000187",
+    "misc": {
+      "sample_id": "sample_00000187",
+      "ref_transcript": "And I'm loitering around in the shadows just carrying that torch for him, right?",
+      "target_transcript": "But we turned it into just this.",
+      "duration": 3.498666666666667
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I'm loitering around in the shadows just carrying that torch for him, right?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000188_default_0819d8e2.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: What do you call a sleeping dinosaur? A dino-*snore*!"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "What do you call a sleeping dinosaur? A dino-*snore*!"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000188_default_0819d8e2.wav",
+            "raw_audio": "",
+            "duration": 6.229333333333333,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000188",
+    "misc": {
+      "sample_id": "sample_00000188",
+      "ref_transcript": "And I'm loitering around in the shadows just carrying that torch for him, right?",
+      "target_transcript": "What do you call a sleeping dinosaur? A dino-*snore*!",
+      "duration": 6.229333333333333
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I'm loitering around in the shadows just carrying that torch for him, right?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000189_default_880e9f1c.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Then there's \"Miracle of thirty fourth Street\", but only watch the original!"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Then there's \"Miracle of thirty fourth Street\", but only watch the original!"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000189_default_880e9f1c.wav",
+            "raw_audio": "",
+            "duration": 7.765333333333333,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000189",
+    "misc": {
+      "sample_id": "sample_00000189",
+      "ref_transcript": "And I'm loitering around in the shadows just carrying that torch for him, right?",
+      "target_transcript": "Then there's \"Miracle of thirty fourth Street\", but only watch the original!",
+      "duration": 7.765333333333333
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I'm loitering around in the shadows just carrying that torch for him, right?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000190_default_1f77c940.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: What do you think, a cerebral contusion?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "What do you think, a cerebral contusion?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000190_default_1f77c940.wav",
+            "raw_audio": "",
+            "duration": 3.584,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000190",
+    "misc": {
+      "sample_id": "sample_00000190",
+      "ref_transcript": "And I'm loitering around in the shadows just carrying that torch for him, right?",
+      "target_transcript": "What do you think, a cerebral contusion?",
+      "duration": 3.584
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I'm uh loitering around in the shadows just carrying that torch *for* him, right?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000191_default_45ff5ed6.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: About wanting to strangle her?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "About wanting to strangle her?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000191_default_45ff5ed6.wav",
+            "raw_audio": "",
+            "duration": 2.474666666666667,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000191",
+    "misc": {
+      "sample_id": "sample_00000191",
+      "ref_transcript": "And I'm uh loitering around in the shadows just carrying that torch *for* him, right?",
+      "target_transcript": "About wanting to strangle her?",
+      "duration": 2.474666666666667
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I remember I was at the table snort laughing."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000192_default_16824eba.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: I could see his desire for the job in his *eyes*."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "I could see his desire for the job in his *eyes*."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000192_default_16824eba.wav",
+            "raw_audio": "",
+            "duration": 3.6693333333333333,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000192",
+    "misc": {
+      "sample_id": "sample_00000192",
+      "ref_transcript": "And I remember I was at the table snort laughing.",
+      "target_transcript": "I could see his desire for the job in his *eyes*.",
+      "duration": 3.6693333333333333
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I remember I was at the table snort laughing."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000193_default_77e40339.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: The Harry Potter series is comprised of books and movies."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "The Harry Potter series is comprised of books and movies."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000193_default_77e40339.wav",
+            "raw_audio": "",
+            "duration": 3.7546666666666666,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000193",
+    "misc": {
+      "sample_id": "sample_00000193",
+      "ref_transcript": "And I remember I was at the table snort laughing.",
+      "target_transcript": "The Harry Potter series is comprised of books and movies.",
+      "duration": 3.7546666666666666
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I remember I was at the table snort laughing."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000194_default_7fe95105.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: <laugh> I am not sure."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "<laugh> I am not sure."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000194_default_7fe95105.wav",
+            "raw_audio": "",
+            "duration": 2.816,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000194",
+    "misc": {
+      "sample_id": "sample_00000194",
+      "ref_transcript": "And I remember I was at the table snort laughing.",
+      "target_transcript": "<laugh> I am not sure.",
+      "duration": 2.816
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I remember I was at the table snort laughing."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000195_default_c4e5c27e.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: A box cutter or a screwdriver?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "A box cutter or a screwdriver?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000195_default_c4e5c27e.wav",
+            "raw_audio": "",
+            "duration": 2.9013333333333335,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000195",
+    "misc": {
+      "sample_id": "sample_00000195",
+      "ref_transcript": "And I remember I was at the table snort laughing.",
+      "target_transcript": "A box cutter or a screwdriver?",
+      "duration": 2.9013333333333335
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I remember I was at the table snort laughing."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000196_default_7febfe93.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: I was just like, oh, that's an interesting aspect to this year."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "I was just like, oh, that's an interesting aspect to this year."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000196_default_7febfe93.wav",
+            "raw_audio": "",
+            "duration": 4.608,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000196",
+    "misc": {
+      "sample_id": "sample_00000196",
+      "ref_transcript": "And I remember I was at the table snort laughing.",
+      "target_transcript": "I was just like, oh, that's an interesting aspect to this year.",
+      "duration": 4.608
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I remember <laugh> I was at the table just <laugh> snort laughing."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000197_default_87379349.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: Anything else I can answer today?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Anything else I can answer today?"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000197_default_87379349.wav",
+            "raw_audio": "",
+            "duration": 1.8773333333333333,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000197",
+    "misc": {
+      "sample_id": "sample_00000197",
+      "ref_transcript": "And I remember <laugh> I was at the table just <laugh> snort laughing.",
+      "target_transcript": "Anything else I can answer today?",
+      "duration": 1.8773333333333333
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And I remember I was at the table snort laughing."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000198_default_cd139b42.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: I had too much to drink."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "I had too much to drink."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000198_default_cd139b42.wav",
+            "raw_audio": "",
+            "duration": 3.1573333333333333,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000198",
+    "misc": {
+      "sample_id": "sample_00000198",
+      "ref_transcript": "And I remember I was at the table snort laughing.",
+      "target_transcript": "I had too much to drink.",
+      "duration": 3.1573333333333333
+    }
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant capable of generating speech in the voice of the provided reference audio."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "And it's the best drumming I've ever seen."
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/ref_audio_20250807_112920_00000199_default_067235d8.wav",
+            "raw_audio": "",
+            "duration": null,
+            "offset": null
+          },
+          {
+            "type": "text",
+            "text": "Please generate speech for given text in reference audio's voice: That woman's a beast!"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "That woman's a beast!"
+          },
+          {
+            "type": "audio",
+            "audio_url": "../train-higgs-audio/datasets/zr_en/target_audio_20250807_112920_00000199_default_067235d8.wav",
+            "raw_audio": "",
+            "duration": 1.7066666666666668,
+            "offset": null
+          }
+        ]
+      }
+    ],
+    "start_index": 0,
+    "speaker": "sample_00000199",
+    "misc": {
+      "sample_id": "sample_00000199",
+      "ref_transcript": "And it's the best drumming I've ever seen.",
+      "target_transcript": "That woman's a beast!",
+      "duration": 1.7066666666666668
+    }
+  }
+]

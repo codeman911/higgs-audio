@@ -1,0 +1,13 @@
+{
+  "total_samples": 40,
+  "processing_config": {
+    "target_sample_rate": 24000,
+    "max_duration": 30.0,
+    "min_duration": 0.5
+  },
+  "sample_statistics": {
+    "avg_duration": 3.3280000000000003,
+    "total_duration": 133.12,
+    "unique_speakers": 40
+  }
+}
