@@ -51,7 +51,7 @@ class DistributedTrainingConfig:
     # Optimization
     use_mixed_precision: bool = True
     dataloader_num_workers: int = 16
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: bool = False  # Disabled for Higgs Audio compatibility
     
     # Distributed
     local_rank: int = -1

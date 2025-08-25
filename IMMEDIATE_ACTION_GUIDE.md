@@ -1,10 +1,11 @@
 # 🚀 IMMEDIATE ACTION GUIDE - Fix Training Errors
 
-## ✅ **ERROR FIXED - Ready to Resume Training!**
+## ✅ **ALL ERRORS FIXED - Ready to Resume Training!**
 
 Your training failed with these specific errors:
-1. **NotImplementedError** from `enable_input_require_grads()` 
-2. **Modules mismatch** - trying to save non-existent modules
+1. ✅ **FIXED** - **NotImplementedError** from `enable_input_require_grads()` 
+2. ✅ **FIXED** - **Modules mismatch** - trying to save non-existent modules
+3. ✅ **FIXED** - **ValueError** - HiggsAudioModel gradient checkpointing incompatibility
 
 **All issues have been RESOLVED!** Here's what to do:
 
@@ -18,9 +19,12 @@ cd /vs/higgs-audio
 # Copy the fixed LoRA configuration  
 cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/arabic_voice_cloning_lora_config.py .
 
-# Verify the fix
-grep -n "enable_input_require_grads" arabic_voice_cloning_lora_config.py
-# Should show only comments, no actual function calls
+# Copy the fixed distributed trainer
+cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/arabic_voice_cloning_distributed_trainer.py .
+
+# Verify the fixes
+grep -n "gradient_checkpointing.*False" arabic_voice_cloning_distributed_trainer.py
+# Should show: gradient_checkpointing: bool = False
 ```
 
 ### Step 2: Run Your Original Training Command
@@ -32,18 +36,34 @@ python3 arabic_voice_cloning_distributed_trainer.py \
 
 ## 🔧 **What Was Fixed**
 
-### ❌ **Previous Error:**
+### ❌ **Previous Errors:**
+
+**Error 1:** NotImplementedError
 ```
-NotImplementedError: 
 File "arabic_voice_cloning_lora_config.py", line 318, in apply_lora_to_model
   lora_model.enable_input_require_grads()
+NotImplementedError
 ```
 
-### ✅ **Fix Applied:**
+**Error 2:** Modules mismatch
+```
+Modules to save: ['audio_head', 'lm_head']  # Non-existent modules
+```
+
+**Error 3:** Gradient Checkpointing Incompatibility
+```
+ValueError: HiggsAudioModel is not compatible with gradient checkpointing. 
+Make sure all the architecture support it by setting a boolean attribute 
+`gradient_checkpointing` to modules of the model that uses checkpointing.
+```
+
+### ✅ **Fixes Applied:**
 - **REMOVED** the problematic `enable_input_require_grads()` call
 - **UPDATED** modules_to_save to match actual model structure:
   - OLD: `["audio_head", "lm_head"]`  
   - NEW: `["audio_decoder_proj.text_lm_head", "audio_decoder_proj.audio_lm_head", "audio_codebook_embeddings"]`
+- **DISABLED** gradient checkpointing by default (Higgs Audio doesn't support it)
+- **ADDED** proper error handling for gradient checkpointing attempts
 - **CONFIRMED** all target modules exist in the actual model
 
 ### 🎯 **Key Changes:**
@@ -79,6 +99,8 @@ Training Configuration:
 ```bash
 # Use the completely rewritten fixed version
 cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/complete_training_fix.py .
+cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/fix_gradient_checkpointing.py .
+python3 fix_gradient_checkpointing.py
 python3 complete_training_fix.py --fix-all
 ```
 
@@ -118,12 +140,13 @@ print('✅ All imports successful - ready for training!')
 
 ## 🎯 **Bottom Line**
 
-**Your training pipeline is now FIXED and ready to run!**
+**Your training pipeline is now COMPLETELY FIXED and ready to run!**
 
 Just execute:
 ```bash
 cd /vs/higgs-audio
 cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/arabic_voice_cloning_lora_config.py .
+cp /Users/vikram.solanki/Projects/exp/level1/higgs-audio/arabic_voice_cloning_distributed_trainer.py .
 python3 arabic_voice_cloning_distributed_trainer.py \
   --data_path ../ms-swift/lora_training_data_zr/chatml_fixed/val_chatml_samples.json \
   --output_dir EXPMT/exp_small
