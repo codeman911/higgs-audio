@@ -137,7 +137,8 @@ class TrainingLogger:
             else:
                 logger.info(f"   ✅ {param}: {actual_value}")
         
-        if mismatches:\n            logger.error("❌ Collator Alignment Issues Found:")
+        if mismatches:
+            logger.error("❌ Collator Alignment Issues Found:")
             for mismatch in mismatches:
                 logger.error(f"     - {mismatch}")
         else:
