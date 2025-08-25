@@ -309,6 +309,8 @@ class ArabicVoiceCloningInference:
             logger.error(f"Error processing ChatML sample: {e}")
             return None, None, None, None
     
+    # DEPRECATED: Replaced with _prepare_generation_context following generation.py pattern
+    # This method is kept for backward compatibility but should not be used
     def create_generation_messages(
         self, 
         ref_text: str, 
@@ -316,110 +318,14 @@ class ArabicVoiceCloningInference:
         target_text: str
     ) -> tuple:
         """
-        Create the message structure for generation, following Higgs Audio v2 voice cloning patterns.
+        DEPRECATED: Use _prepare_generation_context instead.
         
-        Args:
-            ref_text: Reference text that was spoken in reference audio
-            ref_audio_path: Path to reference audio file
-            target_text: Text to generate in the reference voice
-            
-        Returns:
-            Tuple of (messages, audio_ids, ref_waveform, sample_rate)
+        This method had issues causing assistant text to be spoken.
+        The new implementation follows generation.py pattern exactly.
         """
-        # Create system message for Arabic voice cloning - keep it concise
-        system_message = Message(
-            role="system",
-            content="Generate speech in the provided voice."
-        )
-        
-        # CRITICAL FIX: Pass text directly without any processing/filtering
-        # Remove any text normalization as requested
-        processed_ref_text = ref_text  # Direct pass-through, no filtering
-        
-        # Create user message with reference text and audio token placeholder
-        # This follows the proper ChatML format for voice cloning conditioning
-        user_ref_message = Message(
-            role="user",
-            content=f"{processed_ref_text} <|audio_bos|><|AUDIO|><|audio_eos|>"
-        )
-        
-        # Create assistant message that acknowledges the reference audio
-        # CRITICAL FIX: Use text response instead of AudioContent to avoid AUDIO_OUT tokens in input
-        # For voice cloning inference, we don't want AUDIO_OUT in the input sequence
-        assistant_ref_message = Message(
-            role="assistant",
-            content="I understand the reference voice."
-        )
-        
-        # CRITICAL FIX: Pass target text directly without any processing/filtering
-        # Remove any text normalization as requested  
-        processed_target_text = target_text  # Direct pass-through, no filtering
-        
-        # Create user message with target text for generation
-        user_target_message = Message(
-            role="user", 
-            content=processed_target_text
-        )
-        
-        messages = [system_message, user_ref_message, assistant_ref_message, user_target_message]
-        
-        # Load and prepare reference audio waveform for Whisper processing
-        logger.info(f"Loading reference audio waveform: {ref_audio_path}")
-        if not os.path.exists(ref_audio_path):
-            logger.error(f"Reference audio file not found: {ref_audio_path}")
-            return messages, [], None, None
-            
-        try:
-            # Load audio waveform
-            waveform, sr = torchaudio.load(ref_audio_path)
-            logger.info(f"Loaded audio: shape={waveform.shape}, sr={sr}")
-            
-            # Convert to mono if stereo
-            if waveform.shape[0] > 1:
-                waveform = waveform.mean(dim=0, keepdim=True)
-                logger.info(f"Converted to mono: shape={waveform.shape}")
-            
-            # Encode reference audio for DAC tokens (always needed)
-            audio_tokens = self.audio_tokenizer.encode(ref_audio_path)
-            audio_ids = [audio_tokens]
-            logger.info(f"Audio tokens shape: {audio_tokens.shape}")
-            
-            # Prepare waveform for Whisper processing (conditional)
-            ref_waveform = None
-            if self.collator.whisper_processor is not None and self.collator.encode_whisper_embed:
-                # Resample to 16kHz for Whisper if needed
-                target_sr = 16000
-                if sr != target_sr:
-                    resampler = T.Resample(sr, target_sr)
-                    waveform_16k = resampler(waveform)
-                    logger.info(f"Resampled to {target_sr}Hz: shape={waveform_16k.shape}")
-                else:
-                    waveform_16k = waveform
-                
-                # Store waveform for Whisper processing
-                ref_waveform = waveform_16k.squeeze(0)  # Remove channel dimension
-                logger.info(f"Final waveform for Whisper: shape={ref_waveform.shape}, type={type(ref_waveform)}")
-                
-                # Validate the waveform
-                if ref_waveform.numel() == 0:
-                    logger.warning("Waveform is empty after processing! Disabling Whisper conditioning.")
-                    ref_waveform = None
-                elif torch.isnan(ref_waveform).any() or torch.isinf(ref_waveform).any():
-                    logger.warning("Waveform contains NaN or Inf values! Disabling Whisper conditioning.")
-                    ref_waveform = None
-                else:
-                    logger.info(f"Waveform validation passed: min={ref_waveform.min():.4f}, max={ref_waveform.max():.4f}")
-                    sr = target_sr  # Update sample rate for return
-            else:
-                logger.info("Whisper processor not available or disabled - using DAC-only mode")
-            
-        except Exception as e:
-            logger.error(f"Error loading audio: {e}")
-            audio_ids = []
-            ref_waveform = None
-            sr = None
-        
-        return messages, audio_ids, ref_waveform, sr
+        logger.warning("create_generation_messages is deprecated. Use _prepare_generation_context instead.")
+        messages, audio_ids = self._prepare_generation_context(ref_text, ref_audio_path)
+        return messages, audio_ids, None, None
     
     def _create_robust_sample(
         self,
@@ -569,44 +475,209 @@ class ArabicVoiceCloningInference:
     
     @torch.inference_mode()
     def generate_arabic_speech(
+        self, 
+        ref_text: str, 
+        ref_audio_path: str, 
+        target_text: str, 
+        temperature: float = 0.3, 
+        top_k: int = 50, 
+        top_p: float = 0.95,
+        seed: Optional[int] = None
+    ) -> tuple:
+        """
+        Generate Arabic speech using zero-shot voice cloning following generation.py pattern EXACTLY.
+        
+        CRITICAL: This implementation follows generation.py's iterative chunk-based generation
+        to prevent assistant text from being spoken and ensure proper voice cloning.
+        
+        Args:
+            ref_text: Reference text that was spoken in reference audio
+            ref_audio_path: Path to reference audio file
+            target_text: Text to generate speech for
+            temperature: Sampling temperature (0.0 = greedy, higher = more random)
+            top_k: Top-k sampling parameter
+            top_p: Top-p (nucleus) sampling parameter
+            seed: Random seed for reproducible generation
+            
+        Returns:
+            Tuple of (waveform_numpy, sample_rate, text_output)
+        """
+        try:
+            # STEP 1: Prepare generation context following generation.py pattern
+            messages, audio_ids = self._prepare_generation_context(
+                ref_text=ref_text,
+                ref_audio_path=ref_audio_path
+            )
+            
+            if not audio_ids:
+                logger.error("No audio IDs generated - check reference audio processing")
+                return None, None, None
+            
+            # STEP 2: Prepare chunked text (for now single chunk, but ready for expansion)
+            chunked_text = [target_text]  # Single chunk for Arabic inference
+            
+            # STEP 3: Generate using iterative chunk approach (following generation.py exactly)
+            concat_wv, sr, text_result = self._generate_chunks(
+                messages=messages,
+                audio_ids=audio_ids,
+                chunked_text=chunked_text,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                seed=seed
+            )
+            
+            return concat_wv, sr, text_result
+                
+        except Exception as e:
+            logger.error(f"Error during generation: {e}")
+            import traceback
+            traceback.print_exc()
+            return None, None, None
+    
+    def _prepare_generation_context(self, ref_text: str, ref_audio_path: str) -> tuple:
+        """
+        Prepare generation context following generation.py's prepare_generation_context pattern.
+        
+        This creates the proper message structure for zero-shot voice cloning:
+        1. System message for voice cloning instruction
+        2. User message with reference text + audio token
+        3. Assistant acknowledgment with AudioContent (not text!)
+        
+        Args:
+            ref_text: Reference text
+            ref_audio_path: Reference audio path
+            
+        Returns:
+            Tuple of (messages, audio_ids)
+        """
+        # Create system message
+        system_message = Message(
+            role="system",
+            content="Generate speech in the provided voice."
+        )
+        
+        # Load and encode reference audio
+        logger.info(f"Loading reference audio waveform: {ref_audio_path}")
+        if not os.path.exists(ref_audio_path):
+            logger.error(f"Reference audio file not found: {ref_audio_path}")
+            return [], []
+            
+        try:
+            # Load audio waveform
+            waveform, sr = torchaudio.load(ref_audio_path)
+            logger.info(f"Loaded audio: shape={waveform.shape}, sr={sr}")
+            
+            # Convert to mono if stereo
+            if waveform.shape[0] > 1:
+                waveform = waveform.mean(dim=0, keepdim=True)
+                logger.info(f"Converted to mono: shape={waveform.shape}")
+            
+            # Encode reference audio for DAC tokens
+            audio_tokens = self.audio_tokenizer.encode(ref_audio_path)
+            audio_ids = [audio_tokens]
+            logger.info(f"Audio tokens shape: {audio_tokens.shape}")
+            
+            # Prepare waveform for Whisper processing (conditional)
+            ref_waveform = None
+            if self.collator.whisper_processor is not None and self.collator.encode_whisper_embed:
+                # Resample to 16kHz for Whisper if needed
+                target_sr = 16000
+                if sr != target_sr:
+                    resampler = T.Resample(sr, target_sr)
+                    waveform_16k = resampler(waveform)
+                    logger.info(f"Resampled to {target_sr}Hz: shape={waveform_16k.shape}")
+                else:
+                    waveform_16k = waveform
+                
+                # Store waveform for Whisper processing
+                ref_waveform = waveform_16k.squeeze(0)  # Remove channel dimension
+                logger.info(f"Final waveform for Whisper: shape={ref_waveform.shape}, type={type(ref_waveform)}")
+                
+                # Validate the waveform
+                if ref_waveform.numel() == 0:
+                    logger.warning("Waveform is empty after processing! Disabling Whisper conditioning.")
+                    ref_waveform = None
+                elif torch.isnan(ref_waveform).any() or torch.isinf(ref_waveform).any():
+                    logger.warning("Waveform contains NaN or Inf values! Disabling Whisper conditioning.")
+                    ref_waveform = None
+                else:
+                    logger.info(f"Waveform validation passed: min={ref_waveform.min():.4f}, max={ref_waveform.max():.4f}")
+            else:
+                logger.info("Whisper processor not available or disabled - using DAC-only mode")
+            
+        except Exception as e:
+            logger.error(f"Error loading audio: {e}")
+            return [], []
+        
+        # CRITICAL: Follow generation.py pattern for voice prompting
+        # Create user message with reference text (no audio token here)
+        user_ref_message = Message(
+            role="user",
+            content=ref_text
+        )
+        
+        # CRITICAL: Assistant responds with AudioContent, not text
+        # This is the key difference from the previous broken implementation
+        assistant_ref_message = Message(
+            role="assistant",
+            content=AudioContent(audio_url=ref_audio_path)
+        )
+        
+        messages = [system_message, user_ref_message, assistant_ref_message]
+        
+        return messages, audio_ids
+    
+    def _generate_chunks(
         self,
         messages: List[Message],
         audio_ids: List[torch.Tensor],
-        ref_waveform: Optional[torch.Tensor] = None,
-        ref_sample_rate: Optional[int] = None,
-        target_text: str = "",  # Added for adaptive token calculation
+        chunked_text: List[str],
         temperature: float = 0.3,
         top_k: int = 50,
         top_p: float = 0.95,
         seed: Optional[int] = None
     ) -> tuple:
         """
-        Generate Arabic speech using the provided messages and reference audio.
+        Generate audio chunks following generation.py's generate method EXACTLY.
+        
+        This implements the iterative generation approach with proper context propagation.
         
         Args:
-            messages: List of Message objects for generation context
-            audio_ids: List of audio token tensors
-            ref_waveform: Reference audio waveform for Whisper conditioning
-            ref_sample_rate: Sample rate of reference waveform
-            target_text: Target text for adaptive token calculation
+            messages: Base messages with system and reference voice
+            audio_ids: Reference audio tokens
+            chunked_text: List of text chunks to generate
             temperature: Sampling temperature
-            top_k: Top-k sampling parameter
-            top_p: Top-p sampling parameter
-            seed: Random seed for reproducibility
+            top_k: Top-k sampling
+            top_p: Top-p sampling
+            seed: Random seed
             
         Returns:
-            Tuple of (waveform, sample_rate, text_output)
+            Tuple of (concat_wv, sample_rate, text_result)
         """
-        try:
-            # Create ChatML sample
-            chatml_sample = ChatMLSample(messages=messages)
+        sr = 24000
+        audio_out_ids_l = []
+        generated_audio_ids = []
+        generation_messages = []
+        
+        # Variables to track final outputs
+        final_outputs = None
+        
+        for idx, chunk_text in enumerate(chunked_text):
+            logger.info(f"Processing chunk {idx}: {chunk_text[:100]}...")
             
-            # Prepare input tokens
+            # Add user message with current chunk text
+            generation_messages.append(
+                Message(
+                    role="user",
+                    content=chunk_text,
+                )
+            )
+            
+            # Create ChatML sample with accumulated context
+            chatml_sample = ChatMLSample(messages=messages + generation_messages)
             input_tokens, _, _, _ = prepare_chatml_sample(chatml_sample, self.tokenizer)
-            if input_tokens is None:
-                logger.error("Failed to prepare ChatML sample")
-                return None, None, None
-                
+            
             # Add assistant header for generation
             postfix = self.tokenizer.encode(
                 "<|start_header_id|>assistant<|end_header_id|>\n\n", 
@@ -614,19 +685,29 @@ class ArabicVoiceCloningInference:
             )
             input_tokens.extend(postfix)
             
-            logger.info("=== Generation Input ===")
+            logger.info(f"========= Chunk {idx} Input =========" )
             logger.info(self.tokenizer.decode(input_tokens))
             
-            # CRITICAL FIX: Use robust sample creation with conditional waveform handling
-            curr_sample = self._create_robust_sample(
-                input_tokens=input_tokens,
-                audio_ids=audio_ids,
-                ref_waveform=ref_waveform,
-                ref_sample_rate=ref_sample_rate
-            )
+            # CRITICAL: Build context_audio_ids like generation.py
+            context_audio_ids = audio_ids + generated_audio_ids
             
-            # CRITICAL: Validate sample for collator compatibility
-            curr_sample = self._validate_sample_for_collator(curr_sample)
+            # Create sample following generation.py pattern
+            curr_sample = ChatMLDatasetSample(
+                input_ids=torch.LongTensor(input_tokens),
+                label_ids=None,
+                audio_ids_concat=torch.concat([ele.cpu() for ele in context_audio_ids], dim=1)
+                if context_audio_ids
+                else None,
+                audio_ids_start=torch.cumsum(
+                    torch.tensor([0] + [ele.shape[1] for ele in context_audio_ids], dtype=torch.long), dim=0
+                )
+                if context_audio_ids
+                else None,
+                audio_waveforms_concat=None,  # generation.py uses None for waveforms
+                audio_waveforms_start=None,
+                audio_sample_rate=None,
+                audio_speaker_indices=None,
+            )
             
             # Collate data
             batch_data = self.collator([curr_sample])
@@ -635,82 +716,71 @@ class ArabicVoiceCloningInference:
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.contiguous().to(self._device)
             
-            # Calculate adaptive max tokens based on target text
-            adaptive_max_tokens = self.calculate_adaptive_max_tokens(target_text)
+            # Calculate adaptive max tokens
+            adaptive_max_tokens = self.calculate_adaptive_max_tokens(chunk_text)
             
-            # CRITICAL FIX: Use serve_engine.py generation parameters
-            logger.info(f"Starting generation with {adaptive_max_tokens} max tokens...")
+            # Generate following generation.py parameters
+            logger.info(f"Starting generation for chunk {idx} with {adaptive_max_tokens} max tokens...")
             
-            # serve_engine.py default stop strings
-            stop_strings = ["<|end_of_text|>", "<|eot_id|>"]
-            
-            # CRITICAL: Match serve_engine.py generation exactly
             outputs = self.model.generate(
                 **batch,
                 max_new_tokens=adaptive_max_tokens,
                 use_cache=True,
-                stop_strings=stop_strings,
-                tokenizer=self.tokenizer,
-                do_sample=False if temperature == 0.0 else True,  # serve_engine.py pattern
+                do_sample=True,
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
-                ras_win_len=7,  # serve_engine.py default
-                ras_win_max_num_repeat=2,  # serve_engine.py default
+                ras_win_len=7,  # generation.py default
+                ras_win_max_num_repeat=2,  # generation.py default
+                stop_strings=["<|end_of_text|>", "<|eot_id|>"],
+                tokenizer=self.tokenizer,
                 seed=seed,
             )
             
-            # CRITICAL FIX: Process audio outputs using serve_engine.py EXACT pattern
-            if len(outputs[1]) > 0:
-                wv_list = []
-                for i, output_audio in enumerate(outputs[1]):
-                    logger.info(f"Raw audio output {i}: shape={output_audio.shape}, first_tokens={output_audio[:, :5] if output_audio.shape[1] > 5 else output_audio}")
-                    
-                    # CRITICAL: serve_engine.py exact one-line pattern
-                    vq_code = revert_delay_pattern(output_audio).clip(0, self.audio_codebook_size - 1)[:, 1:-1]
-                    logger.info(f"After serve_engine.py processing {i}: shape={vq_code.shape}")
-                    
-                    # Decode audio
-                    wv_numpy = self.audio_tokenizer.decode(vq_code.unsqueeze(0))[0, 0]
-                    wv_list.append(wv_numpy)
-                    
-                    # Log processing results
-                    if isinstance(wv_numpy, torch.Tensor):
-                        wv_numpy_debug = wv_numpy.detach().cpu().numpy()
-                    else:
-                        wv_numpy_debug = wv_numpy
-                    
-                    energy = (wv_numpy_debug ** 2).mean()
-                    logger.info(f"Audio {i}: energy={energy:.2e}, duration={len(wv_numpy_debug)/24000:.2f}s")
-                
-                # Concatenate all audio
-                wv_numpy = np.concatenate(wv_list)
-                
-                # Final validation
-                final_energy = (wv_numpy ** 2).mean()
-                logger.info(f"Final concatenated audio: energy={final_energy:.2e}, duration={len(wv_numpy)/24000:.2f}s")
-                
-                if final_energy < 1e-8:
-                    logger.error(f"🚨 CRITICAL: Still generating silence - check model/tokenizer compatibility")
-                    return None, None, None
-                
-                sample_rate = 24000  # Higgs Audio output sample rate
-                
-                # Get text output
-                text_result = self.tokenizer.decode(outputs[0][0])
-                
-                logger.info("=== Generation Output Text ===")
-                logger.info(text_result)
-                
-                return wv_numpy, sample_rate, text_result
+            # Store final outputs for text processing
+            final_outputs = outputs
+            
+            # CRITICAL: Process outputs following generation.py EXACTLY
+            step_audio_out_ids_l = []
+            for ele in outputs[1]:
+                audio_out_ids = ele
+                if self.config.use_delay_pattern:
+                    audio_out_ids = revert_delay_pattern(audio_out_ids)
+                # CRITICAL: generation.py exact pattern with BOS/EOS stripping
+                step_audio_out_ids_l.append(audio_out_ids.clip(0, self.audio_codebook_size - 1)[:, 1:-1])
+            
+            audio_out_ids = torch.concat(step_audio_out_ids_l, dim=1)
+            audio_out_ids_l.append(audio_out_ids)
+            generated_audio_ids.append(audio_out_ids)
+            
+            # Add assistant message with AudioContent for next iteration
+            generation_messages.append(
+                Message(
+                    role="assistant",
+                    content=AudioContent(audio_url=""),
+                )
+            )
+        
+        # Final processing following generation.py
+        if final_outputs is not None:
+            logger.info(f"========= Final Text output =========" )
+            logger.info(self.tokenizer.decode(final_outputs[0][0]))
+            
+            concat_audio_out_ids = torch.concat(audio_out_ids_l, dim=1)
+            
+            # Fix MPS compatibility like generation.py
+            if concat_audio_out_ids.device.type == "mps":
+                concat_audio_out_ids_cpu = concat_audio_out_ids.detach().cpu()
             else:
-                logger.error("No audio output generated")
-                return None, None, None
-                
-        except Exception as e:
-            logger.error(f"Error during generation: {e}")
-            import traceback
-            traceback.print_exc()
+                concat_audio_out_ids_cpu = concat_audio_out_ids
+            
+            # Decode audio
+            concat_wv = self.audio_tokenizer.decode(concat_audio_out_ids_cpu.unsqueeze(0))[0, 0]
+            text_result = self.tokenizer.decode(final_outputs[0][0])
+            
+            return concat_wv, sr, text_result
+        else:
+            logger.error("No outputs generated")
             return None, None, None
     
     def save_reference_and_generated_audio(
@@ -874,24 +944,15 @@ class ArabicVoiceCloningInference:
                 })
                 continue
             
-            # Create generation messages
-            messages, audio_ids, ref_waveform, ref_sr = self.create_generation_messages(
-                ref_text, ref_audio_path, target_text
-            )
-            
-            if not audio_ids:
-                logger.warning(f"Skipping sample {i} due to audio encoding failure")
-                results.append({
-                    "sample_id": i,
-                    "status": "failed",
-                    "error": "Audio encoding failed", 
-                    "speaker_id": speaker_id
-                })
-                continue
-            
-            # Generate speech
+            # Generate speech using the new generation.py pattern
             waveform, sample_rate, text_output = self.generate_arabic_speech(
-                messages, audio_ids, ref_waveform, ref_sr, target_text, temperature, top_k, top_p, seed
+                ref_text=ref_text,
+                ref_audio_path=ref_audio_path,
+                target_text=target_text,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                seed=seed
             )
             
             if waveform is not None:
