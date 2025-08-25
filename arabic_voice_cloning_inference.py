@@ -7,17 +7,19 @@ This script processes ChatML format data to perform zero-shot voice cloning
 for Arabic language text using reference audio conditioning.
 
 KEY FIXES IMPLEMENTED:
-1. **Whisper Processor Integration**: Added proper Whisper processor loading 
-   for reference audio conditioning (encode_whisper_embed=True)
-2. **Reference Audio Waveform Processing**: Load and process reference audio
+1. **Forced Whisper Embedding**: Override model config to always enable Whisper 
+   conditioning (encode_whisper_embed=True) for optimal voice cloning
+2. **Whisper Processor Integration**: Added robust Whisper processor loading 
+   with fallback models (whisper-large-v3 → whisper-base)
+3. **Reference Audio Waveform Processing**: Load and process reference audio
    waveforms for Whisper feature extraction at 16kHz
-3. **Proper ChatML Structure**: Use <|AUDIO|> tokens for reference audio
-   instead of only DAC codes in generation context
-4. **Dual Audio Pathway**: 
+4. **Proper ChatML Structure**: Use <|AUDIO|> tokens for reference audio
+   conditioning in the input sequence
+5. **Dual Audio Pathway**: 
    - Whisper embeddings for reference audio conditioning (via <|AUDIO|> tokens)
    - DAC codes for generation context (via audio_ids)
-5. **Audio-Text Conditioning**: Proper integration of reference audio features
-   with text tokens for cross-modal attention
+6. **Training Pipeline Alignment**: Follow the same Whisper forcing pattern
+   used in training (trainer.py/trainer_ddp.py) for consistent behavior
 
 The script now properly follows the training pipeline's audio conditioning
 mechanism where reference audio is processed through both:
@@ -113,33 +115,37 @@ class ArabicVoiceCloningInference:
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.config = AutoConfig.from_pretrained(model_path)
         
+        # Force enable Whisper embeddings for better voice cloning (override model config)
+        # This follows the training pipeline pattern where Whisper is always enabled
+        original_whisper_setting = self.config.encode_whisper_embed
+        self.config.encode_whisper_embed = True
+        logger.info(f"Whisper embedding: original={original_whisper_setting}, forced=True for voice cloning")
+        
         # Load Whisper processor for reference audio conditioning
-        if self.config.encode_whisper_embed:
-            logger.info("Loading Whisper processor for reference audio conditioning")
+        logger.info("Loading Whisper processor for reference audio conditioning")
+        try:
+            # Try the recommended model first
+            whisper_processor = AutoProcessor.from_pretrained(
+                "openai/whisper-large-v3",  # Changed from v3-turbo to standard v3
+                trust_remote_code=True
+            )
+            logger.info("✅ Successfully loaded Whisper processor")
+        except Exception as e:
+            logger.warning(f"Failed to load whisper-large-v3: {e}")
             try:
-                # Try the recommended model first
+                # Fallback to base model
                 whisper_processor = AutoProcessor.from_pretrained(
-                    "openai/whisper-large-v3",  # Changed from v3-turbo to standard v3
+                    "openai/whisper-base",
                     trust_remote_code=True
                 )
-                logger.info("✅ Successfully loaded Whisper processor")
-            except Exception as e:
-                logger.warning(f"Failed to load whisper-large-v3: {e}")
-                try:
-                    # Fallback to base model
-                    whisper_processor = AutoProcessor.from_pretrained(
-                        "openai/whisper-base",
-                        trust_remote_code=True
-                    )
-                    logger.info("✅ Successfully loaded Whisper base processor as fallback")
-                except Exception as e2:
-                    logger.error(f"Failed to load any Whisper processor: {e2}")
-                    whisper_processor = None
-        else:
-            logger.info("Whisper embedding disabled in config")
-            whisper_processor = None
+                logger.info("✅ Successfully loaded Whisper base processor as fallback")
+            except Exception as e2:
+                logger.error(f"Failed to load any Whisper processor: {e2}")
+                whisper_processor = None
+                # If we can't load Whisper, revert the config
+                self.config.encode_whisper_embed = original_whisper_setting
         
-        # Setup collator
+        # Setup collator with forced Whisper embedding (following training pipeline)
         logger.info(f"Setting up collator with Whisper processor: {whisper_processor is not None}")
         self.collator = HiggsAudioSampleCollator(
             whisper_processor=whisper_processor,
@@ -147,7 +153,7 @@ class ArabicVoiceCloningInference:
             audio_out_token_id=self.config.audio_out_token_idx,
             audio_stream_bos_id=self.config.audio_stream_bos_id,
             audio_stream_eos_id=self.config.audio_stream_eos_id,
-            encode_whisper_embed=self.config.encode_whisper_embed,
+            encode_whisper_embed=True,  # Force True for voice cloning (like training pipeline)
             pad_token_id=self.config.pad_token_id,
             return_audio_in_tokens=self.config.encode_audio_in_tokens,
             use_delay_pattern=self.config.use_delay_pattern,
@@ -156,8 +162,8 @@ class ArabicVoiceCloningInference:
         )
         
         # Verify collator setup
-        logger.info(f"Collator configuration:")
-        logger.info(f"  - encode_whisper_embed: {self.collator.encode_whisper_embed}")
+        logger.info(f"Collator configuration (forced for voice cloning):")
+        logger.info(f"  - encode_whisper_embed: {self.collator.encode_whisper_embed} (forced True)")
         logger.info(f"  - whisper_processor available: {self.collator.whisper_processor is not None}")
         logger.info(f"  - return_audio_in_tokens: {self.collator.return_audio_in_tokens}")
         
@@ -431,12 +437,13 @@ class ArabicVoiceCloningInference:
             logger.info(self.tokenizer.decode(input_tokens))
             
             # Create dataset sample with proper audio waveform for Whisper processing
-            logger.info(f"Checking Whisper conditioning requirements:")
+            logger.info(f"Checking Whisper conditioning requirements (forced enabled):")
             logger.info(f"  - ref_waveform is not None: {ref_waveform is not None}")
-            logger.info(f"  - config.encode_whisper_embed: {self.config.encode_whisper_embed}")
+            logger.info(f"  - collator.encode_whisper_embed: {self.collator.encode_whisper_embed} (forced True)")
             logger.info(f"  - collator.whisper_processor is not None: {self.collator.whisper_processor is not None}")
             
-            if ref_waveform is not None and self.config.encode_whisper_embed and self.collator.whisper_processor is not None:
+            # Use collator settings instead of config since we forced them
+            if ref_waveform is not None and self.collator.encode_whisper_embed and self.collator.whisper_processor is not None:
                 # Dual pathway: Whisper embeddings + DAC tokens for proper voice cloning
                 curr_sample = ChatMLDatasetSample(
                     input_ids=torch.LongTensor(input_tokens),
@@ -459,8 +466,8 @@ class ArabicVoiceCloningInference:
                 reasons = []
                 if ref_waveform is None:
                     reasons.append("ref_waveform is None")
-                if not self.config.encode_whisper_embed:
-                    reasons.append("encode_whisper_embed is False")
+                if not self.collator.encode_whisper_embed:
+                    reasons.append("collator.encode_whisper_embed is False")
                 if self.collator.whisper_processor is None:
                     reasons.append("whisper_processor is None")
                 
