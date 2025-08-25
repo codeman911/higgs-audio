@@ -290,24 +290,23 @@ class ArabicVoiceCloningTrainingCollator:
         try:
             num_codebooks, seq_len = audio_labels.shape
             
-            # Build delay pattern mask matching the model's configuration
-            # Note: build_delay_pattern_mask doesn't accept device parameter
-            delay_pattern = build_delay_pattern_mask(
-                num_codebooks, 
-                seq_len
+            # Reshape for build_delay_pattern_mask compatibility (requires batch dimension)
+            # The function expects shape (bsz, num_codebooks, seq_len)
+            audio_labels_with_batch = audio_labels.unsqueeze(0)  # Add batch dimension
+            
+            # Build delay pattern using correct API signature
+            # Handle cases where stream tokens might not be configured
+            bos_token_id = getattr(self.config, 'audio_stream_bos_id', self.config.pad_token_id)
+            pad_token_id = getattr(self.config, 'pad_token_id', -100)
+            
+            delayed_labels, _ = build_delay_pattern_mask(
+                input_ids=audio_labels_with_batch,
+                bos_token_id=bos_token_id,
+                pad_token_id=pad_token_id
             )
             
-            # Move delay pattern to same device as audio_labels
-            delay_pattern = delay_pattern.to(audio_labels.device)
-            
-            # Apply delay pattern to labels
-            delayed_labels = audio_labels.clone()
-            for cb_idx in range(num_codebooks):
-                delay = cb_idx  # Standard delay pattern
-                if delay > 0:
-                    # Shift labels according to delay pattern
-                    delayed_labels[cb_idx, :-delay] = audio_labels[cb_idx, delay:]
-                    delayed_labels[cb_idx, -delay:] = -100  # Mask delayed positions
+            # Remove batch dimension to match expected shape
+            delayed_labels = delayed_labels.squeeze(0)
             
             return delayed_labels
             

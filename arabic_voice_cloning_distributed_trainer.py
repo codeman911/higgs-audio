@@ -308,8 +308,11 @@ class ArabicVoiceCloningDistributedTrainer:
                     audio_feature_attention_mask=training_batch.audio_feature_attention_mask,
                     audio_out_ids=training_batch.audio_out_ids,
                     audio_out_ids_start=training_batch.audio_out_ids_start,
+                    audio_out_ids_start_group_loc=training_batch.audio_out_ids_start_group_loc,
                     audio_in_ids=training_batch.audio_in_ids,
                     audio_in_ids_start=training_batch.audio_in_ids_start,
+                    label_ids=training_batch.label_ids,
+                    label_audio_ids=training_batch.label_audio_ids,
                 )
                 
                 loss_dict = self.loss_fn(
