@@ -549,10 +549,20 @@ class ArabicVoiceCloningTrainingCollator:
                         
                         # Validate token range is reasonable for audio codebook
                         expected_max = getattr(self.config, 'audio_codebook_size', 1024)
-                        if max_token >= expected_max:
+                        # Include special audio tokens: BOS (1024) and EOS (1025)
+                        audio_stream_bos = getattr(self.config, 'audio_stream_bos_id', 1024)
+                        audio_stream_eos = getattr(self.config, 'audio_stream_eos_id', 1025)
+                        max_valid_token = max(expected_max - 1, audio_stream_bos, audio_stream_eos)
+                        
+                        if max_token > max_valid_token:
                             validation_results['issues'].append(
-                                f"Codebook {cb_idx} has token {max_token} >= expected max {expected_max}"
+                                f"Codebook {cb_idx} has token {max_token} > expected max {max_valid_token} "
+                                f"(codebook_size: {expected_max}, BOS: {audio_stream_bos}, EOS: {audio_stream_eos})"
                             )
+                        else:
+                            # Log valid token range for debugging
+                            logger.debug(f"Codebook {cb_idx} token range {min_token}-{max_token} is valid "
+                                       f"(max allowed: {max_valid_token})")
             
             # 3. Voice Cloning Setup Validation
             if batch.audio_features is not None:
@@ -576,7 +586,17 @@ class ArabicVoiceCloningTrainingCollator:
                 # No audio features - check if this is intended
                 if batch.audio_out_ids is not None:
                     validation_results['recommendations'].append(
-                        "No audio features found but audio generation requested - check Whisper processor"
+                        "AUDIO FEATURES MISSING: No Whisper features found but audio generation requested. "
+                        "For zero-shot voice cloning, you need reference audio processed through Whisper."
+                    )
+                    validation_results['recommendations'].append(
+                        "Quick fix: Ensure your dataset includes reference audio and Whisper processor is enabled. "
+                        "This is currently operating in text-to-speech mode, not voice cloning mode."
+                    )
+                else:
+                    # Text-only training, which is fine
+                    validation_results['recommendations'].append(
+                        "ℹ️ Text-only training mode detected (no audio generation)"
                     )
             
             # 4. Zero-Shot Compatibility Check
@@ -590,7 +610,17 @@ class ArabicVoiceCloningTrainingCollator:
                     "Target audio generation without reference audio - not suitable for zero-shot voice cloning"
                 )
                 validation_results['recommendations'].append(
-                    "Ensure reference audio is processed through Whisper for voice conditioning"
+                    "CRITICAL: For zero-shot voice cloning, you need reference audio features processed through Whisper. "
+                    "Either: 1) Enable Whisper processing in your dataset/collator, or 2) Use a different training mode."
+                )
+                validation_results['recommendations'].append(
+                    "Check: 1) Whisper processor is initialized, 2) Reference audio paths are valid, "
+                    "3) encode_whisper_embed=True in model config"
+                )
+            elif has_target_audio and has_reference_audio:
+                # Good setup for zero-shot voice cloning
+                validation_results['recommendations'].append(
+                    "✅ Zero-shot voice cloning setup detected with reference audio conditioning"
                 )
             
             # 5. Attention Mask Validation for Audio Regions
