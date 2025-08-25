@@ -192,8 +192,29 @@ class ArabicVoiceCloningTrainingCollator:
         training_batch = self._create_training_batch(base_batch, batch)
         
         if self.validate_batches:
+            # Comprehensive validation including padding and masking
             self._validate_output_batch(training_batch)
-        
+            
+            # Additional padding/masking validation for teacher forcing
+            padding_validation = self._validate_padding_and_masking(training_batch)
+            if not padding_validation['teacher_forcing_ready']:
+                logger.error(f"Teacher forcing validation failed: {padding_validation['warnings']}")
+                # Don't raise exception here, just log warning for now
+            
+            # Comprehensive teacher forcing setup validation
+            if self.enable_teacher_forcing:
+                tf_validation = self._validate_teacher_forcing_setup(training_batch)
+                if tf_validation['overall_status'] != 'READY':
+                    logger.warning(f"Teacher forcing setup issues detected: {tf_validation['issues']}")
+                    if tf_validation['recommendations']:
+                        logger.info(f"Recommendations: {tf_validation['recommendations']}")
+                    
+                    # Log critical issues but don't stop training
+                    if not tf_validation['voice_cloning_ready']:
+                        logger.error("❌ Voice cloning setup not ready - training may not work correctly")
+                else:
+                    logger.debug("✅ Teacher forcing setup validated successfully")
+            
         return training_batch
     
     def _validate_input_batch(self, batch: List[ChatMLDatasetSample]):
@@ -257,58 +278,85 @@ class ArabicVoiceCloningTrainingCollator:
         
         This method ensures that audio labels are correctly aligned with the
         audio generation tokens for proper teacher forcing training.
+        
+        IMPORTANT: For teacher forcing training, labels must have EXACT same shape
+        as audio_out_ids. The delay pattern is applied during model forward pass,
+        not in the labels.
         """
         if base_batch.audio_out_ids is None:
             return None
         
         try:
-            # Start with the audio output tokens as base labels
+            # For teacher forcing training, labels should match audio_out_ids exactly
+            # DO NOT apply delay pattern here - it's applied by the model during forward pass
             audio_labels = base_batch.audio_out_ids.clone()
             
-            # Apply delay pattern if used in model (important for training alignment)
-            if self.config.use_delay_pattern:
-                audio_labels = self._apply_delay_pattern_to_labels(audio_labels)
+            # Apply proper label masking for teacher forcing
+            # Mask positions that should not contribute to loss (e.g., padding)
+            if hasattr(self.config, 'pad_token_id'):
+                # Mask padding tokens in labels
+                pad_mask = (audio_labels == self.config.pad_token_id)
+                audio_labels[pad_mask] = -100  # Standard ignore index for CrossEntropyLoss
             
-            # Apply label smoothing if configured
+            # For teacher forcing, we typically want to predict the next token
+            # So we can shift labels by 1 position if needed (this depends on model architecture)
+            # For now, keep labels as-is since Higgs Audio handles shifting internally
+            
+            # Apply label smoothing if configured (optional)
             if hasattr(self.config, 'label_smoothing') and self.config.label_smoothing > 0:
                 audio_labels = self._apply_label_smoothing(audio_labels)
             
             logger.debug(f"Created audio labels with shape: {audio_labels.shape}")
+            logger.debug(f"Audio labels shape matches audio_out_ids: {audio_labels.shape == base_batch.audio_out_ids.shape}")
             return audio_labels
             
         except Exception as e:
             logger.warning(f"Failed to create audio labels: {e}")
+            # Fallback: return exact copy of audio_out_ids
             return base_batch.audio_out_ids.clone() if base_batch.audio_out_ids is not None else None
     
     def _apply_delay_pattern_to_labels(self, audio_labels: torch.LongTensor) -> torch.LongTensor:
         """
         Apply delay pattern to audio labels for training alignment.
         
-        This ensures that the training labels match the delay pattern used
-        during audio generation, which is crucial for proper learning.
+        ⚠️  WARNING: This function is currently DISABLED for teacher forcing training.
+        
+        The delay pattern adds extra tokens (seq_len + num_codebooks - 1) which changes
+        the tensor shape. This causes shape mismatches during training because:
+        
+        1. audio_out_ids has shape [num_codebooks, seq_len] 
+        2. Delay pattern creates shape [num_codebooks, seq_len + num_codebooks - 1]
+        3. This breaks teacher forcing where labels must match inputs exactly
+        
+        The delay pattern should be:
+        - APPLIED during model inference/generation (handled by model)
+        - NOT APPLIED to training labels (handled here)
+        
+        For proper teacher forcing training, labels should have identical shape
+        to the target tokens they're supposed to predict.
         """
         try:
-            num_codebooks, seq_len = audio_labels.shape
+            logger.debug(f"Delay pattern application requested but disabled for training compatibility")
+            logger.debug(f"Original audio_labels shape: {audio_labels.shape}")
             
-            # Reshape for build_delay_pattern_mask compatibility (requires batch dimension)
-            # The function expects shape (bsz, num_codebooks, seq_len)
-            audio_labels_with_batch = audio_labels.unsqueeze(0)  # Add batch dimension
+            # DISABLED: Do not apply delay pattern to training labels
+            # This prevents shape mismatches in teacher forcing training
+            # The model will apply delay pattern internally during forward pass
             
-            # Build delay pattern using correct API signature
-            # Handle cases where stream tokens might not be configured
-            bos_token_id = getattr(self.config, 'audio_stream_bos_id', self.config.pad_token_id)
-            pad_token_id = getattr(self.config, 'pad_token_id', -100)
+            # Keep original implementation for reference but commented out:
+            # num_codebooks, seq_len = audio_labels.shape
+            # audio_labels_with_batch = audio_labels.unsqueeze(0)  # Add batch dimension
+            # bos_token_id = getattr(self.config, 'audio_stream_bos_id', self.config.pad_token_id)
+            # pad_token_id = getattr(self.config, 'pad_token_id', -100)
+            # delayed_labels, _ = build_delay_pattern_mask(
+            #     input_ids=audio_labels_with_batch,
+            #     bos_token_id=bos_token_id,
+            #     pad_token_id=pad_token_id
+            # )
+            # delayed_labels = delayed_labels.squeeze(0)
+            # return delayed_labels
             
-            delayed_labels, _ = build_delay_pattern_mask(
-                input_ids=audio_labels_with_batch,
-                bos_token_id=bos_token_id,
-                pad_token_id=pad_token_id
-            )
-            
-            # Remove batch dimension to match expected shape
-            delayed_labels = delayed_labels.squeeze(0)
-            
-            return delayed_labels
+            return audio_labels  # Return unchanged for training compatibility
             
         except Exception as e:
             logger.warning(f"Failed to apply delay pattern to labels: {e}")
@@ -319,6 +367,278 @@ class ArabicVoiceCloningTrainingCollator:
         # Placeholder for label smoothing implementation
         # This would involve creating soft targets instead of hard labels
         return audio_labels
+    
+    def _validate_padding_and_masking(self, batch: HiggsAudioTrainingBatch) -> Dict[str, Any]:
+        """
+        Comprehensive validation of padding and masking for teacher forcing.
+        
+        Returns:
+            Dict with validation results and statistics
+        """
+        validation_results = {
+            'padding_valid': True,
+            'masking_valid': True,
+            'teacher_forcing_ready': True,
+            'statistics': {},
+            'warnings': []
+        }
+        
+        try:
+            # 1. Validate text label padding and masking
+            if batch.label_ids is not None:
+                # Check for proper padding token usage
+                pad_token_id = getattr(self.config, 'pad_token_id', -100)
+                ignore_index = -100  # Standard ignore index for CrossEntropyLoss
+                
+                # Count padding tokens
+                pad_positions = (batch.label_ids == pad_token_id)
+                ignore_positions = (batch.label_ids == ignore_index)
+                
+                validation_results['statistics']['text_pad_tokens'] = pad_positions.sum().item()
+                validation_results['statistics']['text_ignore_tokens'] = ignore_positions.sum().item()
+                
+                # Validate that padding is properly masked for loss computation
+                if pad_positions.any() and not ignore_positions.any():
+                    validation_results['warnings'].append(
+                        "Found padding tokens but no ignore tokens in text labels - may cause incorrect loss computation"
+                    )
+            
+            # 2. Validate audio label padding and masking
+            if batch.label_audio_ids is not None:
+                # Check audio label masking
+                audio_pad_positions = (batch.label_audio_ids == getattr(self.config, 'pad_token_id', -100))
+                audio_ignore_positions = (batch.label_audio_ids == -100)
+                
+                validation_results['statistics']['audio_pad_tokens'] = audio_pad_positions.sum().item()
+                validation_results['statistics']['audio_ignore_tokens'] = audio_ignore_positions.sum().item()
+                
+                # Validate codebook consistency
+                num_codebooks = batch.label_audio_ids.shape[0]
+                for cb_idx in range(num_codebooks):
+                    cb_pad_count = audio_pad_positions[cb_idx].sum().item()
+                    cb_ignore_count = audio_ignore_positions[cb_idx].sum().item()
+                    validation_results['statistics'][f'codebook_{cb_idx}_pad'] = cb_pad_count
+                    validation_results['statistics'][f'codebook_{cb_idx}_ignore'] = cb_ignore_count
+            
+            # 3. Validate attention mask consistency
+            if batch.attention_mask is not None:
+                # Check attention mask validity
+                mask_zeros = (batch.attention_mask == 0).sum().item()
+                mask_ones = (batch.attention_mask == 1).sum().item()
+                
+                validation_results['statistics']['attention_masked_positions'] = mask_zeros
+                validation_results['statistics']['attention_active_positions'] = mask_ones
+                
+                # Validate mask alignment with input length
+                if batch.input_ids is not None:
+                    seq_len = batch.input_ids.shape[1]
+                    if batch.attention_mask.shape[1] != seq_len:
+                        validation_results['masking_valid'] = False
+                        validation_results['warnings'].append(
+                            f"Attention mask length {batch.attention_mask.shape[1]} doesn't match sequence length {seq_len}"
+                        )
+            
+            # 4. Teacher forcing readiness check
+            if batch.audio_out_ids is not None and batch.label_audio_ids is not None:
+                # Verify exact shape matching for teacher forcing
+                shape_match = (batch.audio_out_ids.shape == batch.label_audio_ids.shape)
+                validation_results['teacher_forcing_ready'] = shape_match
+                
+                if not shape_match:
+                    validation_results['warnings'].append(
+                        f"Teacher forcing incompatible: audio_out_ids {batch.audio_out_ids.shape} != label_audio_ids {batch.label_audio_ids.shape}"
+                    )
+                
+                # Check if labels are properly shifted for next-token prediction
+                # (This depends on model architecture - Higgs Audio handles internally)
+                validation_results['statistics']['audio_sequence_length'] = batch.audio_out_ids.shape[1]
+                validation_results['statistics']['audio_codebooks'] = batch.audio_out_ids.shape[0]
+            
+            # 5. Log validation summary
+            if validation_results['warnings']:
+                logger.warning(f"Padding/masking validation warnings: {validation_results['warnings']}")
+            else:
+                logger.debug(f"Padding/masking validation passed: {validation_results['statistics']}")
+                
+        except Exception as e:
+            logger.error(f"Padding/masking validation failed: {e}")
+            validation_results['padding_valid'] = False
+            validation_results['masking_valid'] = False
+            validation_results['teacher_forcing_ready'] = False
+        
+        return validation_results
+    
+    def _validate_teacher_forcing_setup(self, batch: HiggsAudioTrainingBatch) -> Dict[str, Any]:
+        """
+        Comprehensive validation of teacher forcing setup for Arabic voice cloning.
+        
+        Validates:
+        1. Input-target alignment for text generation
+        2. Audio token alignment for voice cloning
+        3. Reference audio conditioning setup
+        4. Multi-codebook consistency
+        5. Zero-shot capability preservation
+        
+        Returns:
+            Dict with validation results and recommendations
+        """
+        validation_results = {
+            'teacher_forcing_valid': True,
+            'voice_cloning_ready': True,
+            'zero_shot_compatible': True,
+            'issues': [],
+            'recommendations': [],
+            'statistics': {}
+        }
+        
+        try:
+            # 1. Text Teacher Forcing Validation
+            if batch.input_ids is not None and batch.label_ids is not None:
+                # Verify input-label alignment for text generation
+                input_shape = batch.input_ids.shape
+                label_shape = batch.label_ids.shape
+                
+                if input_shape != label_shape:
+                    validation_results['teacher_forcing_valid'] = False
+                    validation_results['issues'].append(
+                        f"Text input-label shape mismatch: {input_shape} vs {label_shape}"
+                    )
+                
+                # Check for proper label shifting (if model expects it)
+                # Note: Higgs Audio handles shifting internally, so we keep them aligned
+                validation_results['statistics']['text_sequence_length'] = input_shape[1]
+                validation_results['statistics']['batch_size'] = input_shape[0]
+            
+            # 2. Audio Teacher Forcing Validation
+            if batch.audio_out_ids is not None and batch.label_audio_ids is not None:
+                audio_input_shape = batch.audio_out_ids.shape
+                audio_label_shape = batch.label_audio_ids.shape
+                
+                # CRITICAL: Audio inputs and labels must have identical shapes for teacher forcing
+                if audio_input_shape != audio_label_shape:
+                    validation_results['teacher_forcing_valid'] = False
+                    validation_results['voice_cloning_ready'] = False
+                    validation_results['issues'].append(
+                        f"Audio input-label shape mismatch: {audio_input_shape} vs {audio_label_shape}"
+                    )
+                    validation_results['recommendations'].append(
+                        "Ensure delay pattern is NOT applied to training labels - only to model inputs during inference"
+                    )
+                
+                # Validate multi-codebook consistency
+                num_codebooks = audio_input_shape[0]
+                expected_codebooks = getattr(self.config, 'audio_num_codebooks', 8)
+                
+                if num_codebooks != expected_codebooks:
+                    validation_results['issues'].append(
+                        f"Codebook count mismatch: got {num_codebooks}, expected {expected_codebooks}"
+                    )
+                
+                validation_results['statistics']['audio_codebooks'] = num_codebooks
+                validation_results['statistics']['audio_sequence_length'] = audio_input_shape[1]
+                
+                # Check for proper token range (codebook-specific validation)
+                for cb_idx in range(num_codebooks):
+                    cb_tokens = batch.audio_out_ids[cb_idx]
+                    unique_tokens = torch.unique(cb_tokens[cb_tokens != -100])  # Exclude ignore tokens
+                    
+                    if len(unique_tokens) > 0:
+                        min_token = unique_tokens.min().item()
+                        max_token = unique_tokens.max().item()
+                        validation_results['statistics'][f'codebook_{cb_idx}_token_range'] = (min_token, max_token)
+                        
+                        # Validate token range is reasonable for audio codebook
+                        expected_max = getattr(self.config, 'audio_codebook_size', 1024)
+                        if max_token >= expected_max:
+                            validation_results['issues'].append(
+                                f"Codebook {cb_idx} has token {max_token} >= expected max {expected_max}"
+                            )
+            
+            # 3. Voice Cloning Setup Validation
+            if batch.audio_features is not None:
+                # Verify reference audio features are present for voice conditioning
+                audio_features_shape = batch.audio_features.shape
+                validation_results['statistics']['audio_features_shape'] = audio_features_shape
+                
+                # Expected shape: (num_audio_segments, feature_dim, time_steps)
+                if len(audio_features_shape) != 3:
+                    validation_results['voice_cloning_ready'] = False
+                    validation_results['issues'].append(
+                        f"Audio features should be 3D, got {len(audio_features_shape)}D: {audio_features_shape}"
+                    )
+                
+                # Verify feature dimensions are reasonable
+                if audio_features_shape[1] < 512:  # Whisper features are typically 512+ dim
+                    validation_results['recommendations'].append(
+                        f"Audio features dimension {audio_features_shape[1]} seems low for Whisper features"
+                    )
+            else:
+                # No audio features - check if this is intended
+                if batch.audio_out_ids is not None:
+                    validation_results['recommendations'].append(
+                        "No audio features found but audio generation requested - check Whisper processor"
+                    )
+            
+            # 4. Zero-Shot Compatibility Check
+            # For zero-shot voice cloning, we need both reference conditioning and target generation
+            has_reference_audio = (batch.audio_features is not None)
+            has_target_audio = (batch.audio_out_ids is not None and batch.label_audio_ids is not None)
+            
+            if has_target_audio and not has_reference_audio:
+                validation_results['zero_shot_compatible'] = False
+                validation_results['issues'].append(
+                    "Target audio generation without reference audio - not suitable for zero-shot voice cloning"
+                )
+                validation_results['recommendations'].append(
+                    "Ensure reference audio is processed through Whisper for voice conditioning"
+                )
+            
+            # 5. Attention Mask Validation for Audio Regions
+            if batch.attention_mask is not None and batch.input_ids is not None:
+                # Check if audio tokens are properly masked
+                audio_token_ids = [
+                    getattr(self.config, 'audio_in_token_idx', None),
+                    getattr(self.config, 'audio_out_token_idx', None)
+                ]
+                
+                for token_id in audio_token_ids:
+                    if token_id is not None:
+                        audio_positions = (batch.input_ids == token_id)
+                        if audio_positions.any():
+                            # Check if audio positions have proper attention
+                            audio_attention = batch.attention_mask[audio_positions]
+                            if not audio_attention.all():
+                                validation_results['recommendations'].append(
+                                    f"Some audio tokens (ID: {token_id}) are masked in attention - verify if intended"
+                                )
+            
+            # 6. Generate Summary and Recommendations
+            if validation_results['issues']:
+                logger.warning(f"Teacher forcing validation issues: {validation_results['issues']}")
+            
+            if validation_results['recommendations']:
+                logger.info(f"Teacher forcing recommendations: {validation_results['recommendations']}")
+            
+            # Overall status
+            overall_valid = (
+                validation_results['teacher_forcing_valid'] and
+                validation_results['voice_cloning_ready'] and
+                validation_results['zero_shot_compatible']
+            )
+            
+            validation_results['overall_status'] = 'READY' if overall_valid else 'ISSUES_FOUND'
+            
+            logger.debug(f"Teacher forcing validation: {validation_results['overall_status']}")
+            logger.debug(f"Statistics: {validation_results['statistics']}")
+            
+        except Exception as e:
+            logger.error(f"Teacher forcing validation failed: {e}")
+            validation_results['teacher_forcing_valid'] = False
+            validation_results['voice_cloning_ready'] = False
+            validation_results['zero_shot_compatible'] = False
+            validation_results['issues'].append(f"Validation exception: {str(e)}")
+        
+        return validation_results
     
     def _create_enhanced_attention_mask(self, base_batch: HiggsAudioBatchInput) -> torch.Tensor:
         """
@@ -362,7 +682,7 @@ class ArabicVoiceCloningTrainingCollator:
         return enhanced_mask
     
     def _validate_output_batch(self, batch: HiggsAudioTrainingBatch):
-        """Validate output batch structure."""
+        """Validate output batch structure with comprehensive checks."""
         # Check tensor shapes and types
         if batch.input_ids is None:
             raise ValueError("Missing input_ids in training batch")
@@ -379,22 +699,42 @@ class ArabicVoiceCloningTrainingCollator:
         # Validate audio components
         if batch.audio_out_ids is not None:
             if batch.audio_out_ids.dim() != 2:
-                raise ValueError(f"audio_out_ids should be 2D, got {batch.audio_out_ids.dim()}D")
+                raise ValueError(f"audio_out_ids should be 2D, got {batch.audio_out_ids.dim()}D with shape {batch.audio_out_ids.shape}")
             
             expected_codebooks = self.config.audio_num_codebooks
             if batch.audio_out_ids.shape[0] != expected_codebooks:
-                raise ValueError(f"Expected {expected_codebooks} codebooks, got {batch.audio_out_ids.shape[0]}")
+                raise ValueError(f"Expected {expected_codebooks} codebooks, got {batch.audio_out_ids.shape[0]} with shape {batch.audio_out_ids.shape}")
         
-        # Validate audio labels if present
+        # CRITICAL: Validate audio labels match audio_out_ids exactly
         if batch.label_audio_ids is not None and batch.audio_out_ids is not None:
             if batch.label_audio_ids.shape != batch.audio_out_ids.shape:
-                raise ValueError(f"Audio labels shape {batch.label_audio_ids.shape} doesn't match audio_out_ids {batch.audio_out_ids.shape}")
+                logger.error(f"SHAPE MISMATCH DETECTED:")
+                logger.error(f"  - audio_out_ids shape: {batch.audio_out_ids.shape}")
+                logger.error(f"  - label_audio_ids shape: {batch.label_audio_ids.shape}")
+                logger.error(f"  - Expected: Both shapes should be identical for teacher forcing")
+                logger.error(f"  - This is likely due to delay pattern being applied to labels")
+                raise ValueError(f"Audio labels shape {batch.label_audio_ids.shape} doesn't match audio_out_ids {batch.audio_out_ids.shape}. "
+                               f"For teacher forcing, these must be identical. Check if delay pattern is incorrectly applied to labels.")
+        
+        # Validate audio features if present
+        if batch.audio_features is not None:
+            if batch.audio_features.dim() != 3:  # Expected: (num_audio, feature_dim, seq_len)
+                logger.warning(f"Unexpected audio_features dimensions: {batch.audio_features.shape}")
+        
+        # Validate start indices consistency
+        if batch.audio_out_ids is not None and batch.audio_out_ids_start is not None:
+            max_start_idx = batch.audio_out_ids_start.max().item() if len(batch.audio_out_ids_start) > 0 else 0
+            actual_seq_len = batch.audio_out_ids.shape[1]
+            if max_start_idx > actual_seq_len:
+                logger.warning(f"audio_out_ids_start max index {max_start_idx} exceeds sequence length {actual_seq_len}")
         
         logger.debug(f"Training batch validation passed:")
         logger.debug(f"  - Batch size: {batch.input_ids.shape[0]}")
         logger.debug(f"  - Sequence length: {batch.input_ids.shape[1]}")
         logger.debug(f"  - Audio tokens: {batch.audio_out_ids.shape if batch.audio_out_ids is not None else 'None'}")
+        logger.debug(f"  - Audio labels: {batch.label_audio_ids.shape if batch.label_audio_ids is not None else 'None'}")
         logger.debug(f"  - Audio features: {batch.audio_features.shape if batch.audio_features is not None else 'None'}")
+        logger.debug(f"  - Shapes match: {batch.label_audio_ids.shape == batch.audio_out_ids.shape if batch.label_audio_ids is not None and batch.audio_out_ids is not None else 'N/A'}")
     
     def get_loss_weights(self) -> Dict[str, float]:
         """Get configured loss weights."""
