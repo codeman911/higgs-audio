@@ -215,6 +215,30 @@ torchrun --nproc_per_node=8 trainer.py \
 | `--lora_alpha` | LoRA scaling factor | 16-64 (usually 2× lora_r) |
 | `--lora_dropout` | LoRA dropout rate | 0.05-0.1 |
 
+### PEFT Compatibility Issue
+
+**Critical Fix**: PEFT automatically injects a `labels` parameter that [HiggsAudioModel.forward()](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/boson_multimodal/model/higgs_audio/modeling_higgs_audio.py#L1252-L1278) doesn't expect. The DualFFN architecture uses:
+- [label_ids](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/boson_multimodal/dataset/chatml_dataset.py#L25-L25) for text labels  
+- [label_audio_ids](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/boson_multimodal/data_collator/higgs_audio_collator.py#L42-L42) for audio labels
+
+**Solution**: Bypass PEFT wrapper and call underlying model directly:
+```python
+# Get underlying model to avoid PEFT's labels injection
+if hasattr(self.model, 'base_model') and hasattr(self.model.base_model, 'model'):
+    actual_model = self.model.base_model.model  # PEFT wrapped
+else:
+    actual_model = self.model
+
+# Clean inputs (no labels)
+model_inputs = {k: v for k, v in batch.items() 
+               if k not in ['label_ids', 'label_audio_ids']}
+
+# Forward pass bypasses PEFT
+outputs = actual_model(**model_inputs)
+```
+
+This is exactly how the working trainers handle PEFT compatibility.
+
 ## 🔧 Technical Details
 
 ### Memory Optimization

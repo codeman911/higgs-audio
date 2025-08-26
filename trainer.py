@@ -152,11 +152,25 @@ class HiggsAudioTrainer:
         self.audio_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
     
     def compute_loss(self, batch):
-        """Compute dual loss exactly as model does."""
+        """Compute dual loss exactly as model does - CRITICAL FIX for PEFT compatibility."""
         
-        # Forward pass with EXACT kwargs from inference
+        # CRITICAL FIX: Get the underlying model to bypass PEFT's labels parameter injection
+        # PEFT automatically adds 'labels' parameter which HiggsAudioModel doesn't expect
+        # The model expects 'label_ids' and 'label_audio_ids' for DualFFN architecture
+        if hasattr(self.model, 'base_model') and hasattr(self.model.base_model, 'model'):
+            actual_model = self.model.base_model.model  # PEFT wrapped
+        elif hasattr(self.model, 'module'):
+            actual_model = self.model.module  # DDP wrapped  
+        else:
+            actual_model = self.model
+            
+        # Prepare clean model inputs (NO labels to avoid PEFT injection)
+        model_inputs = {k: v for k, v in batch.items() 
+                       if k not in ['label_ids', 'label_audio_ids']}
+        
+        # Forward pass with EXACT kwargs from inference - bypass PEFT wrapper
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-            outputs = self.model(**batch)
+            outputs = actual_model(**model_inputs)
         
         # Extract logits - EXACT field names from model
         text_logits = outputs.logits if hasattr(outputs, 'logits') else None
