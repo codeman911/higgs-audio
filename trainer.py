@@ -191,7 +191,14 @@ class HiggsAudioTrainer:
             logger.error(f"Available methods: {[m for m in dir(base_model) if 'forward' in m.lower()]}")
             raise
         
-        return self._compute_dual_loss(outputs, text_labels, audio_labels)
+        try:
+            return self._compute_dual_loss(outputs, text_labels, audio_labels)
+        except Exception as e:
+            logger.error(f"Loss computation failed: {e}")
+            # Log batch info for debugging
+            logger.error(f"Batch keys: {list(batch.keys())}")
+            logger.error(f"Batch shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in batch.items()]}")
+            raise
     
     def _get_base_higgs_model(self):
         """Extract the actual HiggsAudioModel from all wrapper layers."""
@@ -236,23 +243,34 @@ class HiggsAudioTrainer:
         text_logits = getattr(outputs, 'logits', None)
         audio_logits = getattr(outputs, 'audio_logits', None)
         
+        # CRITICAL INSIGHT: The model already provides correctly aligned labels!
+        # Use the model's expanded_labels instead of the original batch labels
+        model_expanded_labels = getattr(outputs, 'expanded_labels', None)
+        
         if text_logits is not None:
             logger.info(f"Text logits shape: {text_logits.shape}")
         if audio_logits is not None:
             logger.info(f"Audio logits shape: {audio_logits.shape}")
+        if model_expanded_labels is not None:
+            logger.info(f"Model expanded labels shape: {model_expanded_labels.shape}")
         
         # Text loss with CORRECT teacher forcing alignment
-        if text_logits is not None and text_labels is not None:
-            # CRITICAL FIX: Implement proper autoregressive shift for teacher forcing
-            # Logits predict the NEXT token, so we need to align accordingly
+        if text_logits is not None and model_expanded_labels is not None:
+            # CRITICAL FIX: Use model's expanded_labels which are already correctly aligned!
+            # The model's merge_input_ids_with_audio_features function already handles the proper
+            # teacher forcing alignment. We should NOT apply additional shifting.
             
-            # Remove last logit (predicting beyond sequence)
+            # The model provides:
+            # - text_logits: [batch, seq_len, vocab] (predicts next token at each position)
+            # - expanded_labels: [batch, seq_len-1] (already shifted by 1 to align with logits)
+            
+            # Remove last logit to match the model's expanded_labels length
             shift_logits = text_logits[..., :-1, :].contiguous()  # [batch, seq_len-1, vocab]
-            # Remove first label (no prediction for first token)
-            shift_labels = text_labels[..., 1:].contiguous()       # [batch, seq_len-1]
+            # Use model's expanded_labels directly (already shifted)
+            shift_labels = model_expanded_labels.contiguous()      # [batch, seq_len-1]
             
-            logger.info(f"Shifted logits shape: {shift_logits.shape}")
-            logger.info(f"Shifted labels shape: {shift_labels.shape}")
+            logger.info(f"Final logits shape: {shift_logits.shape}")
+            logger.info(f"Final labels shape: {shift_labels.shape}")
             
             # Now shapes should match: both are [batch, seq_len-1]
             assert shift_logits.size(0) == shift_labels.size(0), f"Batch size mismatch: {shift_logits.size(0)} vs {shift_labels.size(0)}"
@@ -266,7 +284,27 @@ class HiggsAudioTrainer:
             loss_dict['text_loss'] = text_loss.item()
             logger.info(f"Text loss: {text_loss.item():.4f}")
         else:
-            logger.warning("Skipping text loss computation")
+            if text_logits is not None and text_labels is not None:
+                # Fallback: Use original approach if expanded_labels not available
+                logger.warning("Using fallback text loss computation with original labels")
+                shift_logits = text_logits[..., :-1, :].contiguous()
+                shift_labels = text_labels[..., 1:].contiguous()
+                
+                logger.info(f"Fallback logits shape: {shift_logits.shape}")
+                logger.info(f"Fallback labels shape: {shift_labels.shape}")
+                
+                if shift_logits.size(1) == shift_labels.size(1):
+                    text_loss = self.text_loss_fn(
+                        shift_logits.view(-1, shift_logits.size(-1)),
+                        shift_labels.view(-1)
+                    )
+                    total_loss = total_loss + text_loss
+                    loss_dict['text_loss'] = text_loss.item()
+                    logger.info(f"Fallback text loss: {text_loss.item():.4f}")
+                else:
+                    logger.error(f"Fallback alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
+            else:
+                logger.warning("Skipping text loss computation")
         
         # Audio loss - handle multi-codebook structure
         if audio_logits is not None and audio_labels is not None:
