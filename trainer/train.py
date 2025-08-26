@@ -693,17 +693,127 @@ def main():
         print("❌ Environment validation failed")
         sys.exit(1)
     
-    # Validate training data exists for training operations
+    # 🔧 ENHANCED: Comprehensive data handling with auto-creation and conversion
     if not args.train_data:
         print("❌ --train_data is required for training operations")
-        sys.exit(1)
-        
-    if not os.path.exists(args.train_data):
-        print(f"❌ Training data not found: {args.train_data}")
+        print("💡 Example: --train_data data/train_samples.json")
         sys.exit(1)
     
-    if not validate_dataset_format(args.train_data):
-        print("❌ Training data validation failed")
+    # Handle missing training data file
+    if not os.path.exists(args.train_data):
+        print(f"⚠️ Training data not found: {args.train_data}")
+        
+        # Try to create sample data if user agrees or in quick test mode
+        if args.quick_test or input("Create sample training data? (y/N): ").lower().startswith('y'):
+            print(f"📝 Creating sample training data at {args.train_data}")
+            
+            if DATASET_UTILS_AVAILABLE:
+                try:
+                    # Create directory if needed
+                    os.makedirs(os.path.dirname(args.train_data) or '.', exist_ok=True)
+                    
+                    # Use the enhanced sample data creation
+                    from trainer.data_converter import DataFormatConverter
+                    converter = DataFormatConverter(audio_base_path=args.audio_base_path)
+                    
+                    # Create comprehensive sample data
+                    sample_data = [
+                        {
+                            "messages": [
+                                {"role": "system", "content": "Generate speech in the provided voice."},
+                                {"role": "user", "content": f"This is reference text number {i+1} for voice cloning demonstration."},
+                                {"role": "assistant", "content": {"type": "audio", "audio_url": f"data/sample_audio/speaker_{i%3}_ref.wav"}},
+                                {"role": "user", "content": f"Now generate speech for target text {i+1}: Hello from the Higgs-Audio training pipeline!"}
+                            ],
+                            "speaker": f"sample_speaker_{i%3}",
+                            "start_index": 3
+                        }
+                        for i in range(10)
+                    ]
+                    
+                    with open(args.train_data, 'w', encoding='utf-8') as f:
+                        json.dump(sample_data, f, indent=2, ensure_ascii=False)
+                    
+                    # Create dummy audio files
+                    converter.create_dummy_audio_files(args.train_data, "data/sample_audio")
+                    
+                    print(f"✅ Created sample training data with {len(sample_data)} samples")
+                    
+                except Exception as e:
+                    print(f"❌ Failed to create sample data: {e}")
+                    sys.exit(1)
+            else:
+                print("❌ Cannot create sample data - dataset utilities not available")
+                sys.exit(1)
+        else:
+            print("❌ Training data is required. Please provide a valid --train_data path")
+            sys.exit(1)
+    
+    # Validate and convert data format if needed
+    print(f"🔍 Validating training data format: {args.train_data}")
+    
+    try:
+        # Enhanced validation with auto-conversion
+        if DATASET_UTILS_AVAILABLE:
+            is_valid = validate_dataset_format(args.train_data)
+            
+            if not is_valid:
+                print("⚠️ Training data format issues detected")
+                
+                # Try to auto-convert the format
+                if args.quick_test or input("Attempt automatic format conversion? (y/N): ").lower().startswith('y'):
+                    print("🔄 Attempting automatic format conversion...")
+                    
+                    try:
+                        from trainer.data_converter import DataFormatConverter
+                        converter = DataFormatConverter(audio_base_path=args.audio_base_path)
+                        
+                        # Create backup of original file
+                        backup_path = args.train_data + ".backup"
+                        if not os.path.exists(backup_path):
+                            import shutil
+                            shutil.copy2(args.train_data, backup_path)
+                            print(f"📋 Created backup at {backup_path}")
+                        
+                        # Convert format
+                        success = converter.convert_file(
+                            input_path=args.train_data,
+                            output_path=args.train_data,
+                            format_type="auto"
+                        )
+                        
+                        if success:
+                            # Create dummy audio files
+                            converter.create_dummy_audio_files(args.train_data, "data/converted_audio")
+                            print("✅ Format conversion completed successfully")
+                        else:
+                            print("❌ Format conversion failed")
+                            sys.exit(1)
+                            
+                    except Exception as e:
+                        print(f"❌ Format conversion error: {e}")
+                        sys.exit(1)
+                else:
+                    print("❌ Invalid data format. Please fix the data or enable auto-conversion")
+                    sys.exit(1)
+            else:
+                print("✅ Training data format validation passed")
+        else:
+            # Basic validation without utilities
+            try:
+                with open(args.train_data, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, (list, dict)):
+                    print("✅ Basic data format validation passed")
+                else:
+                    print("❌ Invalid JSON data format")
+                    sys.exit(1)
+            except Exception as e:
+                print(f"❌ Data loading failed: {e}")
+                sys.exit(1)
+                
+    except Exception as e:
+        print(f"❌ Data validation failed: {e}")
         sys.exit(1)
     
     # Create configuration

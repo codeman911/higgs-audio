@@ -202,6 +202,17 @@ class InferenceAlignedDataset(torch.utils.data.Dataset):
             # Handle the complex mixed content structure from your actual data
             converted_sample = self._convert_to_boson_format(sample)
             
+            # Debug logging
+            logger.debug(f"Sample {idx}: Original messages: {len(sample['messages'])}")
+            logger.debug(f"Sample {idx}: Converted messages: {len(converted_sample['messages'])}")
+            
+            # Check for audio content in converted sample
+            audio_count = 0
+            for msg in converted_sample['messages']:
+                if isinstance(msg['content'], dict) and msg['content'].get('type') == 'audio':
+                    audio_count += 1
+            logger.debug(f"Sample {idx}: Found {audio_count} audio messages after conversion")
+            
             # Use boson_multimodal prepare_chatml_sample - EXACT same as inference
             input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
                 converted_sample, self.tokenizer
@@ -210,6 +221,8 @@ class InferenceAlignedDataset(torch.utils.data.Dataset):
             if input_tokens is None:
                 logger.error(f"Failed to process sample {idx} with prepare_chatml_sample")
                 return self._create_fallback_sample()
+            
+            logger.debug(f"Sample {idx}: prepare_chatml_sample returned {len(audio_contents)} audio contents")
             
             # Process audio contents using same logic as inference
             audio_data = self._process_audio_contents(audio_contents)
@@ -228,97 +241,120 @@ class InferenceAlignedDataset(torch.utils.data.Dataset):
             
         except Exception as e:
             logger.error(f"Error processing sample {idx}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return self._create_fallback_sample()
     
     def _convert_to_boson_format(self, sample: Dict[str, Any]) -> Dict[str, Any]:
         """Convert complex ChatML format to boson_multimodal expected format."""
-        converted = {
-            "messages": [],
+        # For your data format, we need to restructure it to match the expected pattern
+        # Your data has: user message with mixed content (text + audio) + assistant with mixed content
+        # We need to convert this to: system + user + assistant (audio) + user + assistant (audio)
+        
+        messages = sample["messages"]
+        converted_messages = []
+        
+        # First, find the system message
+        system_message = None
+        user_with_mixed_content = None
+        assistant_with_mixed_content = None
+        
+        for message in messages:
+            if message["role"] == "system":
+                system_message = message
+            elif message["role"] == "user" and isinstance(message["content"], list):
+                user_with_mixed_content = message
+            elif message["role"] == "assistant" and isinstance(message["content"], list):
+                assistant_with_mixed_content = message
+        
+        # Extract components from the mixed content user message
+        ref_text = None
+        ref_audio_url = None
+        target_text = None
+        
+        if user_with_mixed_content:
+            for item in user_with_mixed_content["content"]:
+                if item["type"] == "text":
+                    text_content = item["text"]
+                    if "Please generate speech for given text" in text_content:
+                        # This contains the target text
+                        parts = text_content.split("Please generate speech for given text in reference audio's voice:")
+                        if len(parts) > 1:
+                            target_text = parts[1].strip()
+                        if len(parts) > 0 and parts[0].strip():
+                            ref_text = parts[0].strip()
+                    else:
+                        # This is the reference text
+                        ref_text = text_content
+                elif item["type"] == "audio":
+                    ref_audio_url = item["audio_url"]
+        
+        # Extract target audio from assistant message
+        target_audio_url = None
+        assistant_text = None
+        
+        if assistant_with_mixed_content:
+            for item in assistant_with_mixed_content["content"]:
+                if item["type"] == "text":
+                    assistant_text = item["text"]
+                elif item["type"] == "audio":
+                    target_audio_url = item["audio_url"]
+        
+        # Create the converted messages in the expected format
+        converted_messages = []
+        
+        # 1. System message
+        if system_message:
+            converted_messages.append({
+                "role": "system",
+                "content": system_message["content"]
+            })
+        
+        # 2. User message with reference text
+        if ref_text:
+            converted_messages.append({
+                "role": "user",
+                "content": ref_text
+            })
+        
+        # 3. Assistant message with reference audio
+        if ref_audio_url:
+            converted_messages.append({
+                "role": "assistant",
+                "content": {
+                    "type": "audio",
+                    "audio_url": ref_audio_url
+                }
+            })
+        
+        # 4. User message with target text
+        if target_text:
+            converted_messages.append({
+                "role": "user",
+                "content": target_text
+            })
+        
+        # 5. Assistant message with target audio (for training)
+        if target_audio_url:
+            converted_messages.append({
+                "role": "assistant",
+                "content": {
+                    "type": "audio",
+                    "audio_url": target_audio_url
+                }
+            })
+        elif assistant_text:
+            # If no target audio, use the text content
+            converted_messages.append({
+                "role": "assistant",
+                "content": assistant_text
+            })
+        
+        return {
+            "messages": converted_messages,
             "speaker": sample.get("speaker"),
-            "start_index": sample.get("start_index", 0)
+            "start_index": sample.get("start_index", 1)  # Start from first assistant response
         }
-        
-        for message in sample["messages"]:
-            role = message["role"]
-            content = message["content"]
-            
-            converted_message = {"role": role}
-            
-            if isinstance(content, list):
-                # Handle mixed content arrays (text + audio)
-                if role == "user":
-                    # For user messages with mixed content, we need to process differently
-                    # The boson_multimodal expects specific patterns
-                    text_parts = []
-                    audio_parts = []
-                    
-                    for item in content:
-                        if item["type"] == "text":
-                            text_parts.append(item["text"])
-                        elif item["type"] == "audio":
-                            audio_parts.append(item)
-                    
-                    # Combine text parts and add audio tokens
-                    combined_text = " ".join(text_parts)
-                    if audio_parts:
-                        # Add audio token placeholder in the text
-                        combined_text = combined_text.replace(
-                            "Please generate speech for given text in reference audio's voice:", 
-                            "<|audio_bos|><|AUDIO|><|audio_eos|> Please generate speech for given text in reference audio's voice:"
-                        )
-                    
-                    converted_message["content"] = combined_text
-                    
-                    # Add a separate assistant message for the reference audio
-                    if audio_parts:
-                        for audio_item in audio_parts:
-                            audio_message = {
-                                "role": "assistant",
-                                "content": {
-                                    "type": "audio",
-                                    "audio_url": audio_item["audio_url"]
-                                }
-                            }
-                            converted["messages"].append(audio_message)
-                
-                elif role == "assistant":
-                    # For assistant messages with mixed content
-                    text_parts = []
-                    audio_parts = []
-                    
-                    for item in content:
-                        if item["type"] == "text":
-                            text_parts.append(item["text"])
-                        elif item["type"] == "audio":
-                            audio_parts.append(item)
-                    
-                    # Add text content if any
-                    if text_parts:
-                        converted_message["content"] = " ".join(text_parts)
-                        converted["messages"].append(converted_message)
-                    
-                    # Add audio content as separate message
-                    if audio_parts:
-                        for audio_item in audio_parts:
-                            audio_message = {
-                                "role": "assistant",
-                                "content": {
-                                    "type": "audio",
-                                    "audio_url": audio_item["audio_url"]
-                                }
-                            }
-                            converted["messages"].append(audio_message)
-                    
-                    continue  # Skip adding the original message since we've processed it
-            
-            elif isinstance(content, str):
-                converted_message["content"] = content
-            elif isinstance(content, dict):
-                converted_message["content"] = content
-            
-            converted["messages"].append(converted_message)
-        
-        return converted
     
     def _process_audio_contents(self, audio_contents: List) -> Dict[str, torch.Tensor]:
         """Process audio contents exactly like inference pipeline."""

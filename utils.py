@@ -135,7 +135,7 @@ def create_sample_data(output_path: str, num_samples: int = 5):
         }
         samples.append(sample)
     
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(samples, f, indent=2, ensure_ascii=False)
     
