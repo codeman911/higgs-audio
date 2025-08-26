@@ -66,7 +66,7 @@ class HiggsAudioTrainer:
             torch_dtype=torch.bfloat16
         ).to(self.device)
         
-        # Load tokenizers
+        # Load tokenizers - EXACT pattern from serve_engine.py
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.base_ckpt)
         self.audio_tokenizer = load_higgs_audio_tokenizer(
             "bosonai/higgs-audio-v2-tokenizer", 
@@ -162,9 +162,9 @@ class HiggsAudioTrainer:
         text_logits = outputs.logits if hasattr(outputs, 'logits') else None
         audio_logits = outputs.audio_logits if hasattr(outputs, 'audio_logits') else None
         
-        # Extract labels - EXACT field names from batch
-        text_labels = batch.get('label_ids')
-        audio_labels = batch.get('label_audio_ids')
+        # Extract labels - EXACT field names from HiggsAudioSampleCollator output
+        text_labels = batch.get('label_ids')  # Shape: (batch_size, seq_len) - text labels
+        audio_labels = batch.get('label_audio_ids')  # Shape: (num_codebooks, audio_seq_len) - audio labels
         
         total_loss = 0.0
         loss_dict = {}
@@ -178,18 +178,29 @@ class HiggsAudioTrainer:
             total_loss += text_loss
             loss_dict['text_loss'] = text_loss.item()
         
-        # Audio loss computation - handle codebook structure
+        # Audio loss computation - handle multi-codebook structure (DualFFN)
         if audio_logits is not None and audio_labels is not None:
             audio_loss = 0.0
-            num_codebooks = audio_logits.size(1)  # [seq_len, num_codebooks, codebook_size]
+            
+            # audio_logits shape: (seq_len, num_codebooks, codebook_size)
+            # audio_labels shape: (num_codebooks, seq_len)
+            num_codebooks = audio_logits.size(1) if len(audio_logits.shape) == 3 else audio_labels.size(0)
             
             for cb in range(num_codebooks):
-                cb_logits = audio_logits[:, cb, :]  # [seq_len, codebook_size]
-                cb_labels = audio_labels[cb, :]     # [seq_len]
+                if len(audio_logits.shape) == 3:
+                    # Standard format: [seq_len, num_codebooks, codebook_size]
+                    cb_logits = audio_logits[:, cb, :]  # [seq_len, codebook_size]
+                    cb_labels = audio_labels[cb, :]     # [seq_len]
+                else:
+                    # Alternative format: handle different tensor arrangements
+                    cb_logits = audio_logits[cb]  # Codebook-specific logits
+                    cb_labels = audio_labels[cb]  # Codebook-specific labels
                 
+                # Compute CrossEntropy loss for this codebook
                 cb_loss = self.audio_loss_fn(cb_logits, cb_labels)
                 audio_loss += cb_loss
             
+            # Average loss across codebooks (standard practice)
             audio_loss = audio_loss / num_codebooks
             total_loss += audio_loss
             loss_dict['audio_loss'] = audio_loss.item()
@@ -200,9 +211,20 @@ class HiggsAudioTrainer:
     def train_step(self, batch):
         """Single training step."""
         
-        # Move batch to device
-        batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
-                for k, v in batch.items()}
+        # Handle HiggsAudioBatchInput conversion to dict
+        if hasattr(batch, '__dict__'):
+            # Convert HiggsAudioBatchInput to dict for model forward
+            batch_dict = {}
+            for key, value in batch.__dict__.items():
+                if isinstance(value, torch.Tensor):
+                    batch_dict[key] = value.to(self.device)
+                else:
+                    batch_dict[key] = value
+            batch = batch_dict
+        else:
+            # Handle regular dict batch  
+            batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                    for k, v in batch.items()}
         
         # Compute loss
         loss, loss_dict = self.compute_loss(batch)

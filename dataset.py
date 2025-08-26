@@ -59,9 +59,9 @@ class HiggsAudioDataset(Dataset):
             if audio_content and hasattr(audio_content, 'audio_url'):
                 audio_path = audio_content.audio_url
                 if audio_path and os.path.exists(audio_path):
-                    # Tokenize audio
+                    # Tokenize audio - EXACT pattern from inference
                     audio_codes = self.audio_tokenizer.encode(audio_path)
-                    # Load waveform at exact sample rate
+                    # Load waveform at exact sample rate (24000Hz matches inference)
                     waveform, sr = librosa.load(audio_path, sr=24000, mono=True)
                     waveform = torch.tensor(waveform, dtype=torch.float32)
                     
@@ -76,8 +76,8 @@ class HiggsAudioDataset(Dataset):
             audio_waveforms_start = torch.tensor([0] + [wv.shape[0] for wv in audio_waveforms_list[:-1]], dtype=torch.long).cumsum(dim=0)
             audio_sample_rate = torch.tensor([24000])
         else:
-            # Empty audio tensors - EXACT pattern from working scripts
-            audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)  # 8 codebooks
+            # Empty audio tensors - EXACT pattern from working scripts  
+            audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)  # 8 codebooks (matches bosonai/higgs-audio-v2-tokenizer)
             audio_ids_start = torch.tensor([], dtype=torch.long)
             audio_waveforms_concat = torch.zeros((0,), dtype=torch.float32)
             audio_waveforms_start = torch.tensor([], dtype=torch.long)

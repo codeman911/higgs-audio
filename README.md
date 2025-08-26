@@ -38,11 +38,20 @@ Delivers exactly three files that strictly reuse existing inference infrastructu
 
 ### Training Command (8×H200)
 ```bash
+# Multi-GPU Distributed Training
 torchrun --nproc_per_node=8 trainer.py \
-  --train_manifest /path/train.json \
-  --output_dir /path/out \
+  --train_manifest /path/to/train.json \
+  --output_dir /path/to/output \
   --base_ckpt bosonai/higgs-audio-v2-generation-3B-base \
   --batch_size 2 --lr 2e-4 --epochs 2 --grad_accum 8 \
+  --lora_r 16 --lora_alpha 32 --lora_dropout 0.05
+
+# Single GPU Training
+python trainer.py \
+  --train_manifest /path/to/train.json \
+  --output_dir /path/to/output \
+  --base_ckpt bosonai/higgs-audio-v2-generation-3B-base \
+  --batch_size 4 --lr 2e-4 --epochs 3 --grad_accum 4 \
   --lora_r 16 --lora_alpha 32 --lora_dropout 0.05
 ```
 
@@ -135,18 +144,18 @@ total_loss = text_loss + audio_loss
 | 8×H200 DDP scaling | ✅ | Gradient accumulation + distributed training |
 | LoRA-only checkpoints | ✅ | `save_lora_adapters()` saves adapters only |
 
-## 🔧 Validation
+## 📚 Documentation
 
-Run the validation script to verify setup:
-```bash
-python3 validate_pipeline.py
-```
+For detailed explanations of how the training works, architecture details, and troubleshooting:
 
-**Expected Output**:
-```
-🎉 ALL VALIDATION TESTS PASSED!
-📋 Ready for training with torchrun command...
-```
+👉 **[Complete Training Guide](./TRAINING_GUIDE.md)**
+
+The guide covers:
+- 🏗️ **DualFFN Architecture** - How dual pathways enable voice cloning
+- 🔬 **Technical Deep Dive** - Loss computation, batch processing, memory optimization 
+- 🚀 **Usage Examples** - Single GPU, multi-GPU, parameter tuning
+- 🐛 **Troubleshooting** - Common issues and solutions
+- 📊 **Performance Metrics** - Expected training speeds and quality metrics
 
 ---
 
