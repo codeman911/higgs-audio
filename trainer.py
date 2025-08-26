@@ -1,32 +1,3 @@
-"""
-Minimal DDP trainer with dual loss computation.
-Strictly mirrors inference forward pass and loss patterns.
-"""
-
-import os
-import argparse
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
-from transformers import AutoTokenizer, AutoProcessor, get_cosine_schedule_with_warmup
-import logging
-
-# Import exact components from boson_multimodal
-from boson_multimodal.model.higgs_audio import HiggsAudioConfig, HiggsAudioModel
-from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
-
-# Import our components
-from dataset import HiggsAudioDataset, create_collator
-from lora import apply_lora, create_lora_config, save_lora_adapters
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-
 class HiggsAudioTrainer:
     """Minimal trainer for DualFFN LoRA fine-tuning."""
     
@@ -199,11 +170,27 @@ class HiggsAudioTrainer:
         else:
             logger.warning("⚠️  audio_out_ids is missing or None - audio logits will be empty!")
             
-        # Check for potential dtype issues
-        float32_tensors = [k for k, v in clean_inputs.items() 
-                          if isinstance(v, torch.Tensor) and v.dtype == torch.float32]
-        if float32_tensors:
-            logger.info(f"ℹ️  Float32 tensors detected (will be cast to bfloat16): {float32_tensors}")
+        # CRITICAL FIX: Ensure all tensors have consistent dtype for mixed precision training
+        # The error occurs because audio embeddings are Float32 but final_embedding is BFloat16
+        target_dtype = torch.bfloat16
+        
+        # Check for potential dtype issues and cast tensors to target dtype
+        dtype_corrected_inputs = {}
+        for k, v in clean_inputs.items():
+            if isinstance(v, torch.Tensor):
+                # Cast all tensor inputs to the target dtype to prevent dtype mismatches
+                if v.dtype == torch.float32:
+                    # Cast float32 tensors to bfloat16 for consistency
+                    dtype_corrected_inputs[k] = v.to(dtype=target_dtype)
+                    logger.debug(f"Cast {k} from {v.dtype} to {target_dtype}")
+                elif v.dtype == torch.bfloat16:
+                    # Already correct dtype
+                    dtype_corrected_inputs[k] = v
+                else:
+                    # For non-float tensors (like int64 for indices), keep as is
+                    dtype_corrected_inputs[k] = v
+            else:
+                dtype_corrected_inputs[k] = v
         
         # Extract labels for fallback loss computation (if needed)
         text_labels = batch.get('label_ids')
@@ -212,20 +199,6 @@ class HiggsAudioTrainer:
         # BYPASS PEFT: Call the forward method directly on the base model
         # This completely avoids PEFT's parameter injection
         try:
-            # CRITICAL FIX: Ensure all tensors have consistent dtype for mixed precision training
-            # The error occurs because audio embeddings are Float32 but final_embedding is BFloat16
-            target_dtype = torch.bfloat16
-            
-            # Cast all tensor inputs to the target dtype to prevent dtype mismatches
-            dtype_corrected_inputs = {}
-            for k, v in clean_inputs.items():
-                if isinstance(v, torch.Tensor) and v.dtype == torch.float32:
-                    # Cast float32 tensors to bfloat16 for consistency
-                    dtype_corrected_inputs[k] = v.to(dtype=target_dtype)
-                    logger.debug(f"Cast {k} from {v.dtype} to {target_dtype}")
-                else:
-                    dtype_corrected_inputs[k] = v
-            
             with torch.autocast(device_type='cuda', dtype=target_dtype):
                 # Direct call to HiggsAudioModel.forward, bypassing all wrappers
                 outputs = base_model.forward(**dtype_corrected_inputs)
