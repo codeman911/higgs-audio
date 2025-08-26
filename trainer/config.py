@@ -51,8 +51,12 @@ class TrainingConfig:
     lora_alpha: int = 32
     lora_dropout: float = 0.1
     lora_target_modules: List[str] = field(default_factory=lambda: [
-        "lm_head",        # Text generation head
-        "audio_head",     # Audio generation head
+        "q_proj",         # Query projection in attention layers
+        "v_proj",         # Value projection in attention layers
+        "o_proj",         # Output projection in attention layers
+        "gate_proj",      # Gate projection in DualFFN
+        "up_proj",        # Up projection in DualFFN
+        "down_proj",      # Down projection in DualFFN
     ])
     lora_bias: str = "none"
     

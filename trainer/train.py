@@ -248,8 +248,8 @@ def parse_arguments():
         "--lora_target_modules",
         type=str,
         nargs="+",
-        default=["lm_head", "audio_head"],
-        help="Target modules for LoRA adaptation"
+        default=["q_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        help="Target modules for LoRA adaptation (DualFFN architecture components)"
     )
     
     # Loss weights

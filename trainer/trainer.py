@@ -24,6 +24,9 @@ from boson_multimodal.model.higgs_audio import HiggsAudioModel
 from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
 from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
 
+# Export availability flag for validation scripts
+BOSON_AVAILABLE = True
+
 # Import our custom components
 from .config import TrainingConfig
 from .dataset import VoiceCloningDataset
@@ -503,3 +506,12 @@ def create_trainer_with_defaults(
         **kwargs
     )
     return HiggsAudioTrainer(config)
+
+
+# Export all public classes and functions
+__all__ = [
+    'HiggsAudioTrainer',
+    'create_trainer_from_config_file', 
+    'create_trainer_with_defaults',
+    'BOSON_AVAILABLE'  # Export for validation scripts
+]
