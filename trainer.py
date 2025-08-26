@@ -152,100 +152,201 @@ class HiggsAudioTrainer:
         self.audio_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
     
     def compute_loss(self, batch):
-        """Compute dual loss exactly as model does - CRITICAL FIX for PEFT compatibility."""
+        """Compute dual loss with complete PEFT bypass via custom forward implementation."""
         
-        # CRITICAL FIX: Get the underlying model to bypass PEFT's labels parameter injection
-        # PEFT automatically adds 'labels' parameter which HiggsAudioModel doesn't expect
-        # The model expects 'label_ids' and 'label_audio_ids' for DualFFN architecture
-        if hasattr(self.model, 'base_model') and hasattr(self.model.base_model, 'model'):
-            actual_model = self.model.base_model.model  # PEFT wrapped
-        elif hasattr(self.model, 'module'):
-            actual_model = self.model.module  # DDP wrapped  
-        else:
-            actual_model = self.model
+        # Ensure batch is a dictionary
+        if not isinstance(batch, dict):
+            raise ValueError(f"Expected batch to be dict, got {type(batch)}")
+        
+        logger.info(f"Batch keys: {list(batch.keys())}")
+        
+        # CRITICAL SOLUTION: Instead of calling model.forward(), we'll call the underlying
+        # model's forward method directly, completely bypassing PEFT's wrapper methods
+        
+        # Get the true underlying HiggsAudioModel
+        base_model = self._get_base_higgs_model()
+        
+        # Prepare clean inputs - remove ALL label keys to prevent any injection
+        clean_inputs = {}
+        for k, v in batch.items():
+            # Only include non-label keys for model input
+            if k not in ['label_ids', 'label_audio_ids', 'labels', 'audio_out_ids']:
+                clean_inputs[k] = v
+        
+        logger.info(f"Clean inputs: {list(clean_inputs.keys())}")
+        
+        # Extract labels for manual loss computation
+        text_labels = batch.get('label_ids')
+        audio_labels = batch.get('label_audio_ids')
+        
+        # BYPASS PEFT: Call the forward method directly on the base model
+        # This completely avoids PEFT's parameter injection
+        try:
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                # Direct call to HiggsAudioModel.forward, bypassing all wrappers
+                outputs = base_model.forward(**clean_inputs)
+        except Exception as e:
+            logger.error(f"Direct forward call failed: {e}")
+            logger.error(f"Base model type: {type(base_model)}")
+            logger.error(f"Available methods: {[m for m in dir(base_model) if 'forward' in m.lower()]}")
+            raise
+        
+        return self._compute_dual_loss(outputs, text_labels, audio_labels)
+    
+    def _get_base_higgs_model(self):
+        """Extract the actual HiggsAudioModel from all wrapper layers."""
+        model = self.model
+        path = []
+        
+        # Iteratively unwrap until we find HiggsAudioModel
+        max_depth = 20
+        for depth in range(max_depth):
+            model_type = type(model).__name__
+            path.append(model_type)
             
-        # Prepare clean model inputs (NO labels to avoid PEFT injection)
-        model_inputs = {k: v for k, v in batch.items() 
-                       if k not in ['label_ids', 'label_audio_ids']}
+            # Found the target model
+            if model_type == 'HiggsAudioModel':
+                logger.info(f"Found HiggsAudioModel at depth {depth}: {' -> '.join(path)}")
+                return model
+            
+            # Try different unwrapping attributes
+            if hasattr(model, 'module'):  # DDP wrapper
+                model = model.module
+                continue
+            elif hasattr(model, 'base_model'):  # PEFT wrapper
+                model = model.base_model
+                continue
+            elif hasattr(model, 'model'):  # Generic wrapper
+                model = model.model
+                continue
+            else:
+                # No more wrappers found, check if this is the right model
+                break
         
-        # Forward pass with EXACT kwargs from inference - bypass PEFT wrapper
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-            outputs = actual_model(**model_inputs)
-        
-        # Extract logits - EXACT field names from model
-        text_logits = outputs.logits if hasattr(outputs, 'logits') else None
-        audio_logits = outputs.audio_logits if hasattr(outputs, 'audio_logits') else None
-        
-        # Extract labels - EXACT field names from HiggsAudioSampleCollator output
-        text_labels = batch.get('label_ids')  # Shape: (batch_size, seq_len) - text labels
-        audio_labels = batch.get('label_audio_ids')  # Shape: (num_codebooks, audio_seq_len) - audio labels
-        
-        total_loss = 0.0
+        logger.warning(f"Could not find HiggsAudioModel, using: {type(model).__name__}")
+        logger.warning(f"Unwrapping path: {' -> '.join(path)}")
+        return model
+    
+    def _compute_dual_loss(self, outputs, text_labels, audio_labels):
+        """Compute dual loss from model outputs and labels."""
+        total_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
         loss_dict = {}
         
-        # Text loss computation
+        # Extract outputs
+        text_logits = getattr(outputs, 'logits', None)
+        audio_logits = getattr(outputs, 'audio_logits', None)
+        
+        if text_logits is not None:
+            logger.info(f"Text logits shape: {text_logits.shape}")
+        if audio_logits is not None:
+            logger.info(f"Audio logits shape: {audio_logits.shape}")
+        
+        # Text loss
         if text_logits is not None and text_labels is not None:
             text_loss = self.text_loss_fn(
                 text_logits.view(-1, text_logits.size(-1)),
                 text_labels.view(-1)
             )
-            total_loss += text_loss
+            total_loss = total_loss + text_loss
             loss_dict['text_loss'] = text_loss.item()
+            logger.info(f"Text loss: {text_loss.item():.4f}")
+        else:
+            logger.warning("Skipping text loss computation")
         
-        # Audio loss computation - handle multi-codebook structure (DualFFN)
+        # Audio loss - handle multi-codebook structure
         if audio_logits is not None and audio_labels is not None:
-            audio_loss = 0.0
+            audio_loss = self._compute_audio_loss(audio_logits, audio_labels)
+            total_loss = total_loss + audio_loss
+            loss_dict['audio_loss'] = audio_loss.item()
+            logger.info(f"Audio loss: {audio_loss.item():.4f}")
+        else:
+            logger.warning("Skipping audio loss computation")
+        
+        loss_dict['total_loss'] = total_loss.item()
+        logger.info(f"Total loss: {total_loss.item():.4f}")
+        
+        return total_loss, loss_dict
+    
+    def _compute_audio_loss(self, audio_logits, audio_labels):
+        """Compute audio loss across multiple codebooks."""
+        if audio_logits is None or audio_labels is None:
+            return torch.tensor(0.0, device=self.device)
             
-            # audio_logits shape: (seq_len, num_codebooks, codebook_size)
-            # audio_labels shape: (num_codebooks, seq_len)
-            num_codebooks = audio_logits.size(1) if len(audio_logits.shape) == 3 else audio_labels.size(0)
-            
+        audio_loss = torch.tensor(0.0, device=self.device)
+        
+        # Handle different tensor shapes for multi-codebook audio
+        if len(audio_logits.shape) == 3 and audio_logits.size(1) == 8:
+            # Shape: [seq_len, 8_codebooks, vocab_size]
+            num_codebooks = 8
             for cb in range(num_codebooks):
-                if len(audio_logits.shape) == 3:
-                    # Standard format: [seq_len, num_codebooks, codebook_size]
-                    cb_logits = audio_logits[:, cb, :]  # [seq_len, codebook_size]
-                    cb_labels = audio_labels[cb, :]     # [seq_len]
+                cb_logits = audio_logits[:, cb, :]  # [seq_len, vocab_size]
+                if audio_labels.dim() > 1 and audio_labels.size(0) == 8:
+                    cb_labels = audio_labels[cb, :]  # [seq_len]
                 else:
-                    # Alternative format: handle different tensor arrangements
-                    cb_logits = audio_logits[cb]  # Codebook-specific logits
-                    cb_labels = audio_labels[cb]  # Codebook-specific labels
+                    cb_labels = audio_labels  # Fallback
                 
-                # Compute CrossEntropy loss for this codebook
                 cb_loss = self.audio_loss_fn(cb_logits, cb_labels)
                 audio_loss += cb_loss
             
-            # Average loss across codebooks (standard practice)
             audio_loss = audio_loss / num_codebooks
-            total_loss += audio_loss
-            loss_dict['audio_loss'] = audio_loss.item()
+        else:
+            # Fallback: treat as single output
+            audio_loss = self.audio_loss_fn(
+                audio_logits.view(-1, audio_logits.size(-1)),
+                audio_labels.view(-1)
+            )
         
-        loss_dict['total_loss'] = total_loss.item()
-        return total_loss, loss_dict
+        return audio_loss
     
     def train_step(self, batch):
-        """Single training step."""
+        """Single training step with robust batch handling."""
         
-        # Handle HiggsAudioBatchInput conversion to dict
+        # Handle different batch types
         if hasattr(batch, '__dict__'):
-            # Convert HiggsAudioBatchInput to dict for model forward
+            # Convert HiggsAudioBatchInput to dict
             batch_dict = {}
             for key, value in batch.__dict__.items():
                 if isinstance(value, torch.Tensor):
-                    batch_dict[key] = value.to(self.device)
+                    batch_dict[key] = value.to(self.device, non_blocking=True)
                 else:
                     batch_dict[key] = value
             batch = batch_dict
-        else:
-            # Handle regular dict batch  
-            batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+        elif isinstance(batch, dict):
+            # Handle regular dict batch
+            batch = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
                     for k, v in batch.items()}
+        else:
+            # Unknown batch type - try to handle gracefully
+            logger.warning(f"Unknown batch type: {type(batch)}")
+            try:
+                batch = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
+                        for k, v in batch.__dict__.items() if not k.startswith('_')}
+            except Exception as e:
+                logger.error(f"Failed to convert batch: {e}")
+                raise
+        
+        # Validate batch has required keys
+        required_keys = ['input_ids']
+        missing_keys = [k for k in required_keys if k not in batch]
+        if missing_keys:
+            logger.error(f"Missing required keys in batch: {missing_keys}")
+            logger.error(f"Available keys: {list(batch.keys())}")
+            raise ValueError(f"Batch missing required keys: {missing_keys}")
         
         # Compute loss
-        loss, loss_dict = self.compute_loss(batch)
+        try:
+            loss, loss_dict = self.compute_loss(batch)
+        except Exception as e:
+            logger.error(f"Loss computation failed: {e}")
+            logger.error(f"Batch keys: {list(batch.keys())}")
+            logger.error(f"Batch shapes: {[(k, v.shape if isinstance(v, torch.Tensor) else type(v)) for k, v in batch.items()]}")
+            raise
+        
+        # Scale loss for gradient accumulation
+        scaled_loss = loss / self.args.grad_accum
         
         # Backward pass
-        loss = loss / self.args.grad_accum
-        loss.backward()
+        scaled_loss.backward()
         
         return loss_dict
     
@@ -257,7 +358,7 @@ class HiggsAudioTrainer:
         accum_step = 0
         
         for epoch in range(self.args.epochs):
-            if self.world_size > 1:
+            if self.world_size > 1 and hasattr(self.dataloader.sampler, 'set_epoch'):
                 self.dataloader.sampler.set_epoch(epoch)
             
             for batch in self.dataloader:

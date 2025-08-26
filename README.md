@@ -33,6 +33,18 @@ Delivers exactly three files that strictly reuse existing inference infrastructu
   - **DDP Support**: torchrun with gradient accumulation
   - **Mixed Precision**: bf16 autocast following inference patterns
   - **Exact Model Loading**: HiggsAudioModel.from_pretrained() as inference
+  - **PEFT Compatibility**: Bypasses PEFT wrapper to avoid `labels` parameter conflict
+
+## ⚡ Critical PEFT Fix
+
+**Issue**: PEFT automatically injects `labels` parameter but [HiggsAudioModel](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/boson_multimodal/model/higgs_audio/modeling_higgs_audio.py#L1252-L1278) expects DualFFN-specific [label_ids](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/boson_multimodal/dataset/chatml_dataset.py#L25-L25) and [label_audio_ids](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/boson_multimodal/data_collator/higgs_audio_collator.py#L42-L42).
+
+**Solution**: Trainer bypasses PEFT wrapper and calls underlying model directly:
+```python
+# Get underlying model to avoid PEFT's labels injection
+actual_model = self.model.base_model.model
+outputs = actual_model(**clean_inputs)  # No labels conflict
+```
 
 ## 🚀 Usage
 
