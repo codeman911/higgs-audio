@@ -320,10 +320,10 @@ class HiggsAudioTrainer:
             # BEST CASE: Use model's expanded_labels which are already correctly aligned!
             logger.info("✓ Using model's expanded_labels (optimal path)")
             
-            # Remove last logit to match the model's expanded_labels length
-            shift_logits = text_logits[..., :-1, :].contiguous()  # [batch, seq_len-1, vocab]
-            # Use model's expanded_labels directly (already shifted)
-            shift_labels = model_expanded_labels.contiguous()      # [batch, seq_len-1]
+            # CRITICAL FIX: The model's expanded_labels are already properly aligned with logits
+            # No need to remove the last logit - they should have the same sequence length
+            shift_logits = text_logits.contiguous()  # [batch, seq_len, vocab]
+            shift_labels = model_expanded_labels.contiguous()  # [batch, seq_len]
             
             logger.info(f"Final logits shape: {shift_logits.shape}")
             logger.info(f"Final labels shape: {shift_labels.shape}")
@@ -336,8 +336,8 @@ class HiggsAudioTrainer:
                 logger.info(f"✓ Perfect alignment! Computing loss on {num_valid_tokens} valid tokens")
                 
                 text_loss = self.text_loss_fn(
-                    shift_logits.view(-1, shift_logits.size(-1)),  # [batch*(seq_len-1), vocab]
-                    shift_labels.view(-1)                          # [batch*(seq_len-1)]
+                    shift_logits.view(-1, shift_logits.size(-1)),  # [batch*seq_len, vocab]
+                    shift_labels.view(-1)                          # [batch*seq_len]
                 )
                 total_loss = total_loss + text_loss
                 loss_dict['text_loss'] = text_loss.item()
@@ -361,8 +361,9 @@ class HiggsAudioTrainer:
                 logger.warning("Detected significant sequence expansion - likely due to audio tokens")
                 logger.warning("Manual alignment may be inaccurate. Check model input filtering.")
             
-            shift_logits = text_logits[..., :-1, :].contiguous()
-            shift_labels = text_labels[..., 1:].contiguous()
+            # STANDARD teacher forcing shift for autoregressive models
+            shift_logits = text_logits[..., :-1, :].contiguous()  # Remove last logit
+            shift_labels = text_labels[..., 1:].contiguous()      # Remove first label
             
             logger.info(f"Fallback logits shape: {shift_logits.shape}")
             logger.info(f"Fallback labels shape: {shift_labels.shape}")
