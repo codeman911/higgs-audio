@@ -916,7 +916,7 @@ class HiggsAudioModel(HiggsAudioPreTrainedModel, GenerationMixin):
         self.audio_eos_token_id = tokenizer.convert_tokens_to_ids("<|audio_eos|>")
 
     def _embed_audio_ids(self, audio_ids):
-        """Embed the audio ids
+        """Embed the audio ids with proper dtype matching
 
         Args:
             audio_ids: torch.LongTensor of shape (num_codebooks, audio_in_total_length)
@@ -934,6 +934,13 @@ class HiggsAudioModel(HiggsAudioPreTrainedModel, GenerationMixin):
             audio_embed = torch.sum(audio_embed, dim=0)
         if self.use_audio_out_embed_projector:
             audio_embed = self.audio_out_embed_projector(audio_embed)
+        
+        # CRITICAL FIX: Ensure audio embeddings match the model's dtype
+        # Get the target dtype from the model's embedding layer
+        target_dtype = self.embed_tokens.weight.dtype
+        if audio_embed.dtype != target_dtype:
+            audio_embed = audio_embed.to(dtype=target_dtype)
+        
         return audio_embed
 
     def _apply_audio_tower(self, audio_features, audio_feature_attention_mask):
