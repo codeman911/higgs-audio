@@ -28,11 +28,11 @@ from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_a
 BOSON_AVAILABLE = True
 
 # Import our custom components
-from .config import TrainingConfig
-from .dataset import VoiceCloningDataset
-from .loss import compute_training_loss, log_training_metrics, validate_loss_computation
-from .logging_utils import training_logger
-from .audio_validation import audio_validator
+from trainer.config import TrainingConfig
+from trainer.dataset import VoiceCloningDataset
+from trainer.loss import compute_training_loss, log_training_metrics, validate_loss_computation
+from trainer.logging_utils import training_logger
+from trainer.audio_validation import audio_validator
 
 
 class HiggsAudioTrainer:

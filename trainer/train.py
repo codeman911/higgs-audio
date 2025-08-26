@@ -125,8 +125,8 @@ if BOSON_MULTIMODAL_AVAILABLE:
                 from config import TrainingConfig
             except ImportError:
                 # Direct imports as last resort
-                from .trainer import HiggsAudioTrainer
-                from .config import TrainingConfig
+                from trainer.trainer import HiggsAudioTrainer
+                from trainer.config import TrainingConfig
         TRAINER_AVAILABLE = True
     except ImportError as e:
         TRAINER_IMPORT_ERROR = str(e)

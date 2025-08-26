@@ -38,9 +38,9 @@ from loguru import logger
 
 # Import trainer components
 try:
-    from .trainer import HiggsAudioTrainer
-    from .config import DistributedTrainingConfig
-    from .loss import compute_training_loss, LossComponents
+    from trainer.trainer import HiggsAudioTrainer
+    from trainer.config import DistributedTrainingConfig
+    from trainer.loss import compute_training_loss, LossComponents
 except ImportError:
     # Fallback imports for direct execution
     from trainer import HiggsAudioTrainer
@@ -406,7 +406,7 @@ def create_8xh200_trainer(
     **kwargs
 ) -> DistributedHiggsAudioTrainer:
     """Create optimized distributed trainer for 8xH200 setup."""
-    from .config import get_8x_h200_config
+    from trainer.config import get_8x_h200_config
     
     # Use 8x H200 config as base, override with provided params
     config = get_8x_h200_config()

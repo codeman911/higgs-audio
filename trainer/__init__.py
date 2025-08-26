@@ -11,24 +11,24 @@ Key Components:
 """
 
 # Import configuration first
-from .config import TrainingConfig
+from trainer.config import TrainingConfig
 
 # Conditional imports to handle dependencies
 try:
-    from .trainer import HiggsAudioTrainer
+    from trainer.trainer import HiggsAudioTrainer
 except (ImportError, SyntaxError) as e:
     import warnings
     warnings.warn(f"Could not import HiggsAudioTrainer: {e}")
     HiggsAudioTrainer = None
 
 try:
-    from .dataset import VoiceCloningDataset
+    from trainer.dataset import VoiceCloningDataset
 except (ImportError, SyntaxError) as e:
     VoiceCloningDataset = None
 
 # Always available imports
 try:
-    from .audio_validation import audio_validator, AudioQualityValidator
+    from trainer.audio_validation import audio_validator, AudioQualityValidator
 except ImportError:
     audio_validator = None
     AudioQualityValidator = None
