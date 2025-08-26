@@ -304,9 +304,9 @@ class HiggsAudioTrainer:
         text_logits = getattr(outputs, 'logits', None)
         audio_logits = getattr(outputs, 'audio_logits', None)
         
-        # CRITICAL INSIGHT: The model already provides correctly aligned labels!
-        # Use the model's expanded_labels instead of the original batch labels
-        model_expanded_labels = getattr(outputs, 'expanded_labels', None)
+        # CRITICAL FIX: DO NOT use the model's expanded_labels as they are over-masking
+        # Always use the original batch labels instead
+        model_expanded_labels = None  # getattr(outputs, 'expanded_labels', None)
         
         # Only log shapes if needed for debugging
         # if text_logits is not None:
@@ -317,41 +317,10 @@ class HiggsAudioTrainer:
         #     logger.info(f"Model expanded labels shape: {model_expanded_labels.shape}")
         
         # Text loss with OPTIMAL teacher forcing alignment
-        if text_logits is not None and model_expanded_labels is not None:
-            # BEST CASE: Use model's expanded_labels which are already correctly aligned!
-            logger.info("✓ Using model's expanded_labels (optimal path)")
-            
-            # CRITICAL FIX: The model's expanded_labels are already properly aligned with logits
-            # No need to remove the last logit - they should have the same sequence length
-            shift_logits = text_logits.contiguous()  # [batch, seq_len, vocab]
-            shift_labels = model_expanded_labels.contiguous()  # [batch, seq_len]
-            
-            # Validate alignment
-            if shift_logits.size(1) == shift_labels.size(1):
-                # Count valid (non-ignore) tokens for loss computation
-                valid_mask = shift_labels != -100
-                num_valid_tokens = valid_mask.sum().item()
-                # Only log detailed alignment info if needed
-                # logger.info(f"Perfect alignment! Computing loss on {num_valid_tokens} valid tokens")
-                
-                text_loss = self.text_loss_fn(
-                    shift_logits.view(-1, shift_logits.size(-1)),  # [batch*seq_len, vocab]
-                    shift_labels.view(-1)                          # [batch*seq_len]
-                )
-                total_loss = total_loss + text_loss
-                loss_dict['text_loss'] = text_loss.item()
-                logger.info(f"✓ Text loss: {text_loss.item():.4f}")
-                
-                # Log first and last 5 predictions vs labels every n log steps
-                if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
-                    self._log_predictions_vs_labels(shift_logits, shift_labels)
-            else:
-                logger.error(f"❌ Model expanded_labels alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
-                logger.error("This should never happen with properly functioning model!")
-                
-        elif text_logits is not None and text_labels is not None:
-            # FALLBACK: Use manual alignment if expanded_labels not available
-            logger.warning("⚠️  Using fallback text loss computation with original labels")
+        # CRITICAL FIX: Skip the expanded_labels path and go directly to fallback
+        if text_logits is not None and text_labels is not None:
+            # FORCE FALLBACK: Use manual alignment with original labels
+            logger.warning("⚠️  Using fallback text loss computation with original labels (forced to avoid over-masking)")
             
             # Check if we need to handle audio token expansion manually
             input_seq_len = text_labels.size(1)
@@ -522,6 +491,13 @@ class HiggsAudioTrainer:
                     label_rest = labels[i, 5:seq_len].tolist()
                     logger.info(f"  Rest Text Predictions:    {pred_rest}")
                     logger.info(f"  Rest Text Labels:         {label_rest}")
+                
+                # Log some statistics about masking
+                sample_labels = labels[i]
+                masked_count = (sample_labels == -100).sum().item()
+                unmasked_count = (sample_labels != -100).sum().item()
+                total_count = sample_labels.numel()
+                logger.info(f"  Label Stats: {masked_count} masked, {unmasked_count} unmasked, {total_count} total")
         except Exception as e:
             logger.warning(f"Failed to log text predictions vs labels: {e}")
     
@@ -563,6 +539,12 @@ class HiggsAudioTrainer:
                 # Also log some stats about the logits
                 logger.info(f"  Audio Logits shape: {audio_logits.shape}")
                 logger.info(f"  Audio Labels shape: {audio_labels.shape}")
+                
+                # Log statistics about audio masking
+                masked_count = (audio_labels == -100).sum().item()
+                unmasked_count = (audio_labels != -100).sum().item()
+                total_count = audio_labels.numel()
+                logger.info(f"  Audio Label Stats: {masked_count} masked, {unmasked_count} unmasked, {total_count} total")
         except Exception as e:
             logger.warning(f"Failed to log audio predictions vs labels: {e}")
     

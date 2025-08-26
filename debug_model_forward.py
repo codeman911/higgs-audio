@@ -13,7 +13,7 @@ from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_a
 from boson_multimodal.data_types import Message, ChatMLSample, AudioContent, TextContent
 from boson_multimodal.model.higgs_audio import HiggsAudioConfig, HiggsAudioModel
 
-def test_fix():
+def debug_model_forward():
     # Create a mock manifest with audio tokens
     mock_manifest = [
         {
@@ -79,14 +79,8 @@ def test_fix():
     # Process with collator
     batch_input = collator([sample])
     
-    print("=== BEFORE FIX ===")
     print(f"Input IDs: {batch_input.input_ids}")
     print(f"Label IDs: {batch_input.label_ids}")
-    
-    # Count masked vs unmasked in original labels
-    original_masked = (batch_input.label_ids == -100).sum().item()
-    original_unmasked = (batch_input.label_ids != -100).sum().item()
-    print(f"Original labels - Masked: {original_masked}, Unmasked: {original_unmasked}")
     
     # Load model
     model = HiggsAudioModel.from_pretrained(
@@ -103,50 +97,32 @@ def test_fix():
         else:
             batch_dict[key] = value
     
+    print(f"\nBatch keys: {list(batch_dict.keys())}")
+    
     # Run forward pass
     with torch.no_grad():
         outputs = model(**batch_dict)
     
+    print(f"\nModel outputs keys: {list(outputs.__dict__.keys())}")
+    
+    if hasattr(outputs, 'logits'):
+        print(f"Logits shape: {outputs.logits.shape}")
+    
     if hasattr(outputs, 'expanded_labels'):
-        print(f"\nExpanded labels shape: {outputs.expanded_labels.shape}")
+        print(f"Expanded labels shape: {outputs.expanded_labels.shape}")
+        print(f"Expanded labels: {outputs.expanded_labels}")
         
-        # Count masked vs unmasked in expanded labels
+        # Compare with original labels
+        print(f"Original labels: {batch_input.label_ids}")
+        
+        # Count masked vs unmasked in both
         expanded_masked = (outputs.expanded_labels == -100).sum().item()
         expanded_unmasked = (outputs.expanded_labels != -100).sum().item()
+        original_masked = (batch_input.label_ids == -100).sum().item()
+        original_unmasked = (batch_input.label_ids != -100).sum().item()
+        
         print(f"Expanded labels - Masked: {expanded_masked}, Unmasked: {expanded_unmasked}")
-        
-        print("\n=== THE PROBLEM ===")
-        print("Model's expanded_labels are over-masking!")
-        print(f"Original unmasked tokens: {original_unmasked}")
-        print(f"Expanded unmasked tokens: {expanded_unmasked}")
-        print(f"Loss of learnable tokens: {original_unmasked - expanded_unmasked}")
-    
-    print("\n=== THE SOLUTION ===")
-    print("Use original batch labels instead of model's expanded_labels")
-    print("This will allow the model to learn properly")
-    
-    # Simulate the loss computation with original labels (our fix)
-    text_logits = getattr(outputs, 'logits', None)
-    text_labels = batch_input.label_ids
-    
-    if text_logits is not None and text_labels is not None:
-        # STANDARD teacher forcing shift for autoregressive models
-        shift_logits = text_logits[..., :-1, :].contiguous()  # Remove last logit
-        shift_labels = text_labels[..., 1:].contiguous()      # Remove first label
-        
-        print(f"\nLoss computation with original labels:")
-        print(f"  Logits shape after shift: {shift_logits.shape}")
-        print(f"  Labels shape after shift: {shift_labels.shape}")
-        
-        # Count valid tokens for loss computation
-        valid_mask = shift_labels != -100
-        num_valid_tokens = valid_mask.sum().item()
-        print(f"  Valid tokens for loss: {num_valid_tokens}")
-        
-        if num_valid_tokens > 0:
-            print("✓ Loss computation can proceed with learnable tokens")
-        else:
-            print("❌ ERROR: No valid tokens for loss computation!")
+        print(f"Original labels - Masked: {original_masked}, Unmasked: {original_unmasked}")
 
 if __name__ == "__main__":
-    test_fix()
+    debug_model_forward()

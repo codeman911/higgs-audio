@@ -8,8 +8,8 @@ from transformers import AutoTokenizer
 from boson_multimodal.dataset.chatml_dataset import prepare_chatml_sample
 from boson_multimodal.data_types import Message, ChatMLSample, AudioContent, TextContent
 
-def debug_labels():
-    # Create a simple test sample
+def debug_simple_labels():
+    # Create a simple test sample without audio
     sample = {
         "messages": [
             {
@@ -47,6 +47,12 @@ def debug_labels():
     masked_count = label_tokens.count(-100)
     unmasked_count = len(label_tokens) - masked_count
     print(f"Masked tokens: {masked_count}, Unmasked tokens: {unmasked_count}")
+    
+    # Show which specific tokens are unmasked
+    print("\nUnmasked tokens:")
+    for i, token_id in enumerate(label_tokens):
+        if token_id != -100:
+            print(f"  Position {i}: {token_id} -> '{tokenizer.decode([token_id])}'")
 
 if __name__ == "__main__":
-    debug_labels()
+    debug_simple_labels()
