@@ -10,11 +10,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, AutoProcessor, get_cosine_schedule_with_warmup
 import logging
-from tqdm import tqdm
 
 # Import exact components from boson_multimodal
 from boson_multimodal.model.higgs_audio import HiggsAudioConfig, HiggsAudioModel
@@ -94,65 +93,32 @@ class HiggsAudioTrainer:
     def setup_dataset(self):
         """Setup dataset and dataloader."""
         
-        # Create full dataset
-        full_dataset = HiggsAudioDataset(
+        # Create dataset
+        dataset = HiggsAudioDataset(
             manifest_path=self.args.train_manifest,
             tokenizer=self.tokenizer,
             audio_tokenizer=self.audio_tokenizer
         )
         
-        # Split dataset into train and validation (95% train, 5% validation)
-        total_size = len(full_dataset)
-        val_size = int(total_size * 0.05)
-        train_size = total_size - val_size
-        
-        # Create indices for train and validation splits
-        indices = list(range(total_size))
-        train_indices = indices[:train_size]
-        val_indices = indices[train_size:]
-        
-        # Create train and validation datasets
-        train_dataset = Subset(full_dataset, train_indices)
-        val_dataset = Subset(full_dataset, val_indices)
-        
         # Create collator with EXACT parameters
         self.collator = create_collator(self.config, self.whisper_processor)
         
-        # Setup distributed sampler for training
-        train_sampler = DistributedSampler(
-            train_dataset, 
+        # Setup distributed sampler
+        sampler = DistributedSampler(
+            dataset, 
             num_replicas=self.world_size, 
             rank=self.local_rank,
             shuffle=True
         ) if self.world_size > 1 else None
         
-        # Setup distributed sampler for validation
-        val_sampler = DistributedSampler(
-            val_dataset, 
-            num_replicas=self.world_size, 
-            rank=self.local_rank,
-            shuffle=False
-        ) if self.world_size > 1 else None
-        
-        # Create dataloaders with optimal settings for 8xH200
-        self.train_dataloader = DataLoader(
-            train_dataset,
+        # Create dataloader with optimal settings for 8xH200
+        self.dataloader = DataLoader(
+            dataset,
             batch_size=self.args.batch_size,
-            sampler=train_sampler,
-            shuffle=(train_sampler is None),
+            sampler=sampler,
+            shuffle=(sampler is None),
             collate_fn=self.collator,
             num_workers=16,  # 128 cores / 8 GPUs = 16 per GPU
-            pin_memory=True,
-            persistent_workers=True
-        )
-        
-        self.val_dataloader = DataLoader(
-            val_dataset,
-            batch_size=self.args.batch_size,
-            sampler=val_sampler,
-            shuffle=False,
-            collate_fn=self.collator,
-            num_workers=16,
             pin_memory=True,
             persistent_workers=True
         )
@@ -174,7 +140,7 @@ class HiggsAudioTrainer:
         )
         
         # Scheduler
-        total_steps = len(self.train_dataloader) * self.args.epochs // self.args.grad_accum
+        total_steps = len(self.dataloader) * self.args.epochs // self.args.grad_accum
         self.scheduler = get_cosine_schedule_with_warmup(
             self.optimizer,
             num_warmup_steps=self.args.warmup,
@@ -192,8 +158,20 @@ class HiggsAudioTrainer:
         if not isinstance(batch, dict):
             raise ValueError(f"Expected batch to be dict, got {type(batch)}")
         
+        logger.info(f"Batch keys: {list(batch.keys())}")
+        
+        # CRITICAL SOLUTION: Instead of calling model.forward(), we'll call the underlying
+        # model's forward method directly, completely bypassing PEFT's wrapper methods
+        
         # Get the true underlying HiggsAudioModel
         base_model = self._get_base_higgs_model()
+        
+        # CRITICAL FIX: The model NEEDS label_ids and audio_out_ids to function properly!
+        # The original PEFT bypass was overly aggressive in filtering inputs.
+        # The model requires these for:
+        # 1. merge_input_ids_with_audio_features to expand labels
+        # 2. Generating expanded_labels in output
+        # 3. Proper audio logits generation
         
         # Prepare inputs - only remove the generic 'labels' key that PEFT might inject
         # Keep label_ids, label_audio_ids, and audio_out_ids which are required by the model
@@ -203,6 +181,23 @@ class HiggsAudioTrainer:
             # Keep all model-specific label parameters
             if k not in ['labels']:  # Remove ONLY the generic PEFT-injected 'labels'
                 clean_inputs[k] = v
+        
+        logger.info(f"Clean inputs: {list(clean_inputs.keys())}")
+        
+        # VERIFICATION: Log critical parameters to ensure model gets what it needs
+        logger.info(f"✓ Model will receive label_ids: {'label_ids' in clean_inputs}")
+        logger.info(f"✓ Model will receive audio_out_ids: {'audio_out_ids' in clean_inputs}")
+        logger.info(f"✓ Model will receive label_audio_ids: {'label_audio_ids' in clean_inputs}")
+        
+        if 'label_ids' in clean_inputs and clean_inputs['label_ids'] is not None:
+            logger.info(f"✓ label_ids shape: {clean_inputs['label_ids'].shape} dtype: {clean_inputs['label_ids'].dtype}")
+        else:
+            logger.warning("⚠️  label_ids is missing or None - model won't generate expanded_labels!")
+            
+        if 'audio_out_ids' in clean_inputs and clean_inputs['audio_out_ids'] is not None:
+            logger.info(f"✓ audio_out_ids shape: {clean_inputs['audio_out_ids'].shape} dtype: {clean_inputs['audio_out_ids'].dtype}")
+        else:
+            logger.warning("⚠️  audio_out_ids is missing or None - audio logits will be empty!")
             
         # CRITICAL FIX: Ensure all tensors have consistent dtype for mixed precision training
         # The error occurs because audio embeddings are Float32 but final_embedding is BFloat16
@@ -476,10 +471,11 @@ class HiggsAudioTrainer:
                 if valid_codebooks > 0:
                     audio_loss = audio_loss / valid_codebooks
                     logger.info(f"Audio loss computed across {valid_codebooks} codebooks")
-                else:
-                    logger.warning(f"Unexpected audio labels shape: {audio_labels.shape}")
+            else:
+                logger.warning(f"Unexpected audio labels shape: {audio_labels.shape}")
         else:
             # Fallback: treat as single output
+            logger.info("Using fallback audio loss computation")
             audio_loss = self.audio_loss_fn(
                 audio_logits.view(-1, audio_logits.size(-1)),
                 audio_labels.view(-1)
@@ -564,67 +560,18 @@ class HiggsAudioTrainer:
         
         return loss_dict
     
-    def validate(self):
-        """Validation loop."""
-        self.model.eval()
-        total_val_loss = 0.0
-        total_text_loss = 0.0
-        total_audio_loss = 0.0
-        val_steps = 0
-        
-        with torch.no_grad():
-            for batch in self.val_dataloader:
-                # Move batch to device
-                if hasattr(batch, '__dict__'):
-                    batch_dict = {}
-                    for key, value in batch.__dict__.items():
-                        if isinstance(value, torch.Tensor):
-                            batch_dict[key] = value.to(self.device, non_blocking=True)
-                        else:
-                            batch_dict[key] = value
-                    batch = batch_dict
-                
-                # Compute validation loss
-                try:
-                    val_loss, val_loss_dict = self.compute_loss(batch)
-                    total_val_loss += val_loss.item()
-                    if 'text_loss' in val_loss_dict:
-                        total_text_loss += val_loss_dict['text_loss']
-                    if 'audio_loss' in val_loss_dict:
-                        total_audio_loss += val_loss_dict['audio_loss']
-                    val_steps += 1
-                except Exception as e:
-                    logger.error(f"Validation loss computation failed: {e}")
-                    continue
-        
-        self.model.train()
-        
-        if val_steps > 0:
-            avg_val_loss = total_val_loss / val_steps
-            avg_text_loss = total_text_loss / val_steps
-            avg_audio_loss = total_audio_loss / val_steps
-            return avg_val_loss, avg_text_loss, avg_audio_loss
-        else:
-            return 0.0, 0.0, 0.0
-    
     def train(self):
         """Main training loop."""
         
         self.model.train()
-        global_step = 0
+        step = 0
         accum_step = 0
         
         for epoch in range(self.args.epochs):
-            if self.world_size > 1 and hasattr(self.train_dataloader.sampler, 'set_epoch'):
-                self.train_dataloader.sampler.set_epoch(epoch)
+            if self.world_size > 1 and hasattr(self.dataloader.sampler, 'set_epoch'):
+                self.dataloader.sampler.set_epoch(epoch)
             
-            # Create progress bar for this epoch
-            if self.local_rank == 0:
-                pbar = tqdm(self.train_dataloader, desc=f"Epoch {epoch+1}/{self.args.epochs}")
-            else:
-                pbar = self.train_dataloader
-            
-            for batch in pbar:
+            for batch in self.dataloader:
                 # Training step
                 loss_dict = self.train_step(batch)
                 accum_step += 1
@@ -639,32 +586,22 @@ class HiggsAudioTrainer:
                     self.scheduler.step()
                     self.optimizer.zero_grad()
                     
-                    global_step += 1
+                    step += 1
                     
                     # Logging
-                    if global_step % self.args.log_steps == 0 and self.local_rank == 0:
-                        log_msg = f"Step {global_step} - Train Loss: {loss_dict}"
-                        pbar.set_postfix({"loss": loss_dict.get('total_loss', 0.0)})
-                        logger.info(log_msg)
-                    
-                    # Validation
-                    if global_step % self.args.val_steps == 0 and self.local_rank == 0:
-                        val_loss, val_text_loss, val_audio_loss = self.validate()
-                        logger.info(f"Step {global_step} - Val Loss: {val_loss:.4f}, Text: {val_text_loss:.4f}, Audio: {val_audio_loss:.4f}")
+                    if step % 10 == 0 and self.local_rank == 0:
+                        logger.info(f"Step {step}: {loss_dict}")
                     
                     # Checkpointing
-                    if global_step % self.args.save_steps == 0 and self.local_rank == 0:
-                        checkpoint_dir = f"{self.args.output_dir}/checkpoint-{global_step}"
+                    if step % 1000 == 0 and self.local_rank == 0:
+                        checkpoint_dir = f"{self.args.output_dir}/checkpoint-{step}"
                         os.makedirs(checkpoint_dir, exist_ok=True)
                         save_lora_adapters(self.model.module if self.world_size > 1 else self.model, 
                                          checkpoint_dir)
-                        logger.info(f"Saved checkpoint at step {global_step}")
+                        logger.info(f"Saved checkpoint at step {step}")
         
-        # Final validation and checkpoint
+        # Final checkpoint
         if self.local_rank == 0:
-            val_loss, val_text_loss, val_audio_loss = self.validate()
-            logger.info(f"Final Validation - Loss: {val_loss:.4f}, Text: {val_text_loss:.4f}, Audio: {val_audio_loss:.4f}")
-            
             final_dir = f"{self.args.output_dir}/final"
             os.makedirs(final_dir, exist_ok=True)
             save_lora_adapters(self.model.module if self.world_size > 1 else self.model, 
@@ -687,9 +624,6 @@ def main():
     parser.add_argument("--wd", type=float, default=0.01)
     parser.add_argument("--warmup", type=int, default=100)
     parser.add_argument("--grad_accum", type=int, default=8)
-    parser.add_argument("--log_steps", type=int, default=10)
-    parser.add_argument("--val_steps", type=int, default=100)
-    parser.add_argument("--save_steps", type=int, default=1000)
     
     # LoRA
     parser.add_argument("--lora_r", type=int, default=16)
