@@ -104,8 +104,8 @@ DEFAULT_ARGS=(
     "--save_steps" "500"
     "--logging_steps" "50"
     "--eval_steps" "1000"
-    "--use_gradient_checkpointing" "true"
-    "--mixed_precision" "true"
+    "--use_gradient_checkpointing"         # Boolean flag, no value needed
+    "--mixed_precision"                   # Boolean flag, no value needed
     "--max_audio_length_seconds" "30"
     "--dataloader_num_workers" "16"       # 128 cores / 8 GPUs
 )

@@ -325,6 +325,19 @@ def parse_arguments():
         help="Number of dataloader workers"
     )
     
+    parser.add_argument(
+        "--mixed_precision",
+        action="store_true",
+        help="Enable mixed precision training (bfloat16)"
+    )
+    
+    parser.add_argument(
+        "--max_audio_length_seconds",
+        type=int,
+        default=30,
+        help="Maximum audio length in seconds"
+    )
+    
     # Convenience flags
     parser.add_argument(
         "--quick_test",
@@ -409,6 +422,8 @@ def create_config_from_args(args):
         # Hardware
         use_gradient_checkpointing=args.use_gradient_checkpointing,
         dataloader_num_workers=args.dataloader_num_workers,
+        mixed_precision=args.mixed_precision,
+        max_audio_duration=args.max_audio_length_seconds,
     )
     
     return config
