@@ -29,7 +29,7 @@ BOSON_AVAILABLE = True
 
 # Import our custom components
 from trainer.config import TrainingConfig
-from trainer.dataset import VoiceCloningDataset
+from trainer.simple_dataset import SimpleChatMLDataset, create_sample_data
 from trainer.loss import compute_training_loss, log_training_metrics, validate_loss_computation
 from trainer.logging_utils import training_logger
 from trainer.audio_validation import audio_validator
@@ -220,21 +220,25 @@ class HiggsAudioTrainer:
         logger.info("📚 Setting up datasets")
         
         # Training dataset
-        self.train_dataset = VoiceCloningDataset(
+        self.train_dataset = SimpleChatMLDataset(
             data_path=self.config.train_data_path,
             tokenizer=self.tokenizer,
             audio_tokenizer=self.audio_tokenizer,
-            validate_audio_paths=True,
+            audio_base_path=getattr(self.config, 'audio_base_path', ''),
+            create_missing_audio=True,
+            max_samples=None
         )
         
         # Validation dataset (if provided)
         self.val_dataset = None
         if os.path.exists(self.config.val_data_path):
-            self.val_dataset = VoiceCloningDataset(
+            self.val_dataset = SimpleChatMLDataset(
                 data_path=self.config.val_data_path,
                 tokenizer=self.tokenizer,
                 audio_tokenizer=self.audio_tokenizer,
-                validate_audio_paths=True,
+                audio_base_path=getattr(self.config, 'audio_base_path', ''),
+                create_missing_audio=True,
+                max_samples=None
             )
             logger.info(f"📊 Validation dataset: {len(self.val_dataset)} samples")
         

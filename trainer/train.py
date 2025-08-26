@@ -214,11 +214,27 @@ BOSON_MULTIMODAL_AVAILABLE = setup_boson_multimodal_path()
 
 # Import utility functions directly (no ML dependencies)
 try:
-    from utils import create_sample_data, validate_dataset_format
+    from utils import validate_dataset_format, create_sample_data
     DATASET_UTILS_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Could not import utils: {e}")
-    DATASET_UTILS_AVAILABLE = False
+    try:
+        from trainer.simple_dataset import create_sample_data
+        # Create a simple validation function
+        def validate_dataset_format(data_path):
+            import json
+            import os
+            try:
+                if not os.path.exists(data_path):
+                    return False
+                with open(data_path, 'r') as f:
+                    data = json.load(f)
+                return isinstance(data, (list, dict))
+            except:
+                return False
+        DATASET_UTILS_AVAILABLE = True
+    except ImportError:
+        DATASET_UTILS_AVAILABLE = False
 
 # Conditional imports for training components
 TRAINER_AVAILABLE = False
