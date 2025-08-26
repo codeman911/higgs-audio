@@ -241,11 +241,26 @@ class HiggsAudioTrainer:
         if audio_logits is not None:
             logger.info(f"Audio logits shape: {audio_logits.shape}")
         
-        # Text loss
+        # Text loss with CORRECT teacher forcing alignment
         if text_logits is not None and text_labels is not None:
+            # CRITICAL FIX: Implement proper autoregressive shift for teacher forcing
+            # Logits predict the NEXT token, so we need to align accordingly
+            
+            # Remove last logit (predicting beyond sequence)
+            shift_logits = text_logits[..., :-1, :].contiguous()  # [batch, seq_len-1, vocab]
+            # Remove first label (no prediction for first token)
+            shift_labels = text_labels[..., 1:].contiguous()       # [batch, seq_len-1]
+            
+            logger.info(f"Shifted logits shape: {shift_logits.shape}")
+            logger.info(f"Shifted labels shape: {shift_labels.shape}")
+            
+            # Now shapes should match: both are [batch, seq_len-1]
+            assert shift_logits.size(0) == shift_labels.size(0), f"Batch size mismatch: {shift_logits.size(0)} vs {shift_labels.size(0)}"
+            assert shift_logits.size(1) == shift_labels.size(1), f"Sequence length mismatch: {shift_logits.size(1)} vs {shift_labels.size(1)}"
+            
             text_loss = self.text_loss_fn(
-                text_logits.view(-1, text_logits.size(-1)),
-                text_labels.view(-1)
+                shift_logits.view(-1, shift_logits.size(-1)),  # [batch*(seq_len-1), vocab]
+                shift_labels.view(-1)                          # [batch*(seq_len-1)]
             )
             total_loss = total_loss + text_loss
             loss_dict['text_loss'] = text_loss.item()
@@ -268,29 +283,65 @@ class HiggsAudioTrainer:
         return total_loss, loss_dict
     
     def _compute_audio_loss(self, audio_logits, audio_labels):
-        """Compute audio loss across multiple codebooks."""
+        """Compute audio loss across multiple codebooks with proper sequence alignment."""
         if audio_logits is None or audio_labels is None:
             return torch.tensor(0.0, device=self.device)
             
+        # Log shapes for debugging
+        logger.info(f"Audio logits shape: {audio_logits.shape}")
+        logger.info(f"Audio labels shape: {audio_labels.shape}")
+        
+        # Handle empty sequences
+        if audio_logits.numel() == 0 or audio_labels.numel() == 0:
+            logger.info("Empty audio sequences, returning zero loss")
+            return torch.tensor(0.0, device=self.device)
+        
         audio_loss = torch.tensor(0.0, device=self.device)
         
         # Handle different tensor shapes for multi-codebook audio
         if len(audio_logits.shape) == 3 and audio_logits.size(1) == 8:
             # Shape: [seq_len, 8_codebooks, vocab_size]
             num_codebooks = 8
-            for cb in range(num_codebooks):
-                cb_logits = audio_logits[:, cb, :]  # [seq_len, vocab_size]
-                if audio_labels.dim() > 1 and audio_labels.size(0) == 8:
-                    cb_labels = audio_labels[cb, :]  # [seq_len]
-                else:
-                    cb_labels = audio_labels  # Fallback
-                
-                cb_loss = self.audio_loss_fn(cb_logits, cb_labels)
-                audio_loss += cb_loss
+            seq_len_logits = audio_logits.size(0)
             
-            audio_loss = audio_loss / num_codebooks
+            # Audio labels should be [8_codebooks, seq_len]
+            if audio_labels.dim() == 2 and audio_labels.size(0) == 8:
+                seq_len_labels = audio_labels.size(1)
+                
+                # Apply teacher forcing shift for audio (similar to text)
+                # Audio logits predict next audio token
+                if seq_len_logits > seq_len_labels:
+                    # Trim logits to match labels
+                    audio_logits = audio_logits[:seq_len_labels, :, :]
+                    seq_len_logits = seq_len_labels
+                elif seq_len_labels > seq_len_logits:
+                    # Trim labels to match logits  
+                    audio_labels = audio_labels[:, :seq_len_logits]
+                    seq_len_labels = seq_len_logits
+                
+                logger.info(f"Aligned - Audio logits: {audio_logits.shape}, Audio labels: {audio_labels.shape}")
+                
+                valid_codebooks = 0
+                for cb in range(num_codebooks):
+                    cb_logits = audio_logits[:, cb, :]  # [seq_len, vocab_size]
+                    cb_labels = audio_labels[cb, :]     # [seq_len]
+                    
+                    # Only compute loss on valid tokens (ignore -100)
+                    valid_mask = cb_labels != -100
+                    if valid_mask.sum() > 0:
+                        cb_loss = self.audio_loss_fn(cb_logits, cb_labels)
+                        if torch.isfinite(cb_loss):
+                            audio_loss += cb_loss
+                            valid_codebooks += 1
+                
+                if valid_codebooks > 0:
+                    audio_loss = audio_loss / valid_codebooks
+                    logger.info(f"Audio loss computed across {valid_codebooks} codebooks")
+            else:
+                logger.warning(f"Unexpected audio labels shape: {audio_labels.shape}")
         else:
             # Fallback: treat as single output
+            logger.info("Using fallback audio loss computation")
             audio_loss = self.audio_loss_fn(
                 audio_logits.view(-1, audio_logits.size(-1)),
                 audio_labels.view(-1)
