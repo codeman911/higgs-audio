@@ -115,10 +115,10 @@ class VoiceCloningDataset(Dataset):
         tokenizer,
         audio_tokenizer,
         audio_base_path: str = "",
-        validate_audio_paths: bool = True,
+        validate_audio_paths: bool = False,  # Changed default to False
         force_whisper_embed: bool = True,  # Match arb_inference.py
-        auto_convert_format: bool = True,  # Automatically convert data format
-        create_dummy_audio: bool = True,  # Create dummy audio files if missing
+        auto_convert_format: bool = False,  # Changed default to False
+        create_dummy_audio: bool = False,  # Changed default to False
     ):
         """
         Initialize the voice cloning dataset.

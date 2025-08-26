@@ -43,57 +43,17 @@ def setup_environment():
 
 def create_proper_chatml_format(input_path: str, output_path: str) -> bool:
     """
-    Convert input data to proper ChatML format expected by training pipeline.
-    
-    Handles the exact format that fixes "Missing required message types" error.
+    Validate and optionally convert input data to proper ChatML format.
+    Only converts if necessary - otherwise uses input data directly.
     """
     try:
-        print(f"🔄 Converting data format: {input_path} → {output_path}")
+        print(f"🔍 Validating data format: {input_path}")
         
         # Load input data
         if not os.path.exists(input_path):
-            print(f"⚠️ Input file not found: {input_path}")
-            print(f"📝 Creating sample training data...")
+            print(f"❌ Input file not found: {input_path}")
+            return False
             
-            # Create sample data in correct format
-            sample_data = [
-                {
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "Generate speech in the provided voice."
-                        },
-                        {
-                            "role": "user",
-                            "content": f"Reference text number {i+1} for voice cloning training."
-                        },
-                        {
-                            "role": "assistant",
-                            "content": {
-                                "type": "audio",
-                                "audio_url": f"data/training_audio/speaker_{i%3}_ref_{i}.wav"
-                            }
-                        },
-                        {
-                            "role": "user", 
-                            "content": f"Generate speech for target text {i+1}: Hello from Higgs-Audio voice cloning!"
-                        }
-                    ],
-                    "speaker": f"training_speaker_{i%3}",
-                    "start_index": 3
-                }
-                for i in range(50)  # Create 50 training samples
-            ]
-            
-            # Save sample data
-            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(sample_data, f, indent=2, ensure_ascii=False)
-            
-            print(f"✅ Created {len(sample_data)} sample training entries")
-            return True
-        
-        # Load existing data
         with open(input_path, 'r', encoding='utf-8') as f:
             if input_path.endswith('.jsonl'):
                 # JSONL format
@@ -108,32 +68,51 @@ def create_proper_chatml_format(input_path: str, output_path: str) -> bool:
         if isinstance(data, dict):
             data = [data]
         
-        print(f"📊 Loaded {len(data)} samples for conversion")
+        print(f"📊 Loaded {len(data)} samples for validation")
         
+        # Validate current format
+        valid_samples = 0
+        needs_conversion = False
+        
+        for i, sample in enumerate(data[:10]):  # Check first 10 samples
+            if "messages" in sample and isinstance(sample["messages"], list):
+                messages = sample["messages"]
+                
+                # Check ChatML structure
+                has_system = any(msg.get("role") == "system" for msg in messages)
+                has_user = any(msg.get("role") == "user" for msg in messages)
+                has_assistant_audio = any(
+                    msg.get("role") == "assistant" and 
+                    isinstance(msg.get("content"), dict) and 
+                    msg["content"].get("type") == "audio"
+                    for msg in messages
+                )
+                
+                if has_system and has_user and has_assistant_audio:
+                    valid_samples += 1
+                else:
+                    needs_conversion = True
+                    break
+            else:
+                needs_conversion = True
+                break
+        
+        if not needs_conversion and valid_samples > 0:
+            print(f"✅ Data is already in correct ChatML format - using directly")
+            print(f"   No conversion needed, using original file: {input_path}")
+            # Just copy the input file to output path if different
+            if input_path != output_path:
+                import shutil
+                shutil.copy2(input_path, output_path)
+            return True
+        
+        print(f"⚠️ Data needs conversion - processing {len(data)} samples...")
+        
+        # Only convert if needed
         converted_samples = []
-        
         for i, sample in enumerate(data):
             try:
-                # Check if already in correct format
-                if "messages" in sample and isinstance(sample["messages"], list):
-                    messages = sample["messages"]
-                    
-                    # Validate structure
-                    has_system = any(msg.get("role") == "system" for msg in messages)
-                    has_user = any(msg.get("role") == "user" for msg in messages)
-                    has_assistant_audio = any(
-                        msg.get("role") == "assistant" and 
-                        isinstance(msg.get("content"), dict) and 
-                        msg["content"].get("type") == "audio"
-                        for msg in messages
-                    )
-                    
-                    if has_system and has_user and has_assistant_audio:
-                        # Already in correct format
-                        converted_samples.append(sample)
-                        continue
-                
-                # Convert from other formats
+                # Try to convert sample
                 converted_sample = convert_sample_to_chatml(sample, i)
                 if converted_sample:
                     converted_samples.append(converted_sample)
@@ -151,7 +130,7 @@ def create_proper_chatml_format(input_path: str, output_path: str) -> bool:
         return len(converted_samples) > 0
         
     except Exception as e:
-        print(f"❌ Conversion failed: {e}")
+        print(f"❌ Format validation/conversion failed: {e}")
         return False
 
 
@@ -266,55 +245,81 @@ def convert_sample_to_chatml(sample: Dict[str, Any], index: int) -> Optional[Dic
 
 
 def create_dummy_audio_files(data_path: str) -> bool:
-    """Create dummy audio files for missing audio references."""
+    """
+    Check if audio files exist and only create dummy files if absolutely necessary.
+    """
     try:
-        print(f"🎵 Creating dummy audio files for {data_path}")
+        print(f"🔍 Checking audio file availability for {data_path}")
         
         with open(data_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         audio_files = set()
+        existing_files = set()
+        missing_files = set()
         
-        # Extract all audio file paths
+        # Extract all audio file paths and check existence
         for sample in data:
             messages = sample.get("messages", [])
             for message in messages:
                 content = message.get("content")
                 if isinstance(content, dict) and content.get("type") == "audio":
-                    audio_files.add(content["audio_url"])
+                    audio_path = content["audio_url"]
+                    audio_files.add(audio_path)
+                    
+                    if os.path.exists(audio_path):
+                        existing_files.add(audio_path)
+                    else:
+                        missing_files.add(audio_path)
         
-        # Create dummy files for missing audio
+        print(f"📊 Audio file analysis:")
+        print(f"   Total audio files referenced: {len(audio_files)}")
+        print(f"   Existing files: {len(existing_files)}")
+        print(f"   Missing files: {len(missing_files)}")
+        
+        if len(missing_files) == 0:
+            print(f"✅ All audio files exist - no dummy files needed")
+            return True
+        
+        if len(missing_files) < len(audio_files) * 0.1:  # Less than 10% missing
+            print(f"⚠️ Only {len(missing_files)} files missing - creating minimal dummy files")
+        else:
+            print(f"⚠️ Many files missing ({len(missing_files)}) - this might indicate a path issue")
+            print(f"   Consider checking if audio paths are correct relative to working directory")
+        
+        # Create dummy files only for missing ones
         created_count = 0
-        for audio_path in audio_files:
+        for audio_path in missing_files:
             path_obj = Path(audio_path)
-            if not path_obj.exists():
-                # Create directory
-                path_obj.parent.mkdir(parents=True, exist_ok=True)
+            # Create directory
+            path_obj.parent.mkdir(parents=True, exist_ok=True)
+            
+            try:
+                # Try to create a proper silent audio file
+                import numpy as np
+                import soundfile as sf
                 
-                try:
-                    # Try to create a proper silent audio file
-                    import numpy as np
-                    import soundfile as sf
-                    
-                    # 1 second of silence at 16kHz
-                    sample_rate = 16000
-                    duration = 1.0
-                    samples = int(duration * sample_rate)
-                    silent_audio = np.zeros(samples, dtype=np.float32)
-                    
-                    sf.write(str(path_obj), silent_audio, sample_rate)
-                    created_count += 1
-                    
-                except ImportError:
-                    # Fallback: create empty file
-                    path_obj.touch()
-                    created_count += 1
+                # 1 second of silence at 16kHz
+                sample_rate = 16000
+                duration = 1.0
+                samples = int(duration * sample_rate)
+                silent_audio = np.zeros(samples, dtype=np.float32)
+                
+                sf.write(str(path_obj), silent_audio, sample_rate)
+                created_count += 1
+                
+            except ImportError:
+                # Fallback: create empty file
+                path_obj.touch()
+                created_count += 1
         
-        print(f"✅ Created {created_count} dummy audio files")
+        if created_count > 0:
+            print(f"📁 Created {created_count} dummy audio files for missing references")
+        
         return True
         
     except Exception as e:
-        print(f"❌ Failed to create dummy audio files: {e}")
+        print(f"❌ Failed to check/create audio files: {e}")
         return False
 
 
@@ -441,6 +446,14 @@ def main():
     parser.add_argument("--output_data", type=str, default="data/converted_train_data.json",
                        help="Path to save converted ChatML data")
     
+    # Control arguments
+    parser.add_argument("--use_input_directly", action="store_true",
+                       help="Skip conversion and use input data directly (assumes correct ChatML format)")
+    parser.add_argument("--skip_audio_check", action="store_true",
+                       help="Skip audio file existence check and dummy file creation")
+    parser.add_argument("--skip_validation", action="store_true",
+                       help="Skip data format validation")
+    
     # Training arguments
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
@@ -457,7 +470,6 @@ def main():
     # Flags
     parser.add_argument("--mixed_precision", action="store_true")
     parser.add_argument("--use_gradient_checkpointing", action="store_true")
-    parser.add_argument("--skip_validation", action="store_true")
     
     args = parser.parse_args()
     
@@ -468,25 +480,41 @@ def main():
     higgs_root = setup_environment()
     print(f"📁 Working directory: {higgs_root}")
     
-    # Convert data format
-    print(f"🔄 Converting training data format...")
-    if not create_proper_chatml_format(args.input_data, args.output_data):
-        print("❌ Data conversion failed")
-        sys.exit(1)
+    # Determine which data file to use
+    if args.use_input_directly:
+        print(f"🚀 Using input data directly: {args.input_data}")
+        training_data_path = args.input_data
+        
+        # Basic validation only
+        if not args.skip_validation:
+            if not validate_chatml_format(training_data_path):
+                print("❌ Input data validation failed")
+                sys.exit(1)
+    else:
+        # Convert data format
+        print(f"🔄 Processing training data...")
+        if not create_proper_chatml_format(args.input_data, args.output_data):
+            print("❌ Data processing failed")
+            sys.exit(1)
+        
+        training_data_path = args.output_data
     
-    # Create dummy audio files
-    if not create_dummy_audio_files(args.output_data):
-        print("❌ Failed to create dummy audio files")
-        sys.exit(1)
+    # Handle audio files
+    if not args.skip_audio_check:
+        if not create_dummy_audio_files(training_data_path):
+            print("❌ Failed to handle audio files")
+            sys.exit(1)
+    else:
+        print("⏭️ Skipping audio file check as requested")
     
-    # Validate format
-    if not args.skip_validation:
-        if not validate_chatml_format(args.output_data):
-            print("❌ Data validation failed")
+    # Validate format if not skipped
+    if not args.skip_validation and not args.use_input_directly:
+        if not validate_chatml_format(training_data_path):
+            print("❌ Final data validation failed")
             sys.exit(1)
     
     # Launch training
-    success = launch_distributed_training(args.output_data, args)
+    success = launch_distributed_training(training_data_path, args)
     
     if success:
         print("🎉 Training pipeline completed successfully!")
