@@ -13,8 +13,17 @@ Both paths must learn for effective zero-shot voice cloning.
 Follows EXACT patterns from train_higgs_lora.py for teacher forcing.
 """
 
-import torch
-import torch.nn.functional as F
+# 🔧 Conditional imports for ML dependencies
+try:
+    import torch
+    import torch.nn.functional as F
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    # Create dummy classes for non-ML operations
+    class torch:
+        class Tensor:
+            pass
 from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 

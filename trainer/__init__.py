@@ -10,9 +10,36 @@ Key Components:
 - TrainingConfig: Configuration management for training hyperparameters
 """
 
-from .trainer import HiggsAudioTrainer
-from .dataset import VoiceCloningDataset
+# Import configuration first
 from .config import TrainingConfig
 
+# Conditional imports to handle dependencies
+try:
+    from .trainer import HiggsAudioTrainer
+except (ImportError, SyntaxError) as e:
+    import warnings
+    warnings.warn(f"Could not import HiggsAudioTrainer: {e}")
+    HiggsAudioTrainer = None
+
+try:
+    from .dataset import VoiceCloningDataset
+except (ImportError, SyntaxError) as e:
+    VoiceCloningDataset = None
+
+# Always available imports
+try:
+    from .audio_validation import audio_validator, AudioQualityValidator
+except ImportError:
+    audio_validator = None
+    AudioQualityValidator = None
+
 __version__ = "1.0.0"
-__all__ = ["HiggsAudioTrainer", "VoiceCloningDataset", "TrainingConfig"]
+__all__ = ["TrainingConfig"]
+
+# Add available components to __all__
+if HiggsAudioTrainer is not None:
+    __all__.append("HiggsAudioTrainer")
+if VoiceCloningDataset is not None:
+    __all__.append("VoiceCloningDataset")
+if AudioQualityValidator is not None:
+    __all__.extend(["AudioQualityValidator", "audio_validator"])

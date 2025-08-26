@@ -1,4 +1,5 @@
 """
+"""
 Main training class for Higgs-Audio LoRA training pipeline.
 
 Follows the exact patterns from generation.py and arb_inference.py:
@@ -580,11 +581,11 @@ def create_distributed_trainer(
     audio_tokenizer_path: str = "bosonai/higgs-audio-v2-tokenizer",
     **kwargs
 ) -> 'DistributedHiggsAudioTrainer':
-    """Create distributed trainer for 8xH200 setup."""
-    from .config import DistributedTrainingConfig, get_8xh200_config
+    """Create distributed trainer for eight H200 GPU setup."""
+    from .config import DistributedTrainingConfig, get_8x_h200_config
     
-    # Use 8xH200 config as base, override with provided params
-    config = get_8xh200_config()
+    # Use eight H200 config as base, override with provided params
+    config = get_8x_h200_config()
     config.train_data_path = train_data_path
     config.model_path = model_path
     config.audio_tokenizer_path = audio_tokenizer_path

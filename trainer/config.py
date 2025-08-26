@@ -297,7 +297,7 @@ def get_quick_test_config() -> TrainingConfig:
         save_steps=50,
     )
 
-def get_8xh200_config() -> DistributedTrainingConfig:
+def get_8x_h200_config() -> DistributedTrainingConfig:
     """Get optimized configuration for 8xH200 GPU training."""
     return DistributedTrainingConfig(
         # Hardware optimization

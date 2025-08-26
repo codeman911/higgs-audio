@@ -342,10 +342,10 @@ class HiggsAudioCompatibilityValidator:
     def _validate_distributed_config(self):
         """Validate distributed training configuration for 8xH200."""
         try:
-            from trainer.config import DistributedTrainingConfig, get_8xh200_config
+            from trainer.config import DistributedTrainingConfig, get_8x_h200_config
             
             # Test configuration creation
-            config = get_8xh200_config()
+            config = get_8x_h200_config()
             
             distributed_checks = {
                 "world_size_8": config.world_size == 8,

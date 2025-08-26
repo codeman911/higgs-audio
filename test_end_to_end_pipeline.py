@@ -202,7 +202,7 @@ class EndToEndPipelineValidator:
         print("\n⚙️ Step 3: Validating training configuration...")
         
         try:
-            from trainer.config import TrainingConfig, get_8xh200_config
+            from trainer.config import TrainingConfig, get_8x_h200_config
             
             # Test basic configuration
             basic_config = TrainingConfig(
@@ -214,7 +214,7 @@ class EndToEndPipelineValidator:
             
             # Test 8xH200 configuration if requested
             if self.test_distributed:
-                dist_config = get_8xh200_config()
+                dist_config = get_8x_h200_config()
                 dist_config.train_data_path = self.data_path
                 dist_config.output_dir = self.temp_dir
                 
@@ -437,9 +437,9 @@ class EndToEndPipelineValidator:
             
             # Test distributed configuration
             try:
-                from trainer.config import DistributedTrainingConfig, get_8xh200_config
+                from trainer.config import DistributedTrainingConfig, get_8x_h200_config
                 
-                config = get_8xh200_config()
+                config = get_8x_h200_config()
                 config.train_data_path = self.data_path
                 config.output_dir = self.temp_dir
                 

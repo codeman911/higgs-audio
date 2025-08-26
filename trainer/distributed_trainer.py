@@ -406,10 +406,10 @@ def create_8xh200_trainer(
     **kwargs
 ) -> DistributedHiggsAudioTrainer:
     """Create optimized distributed trainer for 8xH200 setup."""
-    from .config import get_8xh200_config
+    from .config import get_8x_h200_config
     
-    # Use 8xH200 config as base, override with provided params
-    config = get_8xh200_config()
+    # Use 8x H200 config as base, override with provided params
+    config = get_8x_h200_config()
     config.train_data_path = train_data_path
     config.model_path = model_path
     config.audio_tokenizer_path = audio_tokenizer_path
