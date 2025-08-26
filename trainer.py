@@ -190,14 +190,20 @@ class HiggsAudioTrainer:
         logger.info(f"✓ Model will receive label_audio_ids: {'label_audio_ids' in clean_inputs}")
         
         if 'label_ids' in clean_inputs and clean_inputs['label_ids'] is not None:
-            logger.info(f"✓ label_ids shape: {clean_inputs['label_ids'].shape}")
+            logger.info(f"✓ label_ids shape: {clean_inputs['label_ids'].shape} dtype: {clean_inputs['label_ids'].dtype}")
         else:
             logger.warning("⚠️  label_ids is missing or None - model won't generate expanded_labels!")
             
         if 'audio_out_ids' in clean_inputs and clean_inputs['audio_out_ids'] is not None:
-            logger.info(f"✓ audio_out_ids shape: {clean_inputs['audio_out_ids'].shape}")
+            logger.info(f"✓ audio_out_ids shape: {clean_inputs['audio_out_ids'].shape} dtype: {clean_inputs['audio_out_ids'].dtype}")
         else:
             logger.warning("⚠️  audio_out_ids is missing or None - audio logits will be empty!")
+            
+        # Check for potential dtype issues
+        float32_tensors = [k for k, v in clean_inputs.items() 
+                          if isinstance(v, torch.Tensor) and v.dtype == torch.float32]
+        if float32_tensors:
+            logger.info(f"ℹ️  Float32 tensors detected (will be cast to bfloat16): {float32_tensors}")
         
         # Extract labels for fallback loss computation (if needed)
         text_labels = batch.get('label_ids')
@@ -206,13 +212,33 @@ class HiggsAudioTrainer:
         # BYPASS PEFT: Call the forward method directly on the base model
         # This completely avoids PEFT's parameter injection
         try:
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            # CRITICAL FIX: Ensure all tensors have consistent dtype for mixed precision training
+            # The error occurs because audio embeddings are Float32 but final_embedding is BFloat16
+            target_dtype = torch.bfloat16
+            
+            # Cast all tensor inputs to the target dtype to prevent dtype mismatches
+            dtype_corrected_inputs = {}
+            for k, v in clean_inputs.items():
+                if isinstance(v, torch.Tensor) and v.dtype == torch.float32:
+                    # Cast float32 tensors to bfloat16 for consistency
+                    dtype_corrected_inputs[k] = v.to(dtype=target_dtype)
+                    logger.debug(f"Cast {k} from {v.dtype} to {target_dtype}")
+                else:
+                    dtype_corrected_inputs[k] = v
+            
+            with torch.autocast(device_type='cuda', dtype=target_dtype):
                 # Direct call to HiggsAudioModel.forward, bypassing all wrappers
-                outputs = base_model.forward(**clean_inputs)
+                outputs = base_model.forward(**dtype_corrected_inputs)
         except Exception as e:
             logger.error(f"Direct forward call failed: {e}")
             logger.error(f"Base model type: {type(base_model)}")
             logger.error(f"Available methods: {[m for m in dir(base_model) if 'forward' in m.lower()]}")
+            
+            # Additional dtype debugging
+            logger.error("Input tensor dtypes:")
+            for k, v in clean_inputs.items():
+                if isinstance(v, torch.Tensor):
+                    logger.error(f"  {k}: {v.dtype}")
             raise
         
         try:
@@ -463,20 +489,45 @@ class HiggsAudioTrainer:
             batch_dict = {}
             for key, value in batch.__dict__.items():
                 if isinstance(value, torch.Tensor):
-                    batch_dict[key] = value.to(self.device, non_blocking=True)
+                    # DTYPE FIX: Ensure consistent dtype for mixed precision training
+                    if value.dtype == torch.float32:
+                        # Cast float32 to bfloat16 for consistency
+                        batch_dict[key] = value.to(device=self.device, dtype=torch.bfloat16, non_blocking=True)
+                    else:
+                        batch_dict[key] = value.to(self.device, non_blocking=True)
                 else:
                     batch_dict[key] = value
             batch = batch_dict
         elif isinstance(batch, dict):
-            # Handle regular dict batch
-            batch = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
-                    for k, v in batch.items()}
+            # Handle regular dict batch with dtype consistency
+            processed_batch = {}
+            for k, v in batch.items():
+                if isinstance(v, torch.Tensor):
+                    # DTYPE FIX: Ensure consistent dtype for mixed precision training
+                    if v.dtype == torch.float32:
+                        # Cast float32 to bfloat16 for consistency
+                        processed_batch[k] = v.to(device=self.device, dtype=torch.bfloat16, non_blocking=True)
+                    else:
+                        processed_batch[k] = v.to(self.device, non_blocking=True)
+                else:
+                    processed_batch[k] = v
+            batch = processed_batch
         else:
             # Unknown batch type - try to handle gracefully
             logger.warning(f"Unknown batch type: {type(batch)}")
             try:
-                batch = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
-                        for k, v in batch.__dict__.items() if not k.startswith('_')}
+                processed_batch = {}
+                for k, v in batch.__dict__.items():
+                    if not k.startswith('_'):
+                        if isinstance(v, torch.Tensor):
+                            # DTYPE FIX: Ensure consistent dtype
+                            if v.dtype == torch.float32:
+                                processed_batch[k] = v.to(device=self.device, dtype=torch.bfloat16, non_blocking=True)
+                            else:
+                                processed_batch[k] = v.to(self.device, non_blocking=True)
+                        else:
+                            processed_batch[k] = v
+                batch = processed_batch
             except Exception as e:
                 logger.error(f"Failed to convert batch: {e}")
                 raise
