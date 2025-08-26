@@ -53,7 +53,7 @@ def validate_dataset_format(data_path: str) -> bool:
 
 
 def _validate_sample_structure(sample: Dict[str, Any], idx: int) -> bool:
-    """Validate individual sample structure."""
+    """Validate individual sample structure using arb_inference.py process_chatml_sample logic."""
     try:
         # Check required fields
         if "messages" not in sample:
@@ -65,37 +65,62 @@ def _validate_sample_structure(sample: Dict[str, Any], idx: int) -> bool:
             print(f"  Sample {idx}: Invalid 'messages' field")
             return False
         
-        # Check message structure
-        has_system = False
-        has_user = False
-        has_assistant_audio = False
+        # Use EXACT same logic as arb_inference.py process_chatml_sample
+        ref_audio_path = None
+        ref_text = None
+        target_text = None
         
-        for msg_idx, message in enumerate(messages):
+        for message in messages:
             if not isinstance(message, dict):
-                print(f"  Sample {idx}, Message {msg_idx}: Invalid message format")
+                print(f"  Sample {idx}: Invalid message format")
                 return False
             
             if "role" not in message or "content" not in message:
-                print(f"  Sample {idx}, Message {msg_idx}: Missing 'role' or 'content'")
+                print(f"  Sample {idx}: Missing 'role' or 'content'")
                 return False
             
-            role = message["role"]
-            content = message["content"]
-            
-            if role == "system":
-                has_system = True
-            elif role == "user":
-                has_user = True
-            elif role == "assistant":
+            if message["role"] == "user":
+                content = message["content"]
+                if isinstance(content, list):
+                    # Look for text and audio content (EXACT arb_inference.py logic)
+                    text_parts = []
+                    for item in content:
+                        if isinstance(item, dict):
+                            if item.get("type") == "text":
+                                text_parts.append(item["text"])
+                            elif item.get("type") == "audio":
+                                if ref_audio_path is None:  # First audio is reference
+                                    ref_audio_path = item.get("audio_url")
+                    
+                    if len(text_parts) >= 2:
+                        ref_text = text_parts[0]  # First text is reference
+                        # Look for target text
+                        for text_part in text_parts[1:]:
+                            if "Please generate speech" in text_part:
+                                # Extract target text after the instruction
+                                target_text = text_part.split(":")[-1].strip()
+                                break
+                        if target_text is None and len(text_parts) > 1:
+                            target_text = text_parts[-1]  # Last text as fallback
+                elif isinstance(content, str):
+                    # Simple string content
+                    if ref_text is None:
+                        ref_text = content
+                    else:
+                        target_text = content
+                        
+            elif message["role"] == "assistant":
+                content = message["content"]
                 if isinstance(content, dict) and content.get("type") == "audio":
-                    has_assistant_audio = True
+                    if ref_audio_path is None:
+                        ref_audio_path = content.get("audio_url")
         
-        # Check that we have the expected structure
-        if not (has_system and has_user and has_assistant_audio):
-            print(f"  Sample {idx}: Missing required message types")
+        # Validate that we found all required components (EXACT arb_inference.py logic)
+        if not all([ref_audio_path, ref_text, target_text]):
+            print(f"  Sample {idx}: Missing required components: ref_audio={ref_audio_path is not None}, ref_text={ref_text is not None}, target_text={target_text is not None}")
             return False
         
-        print(f"  Sample {idx}: ✅ Valid structure")
+        print(f"  Sample {idx}: ✅ Valid structure (ref_audio={ref_audio_path}, ref_text='{ref_text[:30]}...', target_text='{target_text[:30]}...')")
         return True
         
     except Exception as e:

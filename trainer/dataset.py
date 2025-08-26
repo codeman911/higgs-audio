@@ -339,7 +339,7 @@ class VoiceCloningDataset(Dataset):
         return fallback_samples
     
     def _validate_sample(self, sample: Dict[str, Any], idx: int) -> bool:
-        """Validate a single training sample following arb_inference.py patterns."""
+        """Validate a single training sample using EXACT arb_inference.py process_chatml_sample logic."""
         try:
             # Check required fields
             if 'messages' not in sample:
@@ -347,44 +347,45 @@ class VoiceCloningDataset(Dataset):
                 return False
             
             messages = sample['messages']
-            if not isinstance(messages, list) or len(messages) < 3:
-                logger.debug(f"Sample {idx}: Invalid messages structure (need >= 3 messages)")
+            if not isinstance(messages, list) or len(messages) < 1:
+                logger.debug(f"Sample {idx}: Invalid messages structure (need >= 1 messages)")
                 return False
             
-            # Extract components using arb_inference.py pattern
+            # Extract components using EXACT arb_inference.py pattern
             ref_audio_path, ref_text, target_text, speaker_id = self._extract_sample_components(sample)
             
             if not all([ref_audio_path, ref_text, target_text]):
-                logger.debug(f"Sample {idx}: Missing required components")
+                logger.debug(f"Sample {idx}: Missing required components: ref_audio={ref_audio_path is not None}, ref_text={ref_text is not None}, target_text={target_text is not None}")
                 return False
             
-            # Validate audio file exists (with auto-creation)
-            audio_path = self._resolve_audio_path(ref_audio_path)
-            if not audio_path.exists():
-                # Try to create dummy audio file
-                try:
-                    audio_path.parent.mkdir(parents=True, exist_ok=True)
-                    
+            # Validate audio file exists (with auto-creation if needed)
+            if self.validate_audio_paths:
+                audio_path = self._resolve_audio_path(ref_audio_path)
+                if not audio_path.exists():
+                    # Try to create dummy audio file
                     try:
-                        import numpy as np
-                        import soundfile as sf
+                        audio_path.parent.mkdir(parents=True, exist_ok=True)
                         
-                        # Create 1 second of silence
-                        duration = 1.0
-                        sample_rate = 16000
-                        samples = int(duration * sample_rate)
-                        silent_audio = np.zeros(samples, dtype=np.float32)
-                        sf.write(str(audio_path), silent_audio, sample_rate)
-                        
-                        logger.debug(f"✅ Created dummy audio file: {audio_path}")
-                        
-                    except ImportError:
-                        audio_path.touch()
-                        logger.debug(f"✅ Created empty audio file: {audio_path}")
-                        
-                except Exception as e:
-                    logger.debug(f"Sample {idx}: Could not create audio file {audio_path}: {e}")
-                    return False
+                        try:
+                            import numpy as np
+                            import soundfile as sf
+                            
+                            # Create 1 second of silence
+                            duration = 1.0
+                            sample_rate = 16000
+                            samples = int(duration * sample_rate)
+                            silent_audio = np.zeros(samples, dtype=np.float32)
+                            sf.write(str(audio_path), silent_audio, sample_rate)
+                            
+                            logger.debug(f"✅ Created dummy audio file: {audio_path}")
+                            
+                        except ImportError:
+                            audio_path.touch()
+                            logger.debug(f"✅ Created empty audio file: {audio_path}")
+                            
+                    except Exception as e:
+                        logger.debug(f"Sample {idx}: Could not create audio file {audio_path}: {e}")
+                        return False
             
             return True
         
