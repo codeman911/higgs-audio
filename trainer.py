@@ -1,3 +1,32 @@
+"""
+Minimal DDP trainer with dual loss computation.
+Strictly mirrors inference forward pass and loss patterns.
+"""
+
+import os
+import argparse
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from transformers import AutoTokenizer, AutoProcessor, get_cosine_schedule_with_warmup
+import logging
+
+# Import exact components from boson_multimodal
+from boson_multimodal.model.higgs_audio import HiggsAudioConfig, HiggsAudioModel
+from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
+
+# Import our components
+from dataset import HiggsAudioDataset, create_collator
+from lora import apply_lora, create_lora_config, save_lora_adapters
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
 class HiggsAudioTrainer:
     """Minimal trainer for DualFFN LoRA fine-tuning."""
     
