@@ -114,4 +114,5 @@ def create_collator(config, whisper_processor):
         use_delay_pattern=config.use_delay_pattern,
         audio_num_codebooks=config.audio_num_codebooks,
         round_to=1,  # EXACT from serve_engine.py
+        mask_audio_out_token_label=False,  # FIX: Disable over-masking to allow proper text learning
     )

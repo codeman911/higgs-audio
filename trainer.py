@@ -489,7 +489,7 @@ class HiggsAudioTrainer:
         return audio_loss
     
     def _log_predictions_vs_labels(self, logits, labels):
-        """Log first and last 5 predictions vs labels for a few samples."""
+        """Log first and last 5 text predictions vs labels for a few samples."""
         try:
             # Get predictions (argmax of logits)
             predictions = torch.argmax(logits, dim=-1)
@@ -498,7 +498,7 @@ class HiggsAudioTrainer:
             batch_size = min(2, logits.size(0))
             
             for i in range(batch_size):
-                logger.info(f"Sample {i+1} Prediction vs Label Comparison:")
+                logger.info(f"Sample {i+1} Text Prediction vs Label Comparison:")
                 
                 # Get sequence length for this sample
                 seq_len = min(logits.size(1), 10)  # Limit to 10 tokens for readability
@@ -507,23 +507,23 @@ class HiggsAudioTrainer:
                 if seq_len >= 5:
                     pred_first_5 = predictions[i, :5].tolist()
                     label_first_5 = labels[i, :5].tolist()
-                    logger.info(f"  First 5 - Predictions: {pred_first_5}")
-                    logger.info(f"  First 5 - Labels:      {label_first_5}")
+                    logger.info(f"  First 5 Text Predictions: {pred_first_5}")
+                    logger.info(f"  First 5 Text Labels:      {label_first_5}")
                 
                 # Log last 5 predictions and labels (if sequence is long enough)
                 if seq_len > 5:
                     pred_last_5 = predictions[i, -5:].tolist()
                     label_last_5 = labels[i, -5:].tolist()
-                    logger.info(f"  Last 5  - Predictions: {pred_last_5}")
-                    logger.info(f"  Last 5  - Labels:      {label_last_5}")
+                    logger.info(f"  Last 5 Text Predictions:  {pred_last_5}")
+                    logger.info(f"  Last 5 Text Labels:       {label_last_5}")
                 elif seq_len > 0:
                     # If sequence is shorter than 10, just log what we have
                     pred_rest = predictions[i, 5:seq_len].tolist()
                     label_rest = labels[i, 5:seq_len].tolist()
-                    logger.info(f"  Rest    - Predictions: {pred_rest}")
-                    logger.info(f"  Rest    - Labels:      {label_rest}")
+                    logger.info(f"  Rest Text Predictions:    {pred_rest}")
+                    logger.info(f"  Rest Text Labels:         {label_rest}")
         except Exception as e:
-            logger.warning(f"Failed to log predictions vs labels: {e}")
+            logger.warning(f"Failed to log text predictions vs labels: {e}")
     
     def _log_audio_predictions_vs_labels(self, audio_logits, audio_labels):
         """Log first and last 5 audio predictions vs labels for a few samples."""
@@ -538,31 +538,31 @@ class HiggsAudioTrainer:
                 predictions = torch.argmax(audio_logits[:, 0, :], dim=-1)  # First codebook
                 labels = audio_labels[0, :]  # First codebook labels
                 
-                logger.info("Audio Prediction vs Label Comparison (Codebook 0):")
+                logger.info("Audio Codebook 0 Prediction vs Label Comparison:")
                 
                 # Log first 5 predictions and labels
                 if seq_len >= 5:
                     pred_first_5 = predictions[:5].tolist()
                     label_first_5 = labels[:5].tolist()
-                    logger.info(f"  First 5 - Predictions: {pred_first_5}")
-                    logger.info(f"  First 5 - Labels:      {label_first_5}")
+                    logger.info(f"  First 5 Audio Predictions: {pred_first_5}")
+                    logger.info(f"  First 5 Audio Labels:      {label_first_5}")
                 
                 # Log last 5 predictions and labels (if sequence is long enough)
                 if seq_len > 5:
                     pred_last_5 = predictions[-5:].tolist()
                     label_last_5 = labels[-5:].tolist()
-                    logger.info(f"  Last 5  - Predictions: {pred_last_5}")
-                    logger.info(f"  Last 5  - Labels:      {label_last_5}")
+                    logger.info(f"  Last 5 Audio Predictions:  {pred_last_5}")
+                    logger.info(f"  Last 5 Audio Labels:       {label_last_5}")
                 elif seq_len > 0:
                     # If sequence is shorter than 10, just log what we have
                     pred_rest = predictions[5:seq_len].tolist()
                     label_rest = labels[5:seq_len].tolist()
-                    logger.info(f"  Rest    - Predictions: {pred_rest}")
-                    logger.info(f"  Rest    - Labels:      {label_rest}")
+                    logger.info(f"  Rest Audio Predictions:    {pred_rest}")
+                    logger.info(f"  Rest Audio Labels:         {label_rest}")
                 
                 # Also log some stats about the logits
-                logger.info(f"  Logits shape: {audio_logits.shape}")
-                logger.info(f"  Labels shape: {audio_labels.shape}")
+                logger.info(f"  Audio Logits shape: {audio_logits.shape}")
+                logger.info(f"  Audio Labels shape: {audio_labels.shape}")
         except Exception as e:
             logger.warning(f"Failed to log audio predictions vs labels: {e}")
     
