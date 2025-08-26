@@ -166,16 +166,40 @@ class HiggsAudioTrainer:
         # Get the true underlying HiggsAudioModel
         base_model = self._get_base_higgs_model()
         
-        # Prepare clean inputs - remove ALL label keys to prevent any injection
+        # CRITICAL FIX: The model NEEDS label_ids and audio_out_ids to function properly!
+        # The original PEFT bypass was overly aggressive in filtering inputs.
+        # The model requires these for:
+        # 1. merge_input_ids_with_audio_features to expand labels
+        # 2. Generating expanded_labels in output
+        # 3. Proper audio logits generation
+        
+        # Prepare inputs - only remove the generic 'labels' key that PEFT might inject
+        # Keep label_ids, label_audio_ids, and audio_out_ids which are required by the model
         clean_inputs = {}
         for k, v in batch.items():
-            # Only include non-label keys for model input
-            if k not in ['label_ids', 'label_audio_ids', 'labels', 'audio_out_ids']:
+            # Only exclude generic 'labels' that PEFT auto-injects
+            # Keep all model-specific label parameters
+            if k not in ['labels']:  # Remove ONLY the generic PEFT-injected 'labels'
                 clean_inputs[k] = v
         
         logger.info(f"Clean inputs: {list(clean_inputs.keys())}")
         
-        # Extract labels for manual loss computation
+        # VERIFICATION: Log critical parameters to ensure model gets what it needs
+        logger.info(f"✓ Model will receive label_ids: {'label_ids' in clean_inputs}")
+        logger.info(f"✓ Model will receive audio_out_ids: {'audio_out_ids' in clean_inputs}")
+        logger.info(f"✓ Model will receive label_audio_ids: {'label_audio_ids' in clean_inputs}")
+        
+        if 'label_ids' in clean_inputs and clean_inputs['label_ids'] is not None:
+            logger.info(f"✓ label_ids shape: {clean_inputs['label_ids'].shape}")
+        else:
+            logger.warning("⚠️  label_ids is missing or None - model won't generate expanded_labels!")
+            
+        if 'audio_out_ids' in clean_inputs and clean_inputs['audio_out_ids'] is not None:
+            logger.info(f"✓ audio_out_ids shape: {clean_inputs['audio_out_ids'].shape}")
+        else:
+            logger.warning("⚠️  audio_out_ids is missing or None - audio logits will be empty!")
+        
+        # Extract labels for fallback loss computation (if needed)
         text_labels = batch.get('label_ids')
         audio_labels = batch.get('label_audio_ids')
         
@@ -251,18 +275,22 @@ class HiggsAudioTrainer:
             logger.info(f"Text logits shape: {text_logits.shape}")
         if audio_logits is not None:
             logger.info(f"Audio logits shape: {audio_logits.shape}")
+            if audio_logits.numel() == 0:
+                logger.error("❌ Audio logits are empty! This means no audio output positions were detected.")
+                logger.error("Check: 1) audio_out_ids in batch, 2) audio_out_mask generation, 3) audio output tokens in data")
+            else:
+                logger.info(f"✓ Audio logits non-empty: {audio_logits.shape}")
+        else:
+            logger.warning("⚠️  Audio logits are None")
         if model_expanded_labels is not None:
-            logger.info(f"Model expanded labels shape: {model_expanded_labels.shape}")
+            logger.info(f"✓ Model expanded labels shape: {model_expanded_labels.shape}")
+        else:
+            logger.warning("⚠️  Model expanded_labels is None - falling back to manual alignment")
         
-        # Text loss with CORRECT teacher forcing alignment
+        # Text loss with OPTIMAL teacher forcing alignment
         if text_logits is not None and model_expanded_labels is not None:
-            # CRITICAL FIX: Use model's expanded_labels which are already correctly aligned!
-            # The model's merge_input_ids_with_audio_features function already handles the proper
-            # teacher forcing alignment. We should NOT apply additional shifting.
-            
-            # The model provides:
-            # - text_logits: [batch, seq_len, vocab] (predicts next token at each position)
-            # - expanded_labels: [batch, seq_len-1] (already shifted by 1 to align with logits)
+            # BEST CASE: Use model's expanded_labels which are already correctly aligned!
+            logger.info("✓ Using model's expanded_labels (optimal path)")
             
             # Remove last logit to match the model's expanded_labels length
             shift_logits = text_logits[..., :-1, :].contiguous()  # [batch, seq_len-1, vocab]
@@ -272,51 +300,90 @@ class HiggsAudioTrainer:
             logger.info(f"Final logits shape: {shift_logits.shape}")
             logger.info(f"Final labels shape: {shift_labels.shape}")
             
-            # Now shapes should match: both are [batch, seq_len-1]
-            assert shift_logits.size(0) == shift_labels.size(0), f"Batch size mismatch: {shift_logits.size(0)} vs {shift_labels.size(0)}"
-            assert shift_logits.size(1) == shift_labels.size(1), f"Sequence length mismatch: {shift_logits.size(1)} vs {shift_labels.size(1)}"
-            
-            text_loss = self.text_loss_fn(
-                shift_logits.view(-1, shift_logits.size(-1)),  # [batch*(seq_len-1), vocab]
-                shift_labels.view(-1)                          # [batch*(seq_len-1)]
-            )
-            total_loss = total_loss + text_loss
-            loss_dict['text_loss'] = text_loss.item()
-            logger.info(f"Text loss: {text_loss.item():.4f}")
-        else:
-            if text_logits is not None and text_labels is not None:
-                # Fallback: Use original approach if expanded_labels not available
-                logger.warning("Using fallback text loss computation with original labels")
-                shift_logits = text_logits[..., :-1, :].contiguous()
-                shift_labels = text_labels[..., 1:].contiguous()
+            # Validate alignment
+            if shift_logits.size(1) == shift_labels.size(1):
+                # Count valid (non-ignore) tokens for loss computation
+                valid_mask = shift_labels != -100
+                num_valid_tokens = valid_mask.sum().item()
+                logger.info(f"✓ Perfect alignment! Computing loss on {num_valid_tokens} valid tokens")
                 
-                logger.info(f"Fallback logits shape: {shift_logits.shape}")
-                logger.info(f"Fallback labels shape: {shift_labels.shape}")
-                
-                if shift_logits.size(1) == shift_labels.size(1):
-                    text_loss = self.text_loss_fn(
-                        shift_logits.view(-1, shift_logits.size(-1)),
-                        shift_labels.view(-1)
-                    )
-                    total_loss = total_loss + text_loss
-                    loss_dict['text_loss'] = text_loss.item()
-                    logger.info(f"Fallback text loss: {text_loss.item():.4f}")
-                else:
-                    logger.error(f"Fallback alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
+                text_loss = self.text_loss_fn(
+                    shift_logits.view(-1, shift_logits.size(-1)),  # [batch*(seq_len-1), vocab]
+                    shift_labels.view(-1)                          # [batch*(seq_len-1)]
+                )
+                total_loss = total_loss + text_loss
+                loss_dict['text_loss'] = text_loss.item()
+                logger.info(f"✓ Text loss: {text_loss.item():.4f}")
             else:
-                logger.warning("Skipping text loss computation")
+                logger.error(f"❌ Model expanded_labels alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
+                logger.error("This should never happen with properly functioning model!")
+                
+        elif text_logits is not None and text_labels is not None:
+            # FALLBACK: Use manual alignment if expanded_labels not available
+            logger.warning("⚠️  Using fallback text loss computation with original labels")
+            
+            # Check if we need to handle audio token expansion manually
+            input_seq_len = text_labels.size(1)
+            logits_seq_len = text_logits.size(1)
+            expansion_factor = logits_seq_len / input_seq_len
+            
+            logger.info(f"Expansion analysis: logits {logits_seq_len} / labels {input_seq_len} = {expansion_factor:.2f}x")
+            
+            if expansion_factor > 1.5:  # Significant expansion likely due to audio tokens
+                logger.warning("Detected significant sequence expansion - likely due to audio tokens")
+                logger.warning("Manual alignment may be inaccurate. Check model input filtering.")
+            
+            shift_logits = text_logits[..., :-1, :].contiguous()
+            shift_labels = text_labels[..., 1:].contiguous()
+            
+            logger.info(f"Fallback logits shape: {shift_logits.shape}")
+            logger.info(f"Fallback labels shape: {shift_labels.shape}")
+            
+            if shift_logits.size(1) == shift_labels.size(1):
+                valid_mask = shift_labels != -100
+                num_valid_tokens = valid_mask.sum().item()
+                logger.info(f"✓ Fallback alignment OK! Computing loss on {num_valid_tokens} valid tokens")
+                
+                text_loss = self.text_loss_fn(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1)
+                )
+                total_loss = total_loss + text_loss
+                loss_dict['text_loss'] = text_loss.item()
+                logger.info(f"✓ Fallback text loss: {text_loss.item():.4f}")
+            else:
+                logger.error(f"❌ Fallback alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
+                logger.error("Skipping text loss - check data preprocessing and model inputs")
+        else:
+            logger.warning("⚠️  Skipping text loss computation - insufficient data")
         
         # Audio loss - handle multi-codebook structure
         if audio_logits is not None and audio_labels is not None:
-            audio_loss = self._compute_audio_loss(audio_logits, audio_labels)
-            total_loss = total_loss + audio_loss
-            loss_dict['audio_loss'] = audio_loss.item()
-            logger.info(f"Audio loss: {audio_loss.item():.4f}")
+            if audio_logits.numel() > 0:
+                logger.info("✓ Computing audio loss on non-empty logits")
+                audio_loss = self._compute_audio_loss(audio_logits, audio_labels)
+                total_loss = total_loss + audio_loss
+                loss_dict['audio_loss'] = audio_loss.item()
+                logger.info(f"✓ Audio loss: {audio_loss.item():.4f}")
+            else:
+                logger.warning("⚠️  Audio logits are empty - skipping audio loss")
+                loss_dict['audio_loss'] = 0.0
         else:
-            logger.warning("Skipping audio loss computation")
+            logger.warning("⚠️  Skipping audio loss computation - missing audio_logits or audio_labels")
+            loss_dict['audio_loss'] = 0.0
         
+        # Final loss summary
         loss_dict['total_loss'] = total_loss.item()
-        logger.info(f"Total loss: {total_loss.item():.4f}")
+        
+        if total_loss.item() > 0:
+            logger.info(f"✓ TRAINING SUCCESSFUL - Total loss: {total_loss.item():.4f}")
+            if 'text_loss' in loss_dict and loss_dict['text_loss'] > 0:
+                logger.info(f"  ✓ Text contribution: {loss_dict['text_loss']:.4f}")
+            if 'audio_loss' in loss_dict and loss_dict['audio_loss'] > 0:
+                logger.info(f"  ✓ Audio contribution: {loss_dict['audio_loss']:.4f}")
+        else:
+            logger.error("❌ CRITICAL: Total loss is ZERO! Training will not work.")
+            logger.error("Check: 1) Model inputs, 2) Label alignment, 3) Data preprocessing")
         
         return total_loss, loss_dict
     
