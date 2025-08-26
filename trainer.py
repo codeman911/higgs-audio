@@ -270,7 +270,7 @@ class HiggsAudioTrainer:
             
             # Found the target model
             if model_type == 'HiggsAudioModel':
-                logger.info(f"Found HiggsAudioModel at depth {depth}: {' -> '.join(path)}")
+                # logger.info(f"Found HiggsAudioModel at depth {depth}: {' -> '.join(path)}")
                 return model
             
             # Try different unwrapping attributes
@@ -287,8 +287,8 @@ class HiggsAudioTrainer:
                 # No more wrappers found, check if this is the right model
                 break
         
-        logger.warning(f"Could not find HiggsAudioModel, using: {type(model).__name__}")
-        logger.warning(f"Unwrapping path: {' -> '.join(path)}")
+        # logger.warning(f"Could not find HiggsAudioModel, using: {type(model).__name__}")
+        # logger.warning(f"Unwrapping path: {' -> '.join(path)}")
         return model
     
     def _compute_dual_loss(self, outputs, text_labels, audio_labels):
@@ -394,7 +394,6 @@ class HiggsAudioTrainer:
         # Audio loss - handle multi-codebook structure
         if audio_logits is not None and audio_labels is not None:
             if audio_logits.numel() > 0:
-                logger.info("✓ Computing audio loss on non-empty logits")
                 audio_loss = self._compute_audio_loss(audio_logits, audio_labels)
                 total_loss = total_loss + audio_loss
                 loss_dict['audio_loss'] = audio_loss.item()
@@ -477,7 +476,7 @@ class HiggsAudioTrainer:
                 
                 if valid_codebooks > 0:
                     audio_loss = audio_loss / valid_codebooks
-                    logger.info(f"Audio loss computed across {valid_codebooks} codebooks")
+                    # logger.info(f"Audio loss computed across {valid_codebooks} codebooks")
                 else:
                     logger.warning(f"Unexpected audio labels shape: {audio_labels.shape}")
         else:
@@ -768,7 +767,7 @@ def main():
     parser.add_argument("--wd", type=float, default=0.01)
     parser.add_argument("--warmup", type=int, default=100)
     parser.add_argument("--grad_accum", type=int, default=8)
-    parser.add_argument("--log_steps", type=int, default=50)
+    parser.add_argument("--log_steps", type=int, default=10)
     parser.add_argument("--val_steps", type=int, default=100)
     parser.add_argument("--save_steps", type=int, default=5000)
     
