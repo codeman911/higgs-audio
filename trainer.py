@@ -304,9 +304,16 @@ class HiggsAudioTrainer:
         text_logits = getattr(outputs, 'logits', None)
         audio_logits = getattr(outputs, 'audio_logits', None)
         
-        # CRITICAL FIX: DO NOT use the model's expanded_labels as they are over-masking
-        # Always use the original batch labels instead
-        model_expanded_labels = None  # getattr(outputs, 'expanded_labels', None)
+        # CRITICAL FIX: Check if model's expanded_labels are properly aligned before using them
+        # Only use expanded_labels if they have the same sequence length as logits
+        model_expanded_labels = getattr(outputs, 'expanded_labels', None)
+        
+        # Validate expanded_labels alignment before using them
+        if model_expanded_labels is not None and text_logits is not None:
+            if model_expanded_labels.size(1) != text_logits.size(1):
+                logger.warning(f"⚠️  Model expanded_labels misaligned: {model_expanded_labels.size(1)} vs {text_logits.size(1)}")
+                logger.warning("⚠️  Falling back to original labels to avoid alignment issues")
+                model_expanded_labels = None
         
         # Only log shapes if needed for debugging
         # if text_logits is not None:
@@ -317,10 +324,43 @@ class HiggsAudioTrainer:
         #     logger.info(f"Model expanded labels shape: {model_expanded_labels.shape}")
         
         # Text loss with OPTIMAL teacher forcing alignment
+        if text_logits is not None and model_expanded_labels is not None:
+            # BEST CASE: Use model's expanded_labels which are already correctly aligned!
+            logger.info("✓ Using model's expanded_labels (optimal path)")
+            
+            # CRITICAL FIX: The model's expanded_labels are already properly aligned with logits
+            # No need to remove the last logit - they should have the same sequence length
+            shift_logits = text_logits.contiguous()  # [batch, seq_len, vocab]
+            shift_labels = model_expanded_labels.contiguous()  # [batch, seq_len]
+            
+            # Validate alignment
+            if shift_logits.size(1) == shift_labels.size(1):
+                # Count valid (non-ignore) tokens for loss computation
+                valid_mask = shift_labels != -100
+                num_valid_tokens = valid_mask.sum().item()
+                # Only log detailed alignment info if needed
+                # logger.info(f"Perfect alignment! Computing loss on {num_valid_tokens} valid tokens")
+                
+                text_loss = self.text_loss_fn(
+                    shift_logits.view(-1, shift_logits.size(-1)),  # [batch*seq_len, vocab]
+                    shift_labels.view(-1)                          # [batch*seq_len]
+                )
+                total_loss = total_loss + text_loss
+                loss_dict['text_loss'] = text_loss.item()
+                logger.info(f"✓ Text loss: {text_loss.item():.4f}")
+                
+                # Log first and last 5 predictions vs labels every n log steps
+                if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
+                    self._log_predictions_vs_labels(shift_logits, shift_labels)
+            else:
+                logger.error(f"❌ Model expanded_labels alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
+                logger.error("This should never happen with properly functioning model!")
+                # Fall back to original labels
+                model_expanded_labels = None
         # CRITICAL FIX: Skip the expanded_labels path and go directly to fallback
-        if text_logits is not None and text_labels is not None:
-            # FORCE FALLBACK: Use manual alignment with original labels
-            logger.warning("⚠️  Using fallback text loss computation with original labels (forced to avoid over-masking)")
+        elif text_logits is not None and text_labels is not None:
+            # FALLBACK: Use manual alignment if expanded_labels not available or misaligned
+            logger.warning("⚠️  Using fallback text loss computation with original labels")
             
             # Check if we need to handle audio token expansion manually
             input_seq_len = text_labels.size(1)
@@ -331,32 +371,68 @@ class HiggsAudioTrainer:
             
             if expansion_factor > 1.5:  # Significant expansion likely due to audio tokens
                 logger.warning("Detected significant sequence expansion - likely due to audio tokens")
-                logger.warning("Manual alignment may be inaccurate. Check model input filtering.")
-            
-            # STANDARD teacher forcing shift for autoregressive models
-            shift_logits = text_logits[..., :-1, :].contiguous()  # Remove last logit
-            shift_labels = text_labels[..., 1:].contiguous()      # Remove first label
-            
-            if shift_logits.size(1) == shift_labels.size(1):
-                valid_mask = shift_labels != -100
-                num_valid_tokens = valid_mask.sum().item()
-                # Only log detailed alignment info if needed
-                # logger.info(f"Fallback alignment OK! Computing loss on {num_valid_tokens} valid tokens")
+                logger.warning("⚠️  Complex alignment needed for audio-expanded sequences")
                 
-                text_loss = self.text_loss_fn(
-                    shift_logits.view(-1, shift_logits.size(-1)),
-                    shift_labels.view(-1)
-                )
-                total_loss = total_loss + text_loss
-                loss_dict['text_loss'] = text_loss.item()
-                logger.info(f"✓ Fallback text loss: {text_loss.item():.4f}")
+                # For audio-expanded sequences, we need a different approach
+                # Since we can't do simple teacher-forcing shifts, we'll compute loss on overlapping regions
+                # This is a simplified approach - in practice, you might want to implement more sophisticated alignment
                 
-                # Log first and last 5 predictions vs labels every n log steps
-                if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
-                    self._log_predictions_vs_labels(shift_logits, shift_labels)
+                # Use only the text portion of the logits that corresponds to the original sequence length
+                # This is a heuristic approach to handle the expansion
+                effective_logits_len = min(logits_seq_len, input_seq_len)
+                effective_labels_len = min(logits_seq_len - 1, input_seq_len - 1)
+                
+                if effective_labels_len > 0:
+                    shift_logits = text_logits[:, :effective_labels_len, :].contiguous()
+                    shift_labels = text_labels[:, :effective_labels_len].contiguous()
+                    
+                    logger.info(f"Adjusted alignment: logits {shift_logits.size(1)} vs labels {shift_labels.size(1)}")
+                    
+                    if shift_logits.size(1) == shift_labels.size(1):
+                        valid_mask = shift_labels != -100
+                        num_valid_tokens = valid_mask.sum().item()
+                        
+                        if num_valid_tokens > 0:
+                            text_loss = self.text_loss_fn(
+                                shift_logits.view(-1, shift_logits.size(-1)),
+                                shift_labels.view(-1)
+                            )
+                            total_loss = total_loss + text_loss
+                            loss_dict['text_loss'] = text_loss.item()
+                            logger.info(f"✓ Adjusted fallback text loss: {text_loss.item():.4f}")
+                            
+                            # Log first and last 5 predictions vs labels every n log steps
+                            if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
+                                self._log_predictions_vs_labels(shift_logits, shift_labels)
+                        else:
+                            logger.warning("⚠️  No valid tokens in adjusted alignment - skipping text loss")
+                    else:
+                        logger.error(f"❌ Adjusted alignment still failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
+                else:
+                    logger.warning("⚠️  Insufficient sequence length for adjusted alignment - skipping text loss")
             else:
-                logger.error(f"❌ Fallback alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
-                logger.error("Skipping text loss - check data preprocessing and model inputs")
+                # STANDARD teacher forcing shift for autoregressive models (normal case)
+                shift_logits = text_logits[..., :-1, :].contiguous()  # Remove last logit
+                shift_labels = text_labels[..., 1:].contiguous()      # Remove first label
+                
+                if shift_logits.size(1) == shift_labels.size(1):
+                    valid_mask = shift_labels != -100
+                    num_valid_tokens = valid_mask.sum().item()
+                    
+                    text_loss = self.text_loss_fn(
+                        shift_logits.view(-1, shift_logits.size(-1)),
+                        shift_labels.view(-1)
+                    )
+                    total_loss = total_loss + text_loss
+                    loss_dict['text_loss'] = text_loss.item()
+                    logger.info(f"✓ Standard fallback text loss: {text_loss.item():.4f}")
+                    
+                    # Log first and last 5 predictions vs labels every n log steps
+                    if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
+                        self._log_predictions_vs_labels(shift_logits, shift_labels)
+                else:
+                    logger.error(f"❌ Standard fallback alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
+                    logger.error("Skipping text loss - check data preprocessing and model inputs")
         else:
             logger.warning("⚠️  Skipping text loss computation - insufficient data")
         
