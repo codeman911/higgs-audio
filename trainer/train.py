@@ -48,18 +48,129 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-# 📁 ENHANCED: Robust path setup for 'python3 trainer/train.py' execution from higgs-audio root
+# 🏠 ENHANCED: Robust path setup for distributed training compatibility
 trainer_dir = Path(__file__).parent
 higgs_audio_root = trainer_dir.parent  # Go up from trainer/ to higgs-audio/
 
-# 🎯 CRITICAL: Ensure higgs-audio root is in Python path
-sys.path.insert(0, str(higgs_audio_root))  # Add higgs-audio root for boson_multimodal
-sys.path.insert(0, str(trainer_dir))       # Add trainer directory for local imports
+# 🚀 DEFINITIVE DISTRIBUTED TRAINING PACKAGE SETUP
+def ensure_trainer_package_available():
+    """Definitive solution for trainer package availability in distributed training."""
+    import importlib.util
+    import importlib
+    
+    # Add higgs-audio root to path first
+    if str(higgs_audio_root) not in sys.path:
+        sys.path.insert(0, str(higgs_audio_root))
+    
+    # Force trainer to be recognized as a proper package
+    trainer_init_path = trainer_dir / "__init__.py"
+    
+    # Step 1: Ensure trainer package exists in sys.modules
+    if 'trainer' not in sys.modules:
+        if trainer_init_path.exists():
+            spec = importlib.util.spec_from_file_location('trainer', trainer_init_path)
+            trainer_module = importlib.util.module_from_spec(spec)
+            sys.modules['trainer'] = trainer_module
+            try:
+                spec.loader.exec_module(trainer_module)
+                print("🔧 Trainer package initialized in sys.modules")
+            except Exception as e:
+                print(f"⚠️  Failed to execute trainer __init__.py: {e}")
+        else:
+            # Create minimal trainer package if __init__.py is missing
+            import types
+            trainer_module = types.ModuleType('trainer')
+            trainer_module.__path__ = [str(trainer_dir)]
+            trainer_module.__package__ = 'trainer'
+            sys.modules['trainer'] = trainer_module
+            print("🔧 Created minimal trainer package")
+    
+    # Step 2: Pre-load all trainer submodules to avoid import issues
+    trainer_modules = {
+        'trainer.config': trainer_dir / 'config.py',
+        'trainer.trainer': trainer_dir / 'trainer.py',
+        'trainer.loss': trainer_dir / 'loss.py',
+        'trainer.dataset': trainer_dir / 'dataset.py',
+        'trainer.logging_utils': trainer_dir / 'logging_utils.py',
+        'trainer.audio_validation': trainer_dir / 'audio_validation.py',
+    }
+    
+    loaded_count = 0
+    for module_name, module_path in trainer_modules.items():
+        if module_path.exists() and module_name not in sys.modules:
+            try:
+                spec = importlib.util.spec_from_file_location(module_name, module_path)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+                loaded_count += 1
+            except Exception as e:
+                print(f"⚠️  Failed to pre-load {module_name}: {e}")
+    
+    print(f"🔧 Pre-loaded {loaded_count}/{len(trainer_modules)} trainer modules")
+    
+    # Step 3: Try importing trainer setup helper if available
+    try:
+        import trainer_setup
+        trainer_setup.setup_trainer_package()
+        print("✅ Trainer setup helper executed successfully")
+    except ImportError:
+        print("ℹ️  Trainer setup helper not available - using direct setup")
+    except Exception as e:
+        print(f"⚠️  Trainer setup helper failed: {e} - using direct setup")
+    
+    return True
 
+# Execute the comprehensive setup
+ensure_trainer_package_available()
+
+# 🎯 CRITICAL: Ensure higgs-audio root is in Python path FIRST
+sys.path.insert(0, str(higgs_audio_root))  # Add higgs-audio root for boson_multimodal
+
+# 🚀 DISTRIBUTED FIX: Force trainer to be recognized as a package
+# In distributed mode, torchrun can interfere with package resolution
+# We need to make sure the trainer directory is properly accessible
+if str(higgs_audio_root) not in sys.path:
+    sys.path.insert(0, str(higgs_audio_root))
+if str(trainer_dir.parent) not in sys.path:
+    sys.path.insert(0, str(trainer_dir.parent))
+
+# 🎯 DISTRIBUTED TRAINING DETECTION
+# Check if we're running under torchrun (distributed training)
+is_distributed = (
+    'RANK' in os.environ or 
+    'LOCAL_RANK' in os.environ or 
+    'WORLD_SIZE' in os.environ or
+    'MASTER_ADDR' in os.environ
+)
+
+if is_distributed:
+    print(f"🌐 Distributed training detected - applying specialized path setup")
+    # Ensure the trainer package can be found
+    trainer_parent = trainer_dir.parent
+    if str(trainer_parent) not in sys.path:
+        sys.path.insert(0, str(trainer_parent))
+    # Also add as module path for importlib
+    if 'trainer' not in sys.modules:
+        import importlib.util
+        trainer_init_path = trainer_dir / '__init__.py'
+        if trainer_init_path.exists():
+            spec = importlib.util.spec_from_file_location('trainer', trainer_init_path)
+            trainer_module = importlib.util.module_from_spec(spec)
+            sys.modules['trainer'] = trainer_module
+            
+# Change working directory to higgs-audio root if needed for distributed training
+original_cwd = Path.cwd()
+if is_distributed and Path.cwd().name != "higgs-audio" and higgs_audio_root.name == "higgs-audio":
+    os.chdir(higgs_audio_root)
+    print(f"🔄 Changed working directory for distributed training: {higgs_audio_root}")
+    
 print(f"✅ Enhanced import system initialized:")
 print(f"   Higgs-audio root: {higgs_audio_root}")
 print(f"   Trainer directory: {trainer_dir}")
 print(f"   Working directory: {Path.cwd()}")
+print(f"   Original working directory: {original_cwd}")
+print(f"   Distributed training: {is_distributed}")
 
 # Try to find and add boson_multimodal to path if needed
 def setup_boson_multimodal_path():
@@ -115,20 +226,44 @@ TRAINER_IMPORT_ERROR = None
 
 if BOSON_MULTIMODAL_AVAILABLE:
     try:
-        # Try different import patterns to find the trainer module
-        try:
-            from trainer.trainer import HiggsAudioTrainer
-            from trainer.config import TrainingConfig
-        except ImportError:
+        # 🚀 DEFINITIVE IMPORT STRATEGY: Use pre-loaded modules from sys.modules
+        # Since we've already pre-loaded all trainer modules, we can import them reliably
+        
+        # Strategy 1: Direct import from sys.modules (most reliable for distributed training)
+        if 'trainer.config' in sys.modules and 'trainer.trainer' in sys.modules:
+            TrainingConfig = sys.modules['trainer.config'].TrainingConfig
+            HiggsAudioTrainer = sys.modules['trainer.trainer'].HiggsAudioTrainer
+            TRAINER_AVAILABLE = True
+            print("✅ Trainer modules loaded from pre-loaded sys.modules (distributed-compatible)")
+        else:
+            # Strategy 2: Fallback to standard package imports
             try:
-                from trainer import HiggsAudioTrainer
-                from config import TrainingConfig
-            except ImportError:
-                # Direct imports as last resort
-                from trainer.trainer import HiggsAudioTrainer
                 from trainer.config import TrainingConfig
-        TRAINER_AVAILABLE = True
-    except ImportError as e:
+                from trainer.trainer import HiggsAudioTrainer
+                TRAINER_AVAILABLE = True
+                print("✅ Trainer modules loaded via standard package imports")
+            except ImportError as e:
+                # Strategy 3: Last resort - direct module loading
+                try:
+                    import importlib.util
+                    
+                    config_spec = importlib.util.spec_from_file_location("trainer.config", trainer_dir / "config.py")
+                    config_module = importlib.util.module_from_spec(config_spec)
+                    config_spec.loader.exec_module(config_module)
+                    
+                    trainer_spec = importlib.util.spec_from_file_location("trainer.trainer", trainer_dir / "trainer.py")
+                    trainer_module = importlib.util.module_from_spec(trainer_spec)
+                    trainer_spec.loader.exec_module(trainer_module)
+                    
+                    TrainingConfig = config_module.TrainingConfig
+                    HiggsAudioTrainer = trainer_module.HiggsAudioTrainer
+                    TRAINER_AVAILABLE = True
+                    print("✅ Trainer modules loaded via direct module loading")
+                except Exception as e3:
+                    TRAINER_IMPORT_ERROR = f"All import strategies failed: pre-loaded check failed, package import({e}), direct loading({e3})"
+                    TRAINER_AVAILABLE = False
+                    
+    except Exception as e:
         TRAINER_IMPORT_ERROR = str(e)
         TRAINER_AVAILABLE = False
 else:

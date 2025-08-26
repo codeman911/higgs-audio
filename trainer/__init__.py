@@ -10,36 +10,49 @@ Key Components:
 - TrainingConfig: Configuration management for training hyperparameters
 """
 
-# Import configuration first
-from trainer.config import TrainingConfig
-
-# Conditional imports to handle dependencies
-try:
-    from trainer.trainer import HiggsAudioTrainer
-except (ImportError, SyntaxError) as e:
-    import warnings
-    warnings.warn(f"Could not import HiggsAudioTrainer: {e}")
-    HiggsAudioTrainer = None
-
-try:
-    from trainer.dataset import VoiceCloningDataset
-except (ImportError, SyntaxError) as e:
-    VoiceCloningDataset = None
-
-# Always available imports
-try:
-    from trainer.audio_validation import audio_validator, AudioQualityValidator
-except ImportError:
-    audio_validator = None
-    AudioQualityValidator = None
-
+# Basic version info
 __version__ = "1.0.0"
-__all__ = ["TrainingConfig"]
 
-# Add available components to __all__
-if HiggsAudioTrainer is not None:
-    __all__.append("HiggsAudioTrainer")
-if VoiceCloningDataset is not None:
-    __all__.append("VoiceCloningDataset")
-if AudioQualityValidator is not None:
-    __all__.extend(["AudioQualityValidator", "audio_validator"])
+# Minimal imports to avoid distributed training conflicts
+try:
+    # Import configuration first (most stable)
+    from trainer.config import TrainingConfig
+    __all__ = ["TrainingConfig"]
+except ImportError:
+    # Fallback for different execution contexts
+    try:
+        from .config import TrainingConfig
+        __all__ = ["TrainingConfig"]
+    except ImportError:
+        # If nothing works, provide empty namespace
+        __all__ = []
+        TrainingConfig = None
+
+# Only attempt to import other components if running in proper environment
+# This prevents import conflicts during distributed training
+try:
+    # Check if we're in a context where full imports are safe
+    import sys
+    if 'torch' in sys.modules and 'transformers' in sys.modules:
+        # Safe to import trainer components
+        try:
+            from trainer.trainer import HiggsAudioTrainer
+            __all__.append("HiggsAudioTrainer")
+        except ImportError:
+            HiggsAudioTrainer = None
+            
+        try:
+            from trainer.dataset import VoiceCloningDataset
+            __all__.append("VoiceCloningDataset")
+        except ImportError:
+            VoiceCloningDataset = None
+            
+        try:
+            from trainer.audio_validation import AudioQualityValidator, audio_validator
+            __all__.extend(["AudioQualityValidator", "audio_validator"])
+        except ImportError:
+            AudioQualityValidator = None
+            audio_validator = None
+except Exception:
+    # In case of any issues, just provide minimal interface
+    pass
