@@ -20,23 +20,48 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from loguru import logger
 
-# Add parent directory to path for boson_multimodal imports
-current_dir = Path(__file__).parent
-parent_dir = current_dir.parent
-if str(parent_dir) not in sys.path:
-    sys.path.insert(0, str(parent_dir))
+# 📁 ENHANCED: Robust import system for 'python3 trainer/train.py' execution from higgs-audio root
+current_file = Path(__file__).resolve()
+trainer_dir = current_file.parent  # /path/to/higgs-audio/trainer/
+higgs_audio_root = trainer_dir.parent  # /path/to/higgs-audio/
 
-# Import existing boson_multimodal components (conditional for better error handling)
+# 🎯 CRITICAL: Ensure higgs-audio root is in Python path for boson_multimodal imports
+if str(higgs_audio_root) not in sys.path:
+    sys.path.insert(0, str(higgs_audio_root))
+    print(f"✅ Added higgs-audio root to Python path: {higgs_audio_root}")
+
+# 🔍 Verify we're in the correct directory structure
+if not (higgs_audio_root / "boson_multimodal").exists():
+    raise ImportError(
+        f"❌ boson_multimodal not found at {higgs_audio_root}. "
+        "Please run the script from higgs-audio root directory: python3 trainer/train.py"
+    )
+
+print(f"📂 Execution context:")
+print(f"   Current working directory: {os.getcwd()}")
+print(f"   Script location: {current_file}")
+print(f"   Higgs-audio root: {higgs_audio_root}")
+print(f"   Boson_multimodal path: {higgs_audio_root / 'boson_multimodal'}")
+
+# 🔧 ENHANCED: Conditional imports with comprehensive error diagnostics
 try:
     from boson_multimodal.model.higgs_audio import HiggsAudioModel
     from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
     from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
     BOSON_AVAILABLE = True
+    print("✅ Successfully imported boson_multimodal components")
 except ImportError as e:
     logger.error(f"❌ Failed to import boson_multimodal components: {e}")
-    logger.error(f"   Make sure you're running from the higgs-audio directory")
     logger.error(f"   Current working directory: {os.getcwd()}")
-    logger.error(f"   Python path includes: {[p for p in sys.path if 'higgs' in p]}")
+    logger.error(f"   Higgs-audio root: {higgs_audio_root}")
+    logger.error(f"   Python path: {sys.path[:3]}...")
+    logger.error(f"   Expected boson_multimodal at: {higgs_audio_root / 'boson_multimodal'}")
+    logger.error(f"   Boson_multimodal exists: {(higgs_audio_root / 'boson_multimodal').exists()}")
+    logger.error("")
+    logger.error("🔧 TROUBLESHOOTING:")
+    logger.error("   1. Ensure you're running from higgs-audio root: python3 trainer/train.py")
+    logger.error("   2. Verify boson_multimodal directory exists in higgs-audio root")
+    logger.error("   3. Check if __init__.py files exist in boson_multimodal subdirectories")
     BOSON_AVAILABLE = False
     
     # Create dummy classes to prevent import errors
@@ -238,9 +263,23 @@ class HiggsAudioTrainer:
         logger.info(f"   Whisper embedding: {encode_whisper_embed}")
         logger.info(f"   Audio codebooks: {self.model_config.audio_num_codebooks}")
         
-        # Validate collator alignment with serve_engine.py
-        expected_config = {'encode_whisper_embed': encode_whisper_embed}
-        training_logger.validate_collator_alignment(self.collator, expected_config)
+        # 🔍 CRITICAL: Validate exact serve_engine.py alignment for training-inference compatibility
+        logger.info("🔍 Validating collator alignment with serve_engine.py:")
+        logger.info(f"   ✅ return_audio_in_tokens: {self.collator.return_audio_in_tokens} (serve_engine.py=False)")
+        logger.info(f"   ✅ round_to: {self.collator.round_to} (serve_engine.py=1)")
+        logger.info(f"   ✅ encode_whisper_embed: {self.collator.encode_whisper_embed}")
+        logger.info(f"   ✅ whisper_processor: {self.collator.whisper_processor is not None}")
+        
+        # Critical validation checks
+        if self.collator.return_audio_in_tokens != False:
+            logger.error(f"❌ CRITICAL MISALIGNMENT: return_audio_in_tokens={self.collator.return_audio_in_tokens}, serve_engine.py=False")
+            raise ValueError("Collator misalignment with serve_engine.py! Training-inference compatibility broken.")
+        
+        if self.collator.round_to != 1:
+            logger.error(f"❌ CRITICAL MISALIGNMENT: round_to={self.collator.round_to}, serve_engine.py=1")
+            raise ValueError("Collator misalignment with serve_engine.py! Training-inference compatibility broken.")
+        
+        logger.info("🎯 Collator configuration verified - training-inference compatibility ensured")
     
     def _setup_data(self):
         """Setup training and validation datasets."""
@@ -533,3 +572,25 @@ def create_trainer_with_defaults(
         **kwargs
     )
     return HiggsAudioTrainer(config)
+
+
+def create_distributed_trainer(
+    train_data_path: str,
+    model_path: str = "bosonai/higgs-audio-v2-generation-3B-base",
+    audio_tokenizer_path: str = "bosonai/higgs-audio-v2-tokenizer",
+    **kwargs
+) -> 'DistributedHiggsAudioTrainer':
+    """Create distributed trainer for 8xH200 setup."""
+    from .config import DistributedTrainingConfig, get_8xh200_config
+    
+    # Use 8xH200 config as base, override with provided params
+    config = get_8xh200_config()
+    config.train_data_path = train_data_path
+    config.model_path = model_path
+    config.audio_tokenizer_path = audio_tokenizer_path
+    
+    # Override with any additional parameters
+    for key, value in kwargs.items():
+        setattr(config, key, value)
+    
+    return DistributedHiggsAudioTrainer(config)

@@ -48,40 +48,54 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-# Add current directory and parent directory to path for imports
+# 📁 ENHANCED: Robust path setup for 'python3 trainer/train.py' execution from higgs-audio root
 trainer_dir = Path(__file__).parent
-parent_dir = trainer_dir.parent
+higgs_audio_root = trainer_dir.parent  # Go up from trainer/ to higgs-audio/
 
-# Ensure boson_multimodal can be found
-sys.path.insert(0, str(parent_dir))  # Add higgs-audio root
-sys.path.insert(0, str(trainer_dir))   # Add trainer directory
+# 🎯 CRITICAL: Ensure higgs-audio root is in Python path
+sys.path.insert(0, str(higgs_audio_root))  # Add higgs-audio root for boson_multimodal
+sys.path.insert(0, str(trainer_dir))       # Add trainer directory for local imports
+
+print(f"✅ Enhanced import system initialized:")
+print(f"   Higgs-audio root: {higgs_audio_root}")
+print(f"   Trainer directory: {trainer_dir}")
+print(f"   Working directory: {Path.cwd()}")
 
 # Try to find and add boson_multimodal to path if needed
 def setup_boson_multimodal_path():
-    """Ensure boson_multimodal is available by adjusting Python path."""
+    """Enhanced function to ensure boson_multimodal is available for training execution."""
     try:
         import boson_multimodal
+        print(f"✅ boson_multimodal already available")
         return True
     except ImportError:
-        # Try common paths where boson_multimodal might be
+        # 🔍 Try to locate boson_multimodal in common paths
         possible_paths = [
-            parent_dir,  # Current higgs-audio root
-            parent_dir.parent,  # One level up
+            higgs_audio_root,  # Should be the correct location
+            higgs_audio_root.parent,  # One level up
             Path.cwd(),  # Current working directory
             Path.cwd().parent,  # Parent of working directory
         ]
         
+        print(f"🔍 Searching for boson_multimodal...")
         for path in possible_paths:
             boson_path = path / "boson_multimodal"
+            print(f"   Checking: {boson_path} - {'EXISTS' if boson_path.exists() else 'NOT FOUND'}")
+            
             if boson_path.exists() and boson_path.is_dir():
-                sys.path.insert(0, str(path))
+                if str(path) not in sys.path:
+                    sys.path.insert(0, str(path))
                 try:
                     import boson_multimodal
-                    print(f"✅ Found boson_multimodal at: {path}")
+                    print(f"✅ Found and loaded boson_multimodal from: {path}")
                     return True
-                except ImportError:
+                except ImportError as e:
+                    print(f"❌ Failed to import from {path}: {e}")
                     continue
         
+        print(f"❌ Could not locate boson_multimodal in any expected location")
+        print(f"   Expected at: {higgs_audio_root / 'boson_multimodal'}")
+        print(f"   Please ensure you're running from higgs-audio root: python3 trainer/train.py")
         return False
 
 # Setup boson_multimodal path

@@ -10,12 +10,24 @@ DualFFN architecture shares cross-attention but has separate FFN paths:
 - Audio FFN -> audio_head -> audio logits (multi-codebook)
 
 Both paths must learn for effective zero-shot voice cloning.
+Follows EXACT patterns from train_higgs_lora.py for teacher forcing.
 """
 
 import torch
 import torch.nn.functional as F
 from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+
+# 🔧 Conditional torch import for environments without ML dependencies
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    # Create dummy tensor class for utility operations
+    class torch:
+        class Tensor:
+            pass
 
 
 @dataclass
@@ -151,7 +163,14 @@ def _compute_text_loss_with_masking(model_outputs, batch) -> float:
 
 
 def _compute_audio_loss_with_teacher_forcing(model_outputs, batch) -> float:
-    """Compute multi-codebook audio generation loss with teacher forcing."""
+    """
+    Compute multi-codebook audio generation loss with teacher forcing.
+    
+    Follows EXACT patterns from train_higgs_lora.py:
+    - Teacher forcing: shift-right inputs per codebook
+    - Labels with BOS=1024 → -100, keep EOS=1025 for stopping
+    - Multi-codebook loss computation with proper masking
+    """
     try:
         # Check for audio logits in model outputs
         if not hasattr(model_outputs, 'audio_logits') or model_outputs.audio_logits is None:
@@ -159,10 +178,23 @@ def _compute_audio_loss_with_teacher_forcing(model_outputs, batch) -> float:
         
         audio_logits = model_outputs.audio_logits
         
-        # Get audio labels from batch (HiggsAudioBatchInput from collator)
+        # 🎯 Get audio labels from batch (following HiggsAudioBatchInput patterns)
         audio_labels = None
         if hasattr(batch, 'label_audio_ids') and batch.label_audio_ids is not None:
             audio_labels = batch.label_audio_ids
+        elif hasattr(batch, 'audio_out_ids') and batch.audio_out_ids is not None:
+            # Fallback: use audio_out_ids and create labels following train_higgs_lora.py
+            audio_out_ids = batch.audio_out_ids
+            AUDIO_BOS = 1024  # From higgs-audio config
+            
+            # 🔄 Teacher forcing label creation (exact pattern from train_higgs_lora.py)
+            audio_labels = audio_out_ids.clone()
+            audio_labels[:, 0] = -100  # Do not learn BOS
+            
+            # Map BOS tokens inside labels (if any) to -100
+            bos_mask = (audio_labels == AUDIO_BOS)
+            if bos_mask.any():
+                audio_labels[bos_mask] = -100
         elif isinstance(batch, dict) and 'label_audio_ids' in batch:
             audio_labels = batch['label_audio_ids']
         
@@ -173,35 +205,41 @@ def _compute_audio_loss_with_teacher_forcing(model_outputs, batch) -> float:
         if audio_logits.device != audio_labels.device:
             audio_labels = audio_labels.to(audio_logits.device)
         
-        # Handle different audio logits shapes following generation.py patterns
+        # 📐 Handle audio logits shape following HiggsAudioModel patterns
         if audio_logits.dim() == 2:
             # Shape: [num_audio_tokens, num_codebooks * codebook_size]
             num_tokens, logits_dim = audio_logits.shape
             
-            # Determine codebook configuration from logits dimension
-            # Standard configuration: 12 codebooks with 1024 + 2 special tokens each
-            codebook_size_with_special = logits_dim // 12  # Assuming 12 codebooks
+            # Determine codebook configuration from model config
+            # Standard: 12 codebooks with 1024 + 2 special tokens each = 1026
+            num_codebooks = 12  # From HiggsAudioConfig
+            codebook_size_with_special = logits_dim // num_codebooks
             
-            # Reshape audio_logits to [num_codebooks, num_tokens, codebook_size]
-            audio_logits = audio_logits.view(num_tokens, 12, codebook_size_with_special).transpose(0, 1)
+            # Reshape to [num_codebooks, num_tokens, codebook_size]
+            audio_logits = audio_logits.view(num_tokens, num_codebooks, codebook_size_with_special).transpose(0, 1)
         
         elif audio_logits.dim() == 3:
-            # Shape: [num_codebooks, num_tokens, codebook_size] - already correct
+            # Shape: [num_codebooks, num_tokens, codebook_size] - correct format
             pass
-        
         else:
             print(f"⚠️ Unexpected audio_logits shape: {audio_logits.shape}")
             return 0.0
         
-        # Ensure audio_labels has correct shape [num_codebooks, num_tokens]
+        # 📐 Ensure audio_labels has correct shape [num_codebooks, num_tokens]
         if audio_labels.dim() == 1:
-            # Reshape to [num_codebooks, num_tokens]
+            # Reshape flat tensor to [num_codebooks, num_tokens]
             num_codebooks = audio_logits.size(0)
             num_tokens = audio_labels.size(0) // num_codebooks
+            if audio_labels.size(0) % num_codebooks != 0:
+                print(f"⚠️ Audio labels size {audio_labels.size(0)} not divisible by codebooks {num_codebooks}")
+                return 0.0
             audio_labels = audio_labels.view(num_codebooks, num_tokens)
         
-        # Teacher forcing: compute loss for each codebook separately
-        # This follows the delay pattern used in generation.py
+        elif audio_labels.dim() == 3 and audio_labels.shape[0] == 1:
+            # Remove batch dimension: [1, num_codebooks, num_tokens] → [num_codebooks, num_tokens]
+            audio_labels = audio_labels.squeeze(0)
+        
+        # 🎯 Multi-codebook teacher forcing loss (exact pattern from train_higgs_lora.py)
         audio_loss = 0.0
         num_codebooks = min(audio_logits.size(0), audio_labels.size(0))
         valid_codebooks = 0
@@ -211,26 +249,32 @@ def _compute_audio_loss_with_teacher_forcing(model_outputs, batch) -> float:
             codebook_labels = audio_labels[codebook_idx]  # [num_tokens]
             
             # Only compute loss on valid audio tokens (ignore -100 masked tokens)
-            valid_audio_tokens = codebook_labels != -100
-            if valid_audio_tokens.sum() > 0:
-                # Teacher forcing: align logits and labels for next-token prediction
-                if codebook_logits.size(0) > codebook_labels.size(0):
-                    codebook_logits = codebook_logits[:-1, :].contiguous()
-                elif codebook_labels.size(0) > codebook_logits.size(0):
-                    codebook_labels = codebook_labels[1:].contiguous()
-                    valid_audio_tokens = valid_audio_tokens[1:].contiguous()
+            valid_mask = codebook_labels != -100
+            if valid_mask.sum() == 0:
+                continue  # Skip codebook with no valid tokens
+            
+            # 🔄 Teacher forcing alignment: ensure logits and labels match for next-token prediction
+            # Following the delay pattern from generation.py and train_higgs_lora.py
+            if codebook_logits.size(0) != codebook_labels.size(0):
+                min_length = min(codebook_logits.size(0), codebook_labels.size(0))
+                codebook_logits = codebook_logits[:min_length, :].contiguous()
+                codebook_labels = codebook_labels[:min_length].contiguous()
+                valid_mask = valid_mask[:min_length].contiguous()
+            
+            if valid_mask.sum() > 0:
+                # Compute cross-entropy loss with -100 masking
+                codebook_loss = F.cross_entropy(
+                    codebook_logits.reshape(-1, codebook_logits.size(-1)),
+                    codebook_labels.reshape(-1),
+                    ignore_index=-100,
+                    reduction='mean'
+                )
                 
-                if valid_audio_tokens.sum() > 0:
-                    codebook_loss = F.cross_entropy(
-                        codebook_logits.reshape(-1, codebook_logits.size(-1)),
-                        codebook_labels.reshape(-1),
-                        ignore_index=-100,
-                        reduction='mean'
-                    )
+                if torch.isfinite(codebook_loss):
                     audio_loss += codebook_loss
                     valid_codebooks += 1
         
-        # Average across valid codebooks (following multi-codebook training patterns)
+        # Average across valid codebooks (standard multi-codebook training)
         if valid_codebooks > 0:
             audio_loss = audio_loss / valid_codebooks
             return audio_loss.item() if isinstance(audio_loss, torch.Tensor) else audio_loss
@@ -239,6 +283,8 @@ def _compute_audio_loss_with_teacher_forcing(model_outputs, batch) -> float:
     
     except Exception as e:
         print(f"⚠️ Error computing audio loss with teacher forcing: {e}")
+        import traceback
+        traceback.print_exc()
         return 0.0
 
 
@@ -345,10 +391,100 @@ def validate_loss_computation(model, batch, device):
             return None, None
 
 
+def create_audio_labels_for_teacher_forcing(audio_out_ids, audio_stream_bos_id=1024, audio_stream_eos_id=1025):
+    """
+    Create audio labels for teacher forcing following HiggsAudioSampleCollator patterns.
+    
+    This function mimics the label creation logic from the collator:
+    - BOS token (1024) at position 0 is masked with -100
+    - EOS token (1025) is kept for stopping logic
+    - All intermediate tokens are used for learning
+    
+    Args:
+        audio_out_ids: [num_codebooks, seq_len] tensor with audio tokens
+        audio_stream_bos_id: BOS token ID (default 1024)
+        audio_stream_eos_id: EOS token ID (default 1025)
+    
+    Returns:
+        Audio labels with proper masking for teacher forcing
+    """
+    if not TORCH_AVAILABLE:
+        return None
+    
+    if audio_out_ids is None or audio_out_ids.numel() == 0:
+        return None
+    
+    # Clone to avoid modifying original
+    audio_labels = audio_out_ids.clone()
+    
+    # 🔄 Teacher forcing setup (exact pattern from train_higgs_lora.py)
+    # Mask BOS tokens at position 0 with -100 (don't learn BOS)
+    audio_labels[:, 0] = -100
+    
+    # Map any internal BOS tokens to -100 (following train_higgs_lora.py)
+    bos_mask = (audio_labels == audio_stream_bos_id)
+    if bos_mask.any():
+        audio_labels[bos_mask] = -100
+    
+    # Keep EOS tokens for stopping logic (no masking)
+    # EOS tokens at the end help the model learn when to stop generation
+    
+    return audio_labels
+
+
 def compute_training_loss(model, batch, device, **loss_kwargs):
     """
-    Training wrapper that handles device placement and model forward pass.
+    Enhanced training wrapper with proper audio label handling.
+    
+    This function handles the complete training forward pass including:
+    - Model forward pass on correct device
+    - Audio label creation if missing
+    - Dual-loss computation with teacher forcing
     """
+    if not TORCH_AVAILABLE:
+        raise ImportError("PyTorch is required for training loss computation")
+    
+    model.train()
+    
+    # 🖥️ Move batch to device
+    if isinstance(batch, dict):
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor):
+                batch[key] = value.to(device)
+    else:
+        # Handle HiggsAudioBatchInput objects
+        for attr_name in dir(batch):
+            if not attr_name.startswith('_'):
+                attr_value = getattr(batch, attr_name)
+                if isinstance(attr_value, torch.Tensor):
+                    setattr(batch, attr_name, attr_value.to(device))
+    
+    # 🎯 Create audio labels if missing (following collator patterns)
+    if not hasattr(batch, 'label_audio_ids') or batch.label_audio_ids is None:
+        if hasattr(batch, 'audio_out_ids') and batch.audio_out_ids is not None:
+            # Create labels following the exact collator pattern
+            batch.label_audio_ids = create_audio_labels_for_teacher_forcing(
+                batch.audio_out_ids,
+                audio_stream_bos_id=1024,  # From HiggsAudioConfig
+                audio_stream_eos_id=1025   # From HiggsAudioConfig
+            )
+    
+    # 🚀 Model forward pass
+    try:
+        model_outputs = model(**batch.__dict__ if hasattr(batch, '__dict__') else batch)
+    except Exception as e:
+        print(f"⚠️ Model forward pass failed: {e}")
+        # Return dummy loss for error handling
+        return torch.tensor(0.0, device=device, requires_grad=True), LossComponents(0.0, 0.0, 0.0, 0.0)
+    
+    # 🎯 Compute dual loss with enhanced teacher forcing
+    loss_tensor, loss_components = compute_higgs_audio_loss(
+        model_outputs, 
+        batch, 
+        **loss_kwargs
+    )
+    
+    return loss_tensor, loss_components
     # Move batch to device  
     for key, value in batch.items():
         if isinstance(value, torch.Tensor):

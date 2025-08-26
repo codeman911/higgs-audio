@@ -25,11 +25,22 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Union, Tuple
 from loguru import logger
 
-# Add parent directory to path for boson_multimodal imports
-current_dir = Path(__file__).parent  
-parent_dir = current_dir.parent
-if str(parent_dir) not in sys.path:
-    sys.path.insert(0, str(parent_dir))
+# 📁 ENHANCED: Robust import system for 'python3 trainer/train.py' execution from higgs-audio root
+current_file = Path(__file__).resolve()
+trainer_dir = current_file.parent  # /path/to/higgs-audio/trainer/
+higgs_audio_root = trainer_dir.parent  # /path/to/higgs-audio/
+
+# 🎯 CRITICAL: Ensure higgs-audio root is in Python path for boson_multimodal imports
+if str(higgs_audio_root) not in sys.path:
+    sys.path.insert(0, str(higgs_audio_root))
+    print(f"✅ [dataset.py] Added higgs-audio root to Python path: {higgs_audio_root}")
+
+# 🔍 Verify directory structure
+if not (higgs_audio_root / "boson_multimodal").exists():
+    raise ImportError(
+        f"❌ [dataset.py] boson_multimodal not found at {higgs_audio_root}. "
+        "Please run script from higgs-audio root: python3 trainer/train.py"
+    )
 
 # Conditional imports for ML dependencies
 try:
@@ -42,7 +53,7 @@ except ImportError:
     class Dataset:
         pass
 
-# Import existing boson_multimodal components (conditional)
+# 🔧 ENHANCED: Conditional imports with comprehensive error diagnostics for dataset
 try:
     from boson_multimodal.dataset.chatml_dataset import (
         prepare_chatml_sample,
@@ -50,9 +61,12 @@ try:
     )
     from boson_multimodal.data_types import ChatMLSample, Message, AudioContent, TextContent
     BOSON_AVAILABLE = True
+    print("✅ [dataset.py] Successfully imported boson_multimodal components")
 except ImportError as e:
-    logger.error(f"❌ Failed to import boson_multimodal components: {e}")
-    logger.error(f"   Make sure you're running from the higgs-audio directory")
+    logger.error(f"❌ [dataset.py] Failed to import boson_multimodal: {e}")
+    logger.error(f"   Higgs-audio root: {higgs_audio_root}")
+    logger.error(f"   Boson_multimodal exists: {(higgs_audio_root / 'boson_multimodal').exists()}")
+    logger.error("🔧 Run from higgs-audio root: python3 trainer/train.py")
     BOSON_AVAILABLE = False
     
     # Create dummy classes to prevent import errors
@@ -252,27 +266,28 @@ class VoiceCloningDataset(Dataset):
         Create messages following EXACT arb_inference.py patterns.
         
         This matches the _prepare_generation_context method in arb_inference.py.
+        CRITICAL: No audio tokens in user message - only in assistant AudioContent!
         """
         messages = [
-            # System message (concise like arb_inference.py)
+            # 💬 System message (exact match with arb_inference.py)
             Message(
                 role="system",
-                content="Generate speech in the provided voice."
+                content=TextContent(text="Generate speech in the provided voice.")
             ),
-            # User message with reference text and audio token
+            # 🗣️ User message with reference text (NO audio tokens here!)
             Message(
                 role="user", 
-                content=f"{ref_text} <|audio_bos|><|AUDIO|><|audio_eos|>"
+                content=TextContent(text=ref_text)  # Just the text, no audio tokens
             ),
-            # Assistant message with reference audio
+            # 🎧 Assistant message with reference audio (CRITICAL: AudioContent only)
             Message(
                 role="assistant",
                 content=AudioContent(audio_url=ref_audio_path)
             ),
-            # User message with target text
+            # 🎯 User message with target text to generate
             Message(
                 role="user",
-                content=target_text
+                content=TextContent(text=target_text)
             )
         ]
         
