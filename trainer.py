@@ -252,9 +252,9 @@ class HiggsAudioTrainer:
             return self._compute_dual_loss(outputs, text_labels, audio_labels)
         except Exception as e:
             logger.error(f"Loss computation failed: {e}")
-            # Log batch info for debugging
-            logger.error(f"Batch keys: {list(batch.keys())}")
-            logger.error(f"Batch shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in batch.items()]}")
+            # Only log batch info for debugging if needed
+            # logger.error(f"Batch keys: {list(batch.keys())}")
+            # logger.error(f"Batch shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in batch.items()]}")
             raise
     
     def _get_base_higgs_model(self):
@@ -296,6 +296,10 @@ class HiggsAudioTrainer:
         total_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
         loss_dict = {}
         
+        # For logging predictions vs labels
+        self.forward_step_count = getattr(self, "forward_step_count", 0)
+        self.forward_step_count += 1
+        
         # Extract outputs
         text_logits = getattr(outputs, 'logits', None)
         audio_logits = getattr(outputs, 'audio_logits', None)
@@ -304,21 +308,13 @@ class HiggsAudioTrainer:
         # Use the model's expanded_labels instead of the original batch labels
         model_expanded_labels = getattr(outputs, 'expanded_labels', None)
         
-        if text_logits is not None:
-            logger.info(f"Text logits shape: {text_logits.shape}")
-        if audio_logits is not None:
-            logger.info(f"Audio logits shape: {audio_logits.shape}")
-            if audio_logits.numel() == 0:
-                logger.error("❌ Audio logits are empty! This means no audio output positions were detected.")
-                logger.error("Check: 1) audio_out_ids in batch, 2) audio_out_mask generation, 3) audio output tokens in data")
-            else:
-                logger.info(f"✓ Audio logits non-empty: {audio_logits.shape}")
-        else:
-            logger.warning("⚠️  Audio logits are None")
-        if model_expanded_labels is not None:
-            logger.info(f"✓ Model expanded labels shape: {model_expanded_labels.shape}")
-        else:
-            logger.warning("⚠️  Model expanded_labels is None - falling back to manual alignment")
+        # Only log shapes if needed for debugging
+        # if text_logits is not None:
+        #     logger.info(f"Text logits shape: {text_logits.shape}")
+        # if audio_logits is not None:
+        #     logger.info(f"Audio logits shape: {audio_logits.shape}")
+        # if model_expanded_labels is not None:
+        #     logger.info(f"Model expanded labels shape: {model_expanded_labels.shape}")
         
         # Text loss with OPTIMAL teacher forcing alignment
         if text_logits is not None and model_expanded_labels is not None:
@@ -330,15 +326,13 @@ class HiggsAudioTrainer:
             shift_logits = text_logits.contiguous()  # [batch, seq_len, vocab]
             shift_labels = model_expanded_labels.contiguous()  # [batch, seq_len]
             
-            logger.info(f"Final logits shape: {shift_logits.shape}")
-            logger.info(f"Final labels shape: {shift_labels.shape}")
-            
             # Validate alignment
             if shift_logits.size(1) == shift_labels.size(1):
                 # Count valid (non-ignore) tokens for loss computation
                 valid_mask = shift_labels != -100
                 num_valid_tokens = valid_mask.sum().item()
-                logger.info(f"✓ Perfect alignment! Computing loss on {num_valid_tokens} valid tokens")
+                # Only log detailed alignment info if needed
+                # logger.info(f"Perfect alignment! Computing loss on {num_valid_tokens} valid tokens")
                 
                 text_loss = self.text_loss_fn(
                     shift_logits.view(-1, shift_logits.size(-1)),  # [batch*seq_len, vocab]
@@ -347,6 +341,10 @@ class HiggsAudioTrainer:
                 total_loss = total_loss + text_loss
                 loss_dict['text_loss'] = text_loss.item()
                 logger.info(f"✓ Text loss: {text_loss.item():.4f}")
+                
+                # Log first and last 5 predictions vs labels every n log steps
+                if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
+                    self._log_predictions_vs_labels(shift_logits, shift_labels)
             else:
                 logger.error(f"❌ Model expanded_labels alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
                 logger.error("This should never happen with properly functioning model!")
@@ -370,13 +368,11 @@ class HiggsAudioTrainer:
             shift_logits = text_logits[..., :-1, :].contiguous()  # Remove last logit
             shift_labels = text_labels[..., 1:].contiguous()      # Remove first label
             
-            logger.info(f"Fallback logits shape: {shift_logits.shape}")
-            logger.info(f"Fallback labels shape: {shift_labels.shape}")
-            
             if shift_logits.size(1) == shift_labels.size(1):
                 valid_mask = shift_labels != -100
                 num_valid_tokens = valid_mask.sum().item()
-                logger.info(f"✓ Fallback alignment OK! Computing loss on {num_valid_tokens} valid tokens")
+                # Only log detailed alignment info if needed
+                # logger.info(f"Fallback alignment OK! Computing loss on {num_valid_tokens} valid tokens")
                 
                 text_loss = self.text_loss_fn(
                     shift_logits.view(-1, shift_logits.size(-1)),
@@ -385,6 +381,10 @@ class HiggsAudioTrainer:
                 total_loss = total_loss + text_loss
                 loss_dict['text_loss'] = text_loss.item()
                 logger.info(f"✓ Fallback text loss: {text_loss.item():.4f}")
+                
+                # Log first and last 5 predictions vs labels every n log steps
+                if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
+                    self._log_predictions_vs_labels(shift_logits, shift_labels)
             else:
                 logger.error(f"❌ Fallback alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
                 logger.error("Skipping text loss - check data preprocessing and model inputs")
@@ -399,6 +399,10 @@ class HiggsAudioTrainer:
                 total_loss = total_loss + audio_loss
                 loss_dict['audio_loss'] = audio_loss.item()
                 logger.info(f"✓ Audio loss: {audio_loss.item():.4f}")
+                
+                # Log first and last 5 audio predictions vs labels every n log steps
+                if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
+                    self._log_audio_predictions_vs_labels(audio_logits, audio_labels)
             else:
                 logger.warning("⚠️  Audio logits are empty - skipping audio loss")
                 loss_dict['audio_loss'] = 0.0
@@ -426,13 +430,10 @@ class HiggsAudioTrainer:
         if audio_logits is None or audio_labels is None:
             return torch.tensor(0.0, device=self.device)
             
-        # Log shapes for debugging
-        logger.info(f"Audio logits shape: {audio_logits.shape}")
-        logger.info(f"Audio labels shape: {audio_labels.shape}")
-        
         # Handle empty sequences
         if audio_logits.numel() == 0 or audio_labels.numel() == 0:
-            logger.info("Empty audio sequences, returning zero loss")
+            # Only log if needed for debugging
+            # logger.info("Empty audio sequences, returning zero loss")
             return torch.tensor(0.0, device=self.device)
         
         audio_loss = torch.tensor(0.0, device=self.device)
@@ -458,7 +459,8 @@ class HiggsAudioTrainer:
                     audio_labels = audio_labels[:, :seq_len_logits]
                     seq_len_labels = seq_len_logits
                 
-                logger.info(f"Aligned - Audio logits: {audio_logits.shape}, Audio labels: {audio_labels.shape}")
+                # Only log detailed alignment if needed
+                # logger.info(f"Aligned - Audio logits: {audio_logits.shape}, Audio labels: {audio_labels.shape}")
                 
                 valid_codebooks = 0
                 for cb in range(num_codebooks):
@@ -486,6 +488,84 @@ class HiggsAudioTrainer:
             )
         
         return audio_loss
+    
+    def _log_predictions_vs_labels(self, logits, labels):
+        """Log first and last 5 predictions vs labels for a few samples."""
+        try:
+            # Get predictions (argmax of logits)
+            predictions = torch.argmax(logits, dim=-1)
+            
+            # Log for first few samples in batch (up to 2 samples)
+            batch_size = min(2, logits.size(0))
+            
+            for i in range(batch_size):
+                logger.info(f"Sample {i+1} Prediction vs Label Comparison:")
+                
+                # Get sequence length for this sample
+                seq_len = min(logits.size(1), 10)  # Limit to 10 tokens for readability
+                
+                # Log first 5 predictions and labels
+                if seq_len >= 5:
+                    pred_first_5 = predictions[i, :5].tolist()
+                    label_first_5 = labels[i, :5].tolist()
+                    logger.info(f"  First 5 - Predictions: {pred_first_5}")
+                    logger.info(f"  First 5 - Labels:      {label_first_5}")
+                
+                # Log last 5 predictions and labels (if sequence is long enough)
+                if seq_len > 5:
+                    pred_last_5 = predictions[i, -5:].tolist()
+                    label_last_5 = labels[i, -5:].tolist()
+                    logger.info(f"  Last 5  - Predictions: {pred_last_5}")
+                    logger.info(f"  Last 5  - Labels:      {label_last_5}")
+                elif seq_len > 0:
+                    # If sequence is shorter than 10, just log what we have
+                    pred_rest = predictions[i, 5:seq_len].tolist()
+                    label_rest = labels[i, 5:seq_len].tolist()
+                    logger.info(f"  Rest    - Predictions: {pred_rest}")
+                    logger.info(f"  Rest    - Labels:      {label_rest}")
+        except Exception as e:
+            logger.warning(f"Failed to log predictions vs labels: {e}")
+    
+    def _log_audio_predictions_vs_labels(self, audio_logits, audio_labels):
+        """Log first and last 5 audio predictions vs labels for a few samples."""
+        try:
+            # Handle different tensor shapes for multi-codebook audio
+            if len(audio_logits.shape) == 3 and audio_logits.size(1) == 8:
+                # Shape: [seq_len, 8_codebooks, vocab_size]
+                seq_len = min(audio_logits.size(0), 10)  # Limit to 10 tokens for readability
+                num_codebooks = min(audio_logits.size(1), 3)  # Limit to 3 codebooks for readability
+                
+                # Get predictions (argmax of logits) for first codebook
+                predictions = torch.argmax(audio_logits[:, 0, :], dim=-1)  # First codebook
+                labels = audio_labels[0, :]  # First codebook labels
+                
+                logger.info("Audio Prediction vs Label Comparison (Codebook 0):")
+                
+                # Log first 5 predictions and labels
+                if seq_len >= 5:
+                    pred_first_5 = predictions[:5].tolist()
+                    label_first_5 = labels[:5].tolist()
+                    logger.info(f"  First 5 - Predictions: {pred_first_5}")
+                    logger.info(f"  First 5 - Labels:      {label_first_5}")
+                
+                # Log last 5 predictions and labels (if sequence is long enough)
+                if seq_len > 5:
+                    pred_last_5 = predictions[-5:].tolist()
+                    label_last_5 = labels[-5:].tolist()
+                    logger.info(f"  Last 5  - Predictions: {pred_last_5}")
+                    logger.info(f"  Last 5  - Labels:      {label_last_5}")
+                elif seq_len > 0:
+                    # If sequence is shorter than 10, just log what we have
+                    pred_rest = predictions[5:seq_len].tolist()
+                    label_rest = labels[5:seq_len].tolist()
+                    logger.info(f"  Rest    - Predictions: {pred_rest}")
+                    logger.info(f"  Rest    - Labels:      {label_rest}")
+                
+                # Also log some stats about the logits
+                logger.info(f"  Logits shape: {audio_logits.shape}")
+                logger.info(f"  Labels shape: {audio_labels.shape}")
+        except Exception as e:
+            logger.warning(f"Failed to log audio predictions vs labels: {e}")
     
     def train_step(self, batch):
         """Single training step with robust batch handling."""
@@ -594,7 +674,8 @@ class HiggsAudioTrainer:
                         total_audio_loss += val_loss_dict['audio_loss']
                     val_steps += 1
                 except Exception as e:
-                    logger.error(f"Validation loss computation failed: {e}")
+                    # Only log validation errors if needed for debugging
+                    # logger.error(f"Validation loss computation failed: {e}")
                     continue
         
         self.model.train()
