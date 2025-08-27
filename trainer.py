@@ -38,6 +38,13 @@ class HiggsAudioTrainer:
         self.load_model_and_tokenizers()
         self.setup_dataset()
         self.setup_training()
+        
+        # Initialize near-zero audio loss monitoring system
+        self.audio_loss_monitor = AudioLossMonitor(
+            window_size=100,  # Monitor over 100 steps
+            threshold=0.01,   # Alert when audio loss drops below 0.01
+            critical_threshold=0.005  # Critical alert when audio loss drops below 0.005
+        )
     
     def setup_distributed(self):
         """Setup DDP training."""
@@ -231,6 +238,9 @@ class HiggsAudioTrainer:
         text_labels = batch.get('label_ids')
         audio_labels = batch.get('label_audio_ids')
         
+        # CRITICAL VALIDATION: Check that essential model inputs are present
+        self._validate_model_inputs(batch, clean_inputs)
+        
         # BYPASS PEFT: Call the forward method directly on the base model
         # This completely avoids PEFT's parameter injection
         try:
@@ -257,10 +267,64 @@ class HiggsAudioTrainer:
             return self._compute_dual_loss(outputs, text_labels, audio_labels, batch)
         except Exception as e:
             logger.error(f"Loss computation failed: {e}")
-            # Only log batch info for debugging if needed
-            # logger.error(f"Batch keys: {list(batch.keys())}")
-            # logger.error(f"Batch shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in batch.items()]}")
             raise
+    
+    def _validate_model_inputs(self, original_batch, clean_inputs):
+        """Validate that all required model inputs are present and have correct dimensions."""
+        required_inputs = ['label_ids', 'audio_out_ids', 'label_audio_ids']
+        missing_inputs = []
+        
+        for input_name in required_inputs:
+            if input_name not in clean_inputs or clean_inputs[input_name] is None:
+                missing_inputs.append(input_name)
+            elif hasattr(clean_inputs[input_name], 'numel') and clean_inputs[input_name].numel() == 0:
+                logger.warning(f"⚠️  {input_name} is present but empty")
+                missing_inputs.append(f"{input_name} (empty)")
+        
+        if missing_inputs:
+            logger.error(f"❌ CRITICAL: Missing required inputs: {missing_inputs}")
+            logger.error("This can cause audio loss to become zero!")
+            # Log available inputs for debugging
+            available_inputs = [k for k in clean_inputs.keys() if clean_inputs[k] is not None]
+            logger.error(f"Available inputs: {available_inputs}")
+            
+            # Add detailed debugging information
+            self._log_detailed_batch_info(original_batch, clean_inputs)
+    
+    def _log_detailed_batch_info(self, original_batch, clean_inputs):
+        """Log detailed information about the batch for debugging zero loss conditions."""
+        logger.error("=" * 80)
+        logger.error("DETAILED BATCH DEBUGGING INFO")
+        logger.error("=" * 80)
+        
+        # Log original batch structure
+        logger.error("Original batch keys and types:")
+        for key, value in original_batch.items():
+            if isinstance(value, torch.Tensor):
+                logger.error(f"  {key}: Tensor(shape={value.shape}, dtype={value.dtype}, device={value.device})")
+            else:
+                logger.error(f"  {key}: {type(value)}")
+        
+        # Log clean inputs structure
+        logger.error("Clean inputs keys and types:")
+        for key, value in clean_inputs.items():
+            if isinstance(value, torch.Tensor):
+                logger.error(f"  {key}: Tensor(shape={value.shape}, dtype={value.dtype}, device={value.device})")
+            else:
+                logger.error(f"  {key}: {type(value)}")
+        
+        # Check for specific problematic patterns
+        if 'labels' in original_batch:
+            logger.error("⚠️  Generic 'labels' found in original batch - this should be filtered out!")
+            
+        # Check for dtype consistency
+        dtypes = set()
+        for key, value in clean_inputs.items():
+            if isinstance(value, torch.Tensor):
+                dtypes.add((key, value.dtype))
+        logger.error(f"Input dtypes: {dtypes}")
+        
+        logger.error("=" * 80)
     
     def _get_base_higgs_model(self):
         """Extract the actual HiggsAudioModel from all wrapper layers."""
@@ -487,17 +551,47 @@ class HiggsAudioTrainer:
                 loss_dict['audio_loss'] = audio_loss.item()
                 logger.info(f"✓ Audio loss: {audio_loss.item():.4f}")
                 
+                # CRITICAL: Monitor audio loss for near-zero conditions
+                if hasattr(self, 'audio_loss_monitor'):
+                    alerts = self.audio_loss_monitor.update(audio_loss.item(), getattr(self, 'global_step', 0))
+                    for alert in alerts:
+                        if alert['type'] == 'critical':
+                            logger.error(alert['message'])
+                            # Add detailed diagnostics
+                            diagnostics = self.audio_loss_monitor.get_detailed_diagnostics()
+                            logger.error(f"DETAILED DIAGNOSTICS: {diagnostics}")
+                            
+                            # Implement corrective actions for critical conditions
+                            if alert.get('requires_action', False):
+                                self._take_corrective_action(batch, alert)
+                        elif alert['type'] in ['warning', 'sustained_warning']:
+                            logger.warning(alert['message'])
+                            
+                            # Take corrective action for sustained warnings
+                            if alert.get('requires_action', False):
+                                self._take_corrective_action(batch, alert)
+                
                 # Log first and last 10 audio predictions vs labels every n log steps
                 if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
                     self._log_audio_predictions_vs_labels_detailed(audio_logits, audio_labels)
             else:
                 logger.warning("⚠️  Audio logits are empty - skipping audio loss")
                 loss_dict['audio_loss'] = 0.0
+                
+                # CRITICAL: Empty audio logits is a serious issue
+                logger.error("❌ CRITICAL: Empty audio logits detected!")
+                logger.error("This will cause audio loss to be zero and prevent audio learning!")
+                logger.error("Immediate action required to prevent training failure!")
         else:
             logger.warning("⚠️  Skipping audio loss computation - missing audio_logits or audio_labels")
             loss_dict['audio_loss'] = 0.0
+            
+            # CRITICAL: Missing audio components is a serious issue
+            logger.error("❌ CRITICAL: Missing audio components for loss computation!")
+            logger.error("This will cause audio loss to be zero and prevent audio learning!")
+            logger.error("Check that audio_out_ids and label_audio_ids are present in batch!")
         
-        # Final loss summary
+        # Final loss summary with enhanced monitoring
         loss_dict['total_loss'] = total_loss.item()
         
         if total_loss.item() > 0:
@@ -506,9 +600,21 @@ class HiggsAudioTrainer:
                 logger.info(f"  ✓ Text contribution: {loss_dict['text_loss']:.4f}")
             if 'audio_loss' in loss_dict and loss_dict['audio_loss'] > 0:
                 logger.info(f"  ✓ Audio contribution: {loss_dict['audio_loss']:.4f}")
+                
+                # Additional validation: Check if audio loss is suspiciously low
+                if loss_dict['audio_loss'] < 0.01:
+                    logger.warning(f"⚠️  Audio loss is very low ({loss_dict['audio_loss']:.6f}) - monitor for potential issues")
+            else:
+                logger.error("❌ CRITICAL: Audio loss is zero! This indicates a serious problem with audio training.")
+                logger.error("Check: 1) Model inputs, 2) Label alignment, 3) Data preprocessing, 4) Audio logits generation")
         else:
             logger.error("❌ CRITICAL: Total loss is ZERO! Training will not work.")
             logger.error("Check: 1) Model inputs, 2) Label alignment, 3) Data preprocessing")
+            
+            # Add detailed diagnostics
+            if hasattr(self, 'audio_loss_monitor'):
+                diagnostics = self.audio_loss_monitor.get_detailed_diagnostics()
+                logger.error(f"LOSS DIAGNOSTICS: {diagnostics}")
         
         return total_loss, loss_dict
     
@@ -616,6 +722,95 @@ class HiggsAudioTrainer:
                 audio_loss = torch.tensor(0.0, device=self.device)
         
         return audio_loss
+    
+    def _validate_audio_logits(self, audio_logits, audio_labels):
+        """Validate audio logits dimensions and content."""
+        if audio_logits is None:
+            logger.warning("⚠️  Audio logits is None")
+            return
+            
+        if audio_logits.numel() == 0:
+            logger.error("❌ CRITICAL: Audio logits are empty!")
+            logger.error("This means no audio output positions were detected.")
+            logger.error("Check: 1) audio_out_ids in batch, 2) audio_out_mask generation")
+            
+            # Add detailed debugging for empty logits
+            logger.error("DETAILED AUDIO LOGITS DEBUGGING:")
+            logger.error("  This typically happens when:")
+            logger.error("  1. audio_out_ids is missing or empty in the batch")
+            logger.error("  2. The audio_out_mask generation failed")
+            logger.error("  3. There's a mismatch in data preprocessing")
+            logger.error("  4. PEFT wrappers are filtering out required inputs")
+            return
+            
+        logger.info(f"✓ Audio logits non-empty: {audio_logits.shape}")
+        
+        # Check for expected shape patterns
+        if len(audio_logits.shape) == 3:
+            # Expected shapes for Higgs Audio:
+            # [seq_len, num_codebooks, vocab_size] or [num_codebooks, seq_len, vocab_size]
+            seq_len, codebooks, vocab_size = audio_logits.shape
+            
+            # Check if vocab_size matches expected audio vocabulary (1026 = 1024 + 2 special tokens)
+            if vocab_size == 1026:
+                logger.info(f"✓ Audio logits vocab size matches expected: {vocab_size}")
+            else:
+                logger.warning(f"⚠️  Audio logits vocab size ({vocab_size}) differs from expected (1026)")
+                
+            # Check if codebooks matches expected count (8)
+            expected_codebooks = [1, 8]  # Could be 1 for single output or 8 for multi-codebook
+            if codebooks in expected_codebooks:
+                logger.info(f"✓ Audio logits codebooks count matches expected: {codebooks}")
+            else:
+                logger.warning(f"⚠️  Audio logits codebooks count ({codebooks}) not in expected range {expected_codebooks}")
+        else:
+            logger.warning(f"⚠️  Audio logits have unexpected shape: {audio_logits.shape}")
+            
+        # Check for NaN or Inf values
+        if torch.isnan(audio_logits).any():
+            logger.error("❌ CRITICAL: Audio logits contain NaN values!")
+        if torch.isinf(audio_logits).any():
+            logger.error("❌ CRITICAL: Audio logits contain Inf values!")
+        
+        # Additional detailed validation
+        self._log_audio_logits_detailed_info(audio_logits, audio_labels)
+    
+    def _log_audio_logits_detailed_info(self, audio_logits, audio_labels):
+        """Log detailed information about audio logits for debugging."""
+        logger.info("DETAILED AUDIO LOGITS ANALYSIS:")
+        
+        # Check value ranges
+        if audio_logits.numel() > 0:
+            min_val = audio_logits.min().item()
+            max_val = audio_logits.max().item()
+            mean_val = audio_logits.mean().item()
+            logger.info(f"  Value range: [{min_val:.4f}, {max_val:.4f}], Mean: {mean_val:.4f}")
+            
+            # Check for NaN/Inf
+            nan_count = torch.isnan(audio_logits).sum().item()
+            inf_count = torch.isinf(audio_logits).sum().item()
+            if nan_count > 0 or inf_count > 0:
+                logger.error(f"  ❌ Invalid values: {nan_count} NaN, {inf_count} Inf")
+            else:
+                logger.info("  ✓ No NaN or Inf values detected")
+        
+        # Check label information
+        if audio_labels is not None and hasattr(audio_labels, 'shape'):
+            logger.info(f"  Audio labels shape: {audio_labels.shape}")
+            
+            # Check label value distribution
+            if audio_labels.numel() > 0:
+                unique_labels = torch.unique(audio_labels[audio_labels != -100])
+                logger.info(f"  Unique non-masked label values: {unique_labels[:10].tolist()}{'...' if len(unique_labels) > 10 else ''}")
+                
+                masked_count = (audio_labels == -100).sum().item()
+                total_count = audio_labels.numel()
+                mask_ratio = masked_count / total_count if total_count > 0 else 0
+                logger.info(f"  Label masking: {masked_count}/{total_count} ({mask_ratio:.2%}) tokens masked")
+                
+                # Check for suspiciously high masking
+                if mask_ratio > 0.95:
+                    logger.warning(f"  ⚠️  Very high masking ratio ({mask_ratio:.2%}) - may prevent effective learning")
     
     def _log_predictions_vs_labels_detailed(self, logits, labels):
         """Log first and last 10 text predictions vs labels for a few samples."""
@@ -833,7 +1028,7 @@ class HiggsAudioTrainer:
         """Main training loop."""
         
         self.model.train()
-        global_step = 0
+        self.global_step = 0
         accum_step = 0
         
         for epoch in range(self.args.epochs):
@@ -865,7 +1060,7 @@ class HiggsAudioTrainer:
                     self.scheduler.step()
                     self.optimizer.zero_grad()
                     
-                    global_step += 1
+                    self.global_step += 1
                     
                     # Logging
                     if global_step % self.args.log_steps == 0 and self.local_rank == 0:
@@ -887,6 +1082,52 @@ class HiggsAudioTrainer:
                         save_lora_adapters(self.model.module if self.world_size > 1 else self.model, 
                                          checkpoint_dir)
                         logger.info(f"Saved checkpoint at step {global_step}")
+    
+    def _take_corrective_action(self, batch, alert):
+        """Take corrective action when near-zero audio loss is detected."""
+        logger.warning("⚠️  INITIATING CORRECTIVE ACTION FOR NEAR-ZERO AUDIO LOSS")
+        
+        # Record the recovery attempt
+        if hasattr(self, 'audio_loss_monitor'):
+            self.audio_loss_monitor.record_recovery_attempt(getattr(self, 'global_step', 0))
+        
+        # Log detailed information about the current state
+        logger.warning("CORRECTIVE ACTION DETAILS:")
+        logger.warning(f"  Alert type: {alert['type']}")
+        logger.warning(f"  Alert message: {alert['message']}")
+        logger.warning(f"  Current step: {getattr(self, 'global_step', 0)}")
+        
+        # Check batch for issues
+        logger.warning("BATCH VALIDATION:")
+        if isinstance(batch, dict):
+            for key, value in batch.items():
+                if isinstance(value, torch.Tensor):
+                    logger.warning(f"  {key}: shape={value.shape}, dtype={value.dtype}")
+                else:
+                    logger.warning(f"  {key}: {type(value)}")
+        
+        # Suggest corrective actions
+        logger.warning("RECOMMENDED CORRECTIVE ACTIONS:")
+        logger.warning("  1. Verify that audio_out_ids and label_audio_ids are present in batch")
+        logger.warning("  2. Check that audio data files exist and are accessible")
+        logger.warning("  3. Validate that audio tokenization is working correctly")
+        logger.warning("  4. Ensure that audio masking is not over-masking tokens")
+        logger.warning("  5. Check for dtype consistency between model and batch data")
+        logger.warning("  6. Verify that PEFT wrappers are not filtering required inputs")
+        
+        # If this is a critical alert, consider stopping training
+        if alert['type'] == 'critical':
+            logger.error("❌ CRITICAL LOSS CONDITION DETECTED!")
+            logger.error("Training may be ineffective with current audio loss.")
+            logger.error("Consider stopping training and investigating the root cause.")
+            
+            # In a real implementation, you might want to:
+            # 1. Save a checkpoint before stopping
+            # 2. Send an alert to monitoring systems
+            # 3. Potentially adjust training parameters
+            # 4. Or stop training entirely
+            
+            # For now, we'll just log the critical condition
 
 
 def parse_args():
@@ -949,3 +1190,100 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+class AudioLossMonitor:
+    """Monitor audio loss to detect near-zero conditions and trigger alerts."""
+    
+    def __init__(self, window_size=100, threshold=0.01, critical_threshold=0.005):
+        self.window_size = window_size
+        self.threshold = threshold
+        self.critical_threshold = critical_threshold
+        self.loss_history = []
+        self.alert_triggered = False
+        self.critical_alert_triggered = False
+        self.step_count = 0
+        self.recovery_attempts = 0
+        self.last_recovery_step = 0
+        
+    def update(self, audio_loss, global_step):
+        """Update the monitor with a new audio loss value."""
+        self.step_count = global_step
+        self.loss_history.append(audio_loss)
+        
+        # Keep only the last window_size values
+        if len(self.loss_history) > self.window_size:
+            self.loss_history.pop(0)
+        
+        # Check for near-zero conditions
+        return self._check_conditions(audio_loss)
+    
+    def _check_conditions(self, current_loss):
+        """Check if current loss indicates a problem."""
+        alerts = []
+        
+        # Check for critical near-zero loss
+        if current_loss <= self.critical_threshold and not self.critical_alert_triggered:
+            alerts.append({
+                'type': 'critical',
+                'message': f"CRITICAL ALERT: Audio loss ({current_loss:.6f}) is below critical threshold ({self.critical_threshold}) at step {self.step_count}",
+                'severity': 'high',
+                'requires_action': True
+            })
+            self.critical_alert_triggered = True
+            
+        # Check for near-zero loss
+        elif current_loss <= self.threshold and not self.alert_triggered:
+            alerts.append({
+                'type': 'warning',
+                'message': f"WARNING: Audio loss ({current_loss:.6f}) is below threshold ({self.threshold}) at step {self.step_count}",
+                'severity': 'medium',
+                'requires_action': False
+            })
+            self.alert_triggered = True
+            
+        # Check for sustained low loss (average over window)
+        if len(self.loss_history) >= self.window_size:
+            avg_loss = sum(self.loss_history) / len(self.loss_history)
+            if avg_loss <= self.threshold:
+                alerts.append({
+                    'type': 'sustained_warning',
+                    'message': f"SUSTAINED WARNING: Average audio loss over {self.window_size} steps is {avg_loss:.6f} (below threshold {self.threshold})",
+                    'severity': 'medium',
+                    'requires_action': True
+                })
+        
+        # Reset alerts if loss recovers
+        if current_loss > self.threshold:
+            self.alert_triggered = False
+        if current_loss > self.critical_threshold:
+            self.critical_alert_triggered = False
+            
+        return alerts
+    
+    def get_detailed_diagnostics(self):
+        """Get detailed diagnostics about the loss history."""
+        if not self.loss_history:
+            return "No loss history available"
+            
+        recent_losses = self.loss_history[-10:] if len(self.loss_history) >= 10 else self.loss_history
+        avg_loss = sum(self.loss_history) / len(self.loss_history)
+        min_loss = min(self.loss_history)
+        max_loss = max(self.loss_history)
+        
+        return {
+            'recent_losses': recent_losses,
+            'average_loss': avg_loss,
+            'min_loss': min_loss,
+            'max_loss': max_loss,
+            'total_steps_monitored': len(self.loss_history),
+            'current_step': self.step_count,
+            'recovery_attempts': self.recovery_attempts,
+            'last_recovery_step': self.last_recovery_step
+        }
+    
+    def record_recovery_attempt(self, step):
+        """Record a recovery attempt."""
+        self.recovery_attempts += 1
+        self.last_recovery_step = step
+
