@@ -52,7 +52,30 @@ class HiggsAudioDataset(Dataset):
         # Handle both old and new versions of prepare_chatml_sample
         if len(result) == 4:
             input_tokens, label_tokens, audio_contents, speaker_id = result
-            audio_label_contents = [None] * len(audio_contents)  # Default to no audio labels for old version
+            # For the old version, we need to manually identify audio labels
+            # We'll assume that audio contents in assistant responses are labels
+            audio_label_contents = []
+            for message in sample['messages'] if isinstance(sample, dict) else sample.messages:
+                role = message['role'] if isinstance(message, dict) else message.role
+                content = message['content'] if isinstance(message, dict) else message.content
+                
+                if role == 'assistant':
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and item.get('type') == 'audio':
+                                audio_label_contents.append(item)
+                            else:
+                                audio_label_contents.append(None)
+                    elif isinstance(content, dict) and content.get('type') == 'audio':
+                        audio_label_contents.append(content)
+                    else:
+                        # For text-only content, no audio labels
+                        audio_label_contents = [None] * len(audio_contents) if isinstance(audio_contents, list) else []
+                        break
+                else:
+                    # For non-assistant roles, no audio labels
+                    if isinstance(audio_contents, list):
+                        audio_label_contents.extend([None] * len([c for c in (content if isinstance(content, list) else [content]) if isinstance(c, dict) and c.get('type') == 'audio']))
         elif len(result) == 5:
             input_tokens, label_tokens, audio_contents, audio_label_contents, speaker_id = result
         else:
@@ -68,7 +91,7 @@ class HiggsAudioDataset(Dataset):
             logger.info(f"DEBUG SAMPLE {self.debug_sample_count + 1} (idx={idx}):")
             logger.info(f"  Input tokens length: {len(input_tokens)}")
             logger.info(f"  Label tokens length: {len(label_tokens)}")
-            logger.info(f"  Audio contents count: {len(audio_contents)}")
+            logger.info(f"  Audio contents count: {len(audio_contents) if isinstance(audio_contents, list) else 0}")
             if len(label_tokens) > 10:
                 logger.info(f"  First 10 input tokens: {input_tokens[:10]}")
                 logger.info(f"  First 10 label tokens: {label_tokens[:10]}")
@@ -83,6 +106,17 @@ class HiggsAudioDataset(Dataset):
         audio_ids_list = []
         audio_waveforms_list = []
         label_audio_ids_list = []  # For audio labels
+        
+        # Ensure audio_contents is a list
+        if not isinstance(audio_contents, list):
+            audio_contents = []
+            
+        # Ensure audio_label_contents is a list
+        if not isinstance(audio_label_contents, list):
+            audio_label_contents = [None] * len(audio_contents)
+        elif len(audio_label_contents) < len(audio_contents):
+            # Pad audio_label_contents if it's shorter than audio_contents
+            audio_label_contents.extend([None] * (len(audio_contents) - len(audio_label_contents)))
         
         for i, audio_content in enumerate(audio_contents):
             if audio_content and hasattr(audio_content, 'audio_url'):
