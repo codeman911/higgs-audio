@@ -766,7 +766,9 @@ class HiggsAudioTrainer:
     def save_checkpoint(self):
         """Save checkpoint with enhanced verification and logging."""
         try:
-            log_checkpoint_info(f"Saving checkpoint at step {self.global_step}")
+            # Capture the step number at the beginning to ensure consistency
+            step_at_call = self.global_step
+            log_checkpoint_info(f"Saving checkpoint at step {step_at_call}")
             
             # Ensure output directory exists
             os.makedirs(self.args.output_dir, exist_ok=True)
@@ -777,8 +779,8 @@ class HiggsAudioTrainer:
                 log_error(f"No write permission for output directory: {self.args.output_dir}")
                 raise PermissionError(f"No write permission for output directory: {self.args.output_dir}")
                 
-            # Create checkpoint directory
-            checkpoint_dir = f"{self.args.output_dir}/checkpoint-{self.global_step}"
+            # Create checkpoint directory with the captured step number
+            checkpoint_dir = f"{self.args.output_dir}/checkpoint-{step_at_call}"
             os.makedirs(checkpoint_dir, exist_ok=True)
             log_detailed_info(f"Created checkpoint directory: {checkpoint_dir}")
             
@@ -815,7 +817,7 @@ class HiggsAudioTrainer:
                     log_success("All required checkpoint files found")
                     # Save checkpoint metadata
                     metadata = {
-                        "step": self.global_step,
+                        "step": step_at_call,
                         "timestamp": datetime.now().isoformat(),
                         "files": files,
                         "world_size": self.world_size
@@ -837,7 +839,8 @@ class HiggsAudioTrainer:
                 raise FileNotFoundError(f"Checkpoint directory was not created: {checkpoint_dir}")
                 
         except Exception as e:
-            log_error(f"Failed to save checkpoint at step {self.global_step}")
+            step_at_call = self.global_step  # Fallback to current step if not captured
+            log_error(f"Failed to save checkpoint at step {step_at_call}")
             logger.error(f"Error type: {type(e).__name__}")
             logger.error(f"Error message: {str(e)}")
             import traceback
@@ -916,6 +919,12 @@ class HiggsAudioTrainer:
                                     log_success("Checkpoint saved and synchronized across all processes")
                                 else:
                                     log_warning("Checkpoint saving may have failed but synchronization completed")
+                        else:
+                            # For single process, just log the result
+                            if checkpoint_success:
+                                log_success("Checkpoint saved successfully")
+                            else:
+                                log_error("Checkpoint saving failed")
     
     def verify_output_directory(self):
         """Verify that the output directory is properly configured and writable."""
