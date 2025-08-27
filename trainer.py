@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Minimal DDP trainer with dual loss computation.
 Strictly mirrors inference forward pass and loss patterns.
@@ -14,6 +15,8 @@ from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, AutoProcessor, get_cosine_schedule_with_warmup
 import logging
 from tqdm import tqdm
+import json
+from datetime import datetime
 
 # Import exact components from boson_multimodal
 from boson_multimodal.model.higgs_audio import HiggsAudioConfig, HiggsAudioModel
@@ -23,9 +26,54 @@ from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_a
 from dataset import HiggsAudioDataset, create_collator
 from lora import apply_lora, create_lora_config, save_lora_adapters
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Enhanced logging configuration
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
+# Prettified logging functions
+def log_info_header(message):
+    """Log an info header with decorative formatting"""
+    logger.info("=" * 60)
+    logger.info(f"  {message}")
+    logger.info("=" * 60)
+
+def log_section_header(message):
+    """Log a section header with decorative formatting"""
+    logger.info("-" * 50)
+    logger.info(f"  {message}")
+    logger.info("-" * 50)
+
+def log_checkpoint_info(message):
+    """Log checkpoint-related information with special formatting"""
+    logger.info(f"💾 CHECKPOINT: {message}")
+
+def log_training_info(message):
+    """Log training-related information with special formatting"""
+    logger.info(f"📈 TRAINING: {message}")
+
+def log_validation_info(message):
+    """Log validation-related information with special formatting"""
+    logger.info(f"🔍 VALIDATION: {message}")
+
+def log_success(message):
+    """Log success messages with special formatting"""
+    logger.info(f"✅ SUCCESS: {message}")
+
+def log_warning(message):
+    """Log warning messages with special formatting"""
+    logger.warning(f"⚠️  WARNING: {message}")
+
+def log_error(message):
+    """Log error messages with special formatting"""
+    logger.error(f"❌ ERROR: {message}")
+
+def log_detailed_info(message):
+    """Log detailed information with indentation"""
+    logger.info(f"    → {message}")
 
 class HiggsAudioTrainer:
     """Minimal trainer for DualFFN LoRA fine-tuning."""
@@ -50,9 +98,11 @@ class HiggsAudioTrainer:
             self.world_size = 1
         
         self.device = torch.device(f"cuda:{self.local_rank}")
+        log_detailed_info(f"Distributed setup complete - Local rank: {self.local_rank}, World size: {self.world_size}")
     
     def load_model_and_tokenizers(self):
         """Load model and tokenizers exactly as inference does."""
+        log_section_header("MODEL LOADING")
         
         # Load configuration
         self.config = HiggsAudioConfig.from_pretrained(self.args.base_ckpt)
@@ -63,7 +113,8 @@ class HiggsAudioTrainer:
         # CRITICAL FIX: Enable cross-modal conditioning (audio attention)
         # This is essential for text to learn from audio context
         if not getattr(self.config, 'use_audio_out_self_attention', None):
-            logger.info("ENABLING cross-modal conditioning (use_audio_out_self_attention=True)")
+            log_info_header("ENABLING CROSS-MODAL CONDITIONING")
+            logger.info("🔧 Setting use_audio_out_self_attention=True for cross-modal learning")
             self.config.use_audio_out_self_attention = True
         
         # Load model with exact inference initialization
@@ -97,9 +148,12 @@ class HiggsAudioTrainer:
         # Wrap with DDP
         if self.world_size > 1:
             self.model = DDP(self.model, device_ids=[self.local_rank])
+        
+        log_success("Model and tokenizers loaded successfully")
     
     def setup_dataset(self):
         """Setup dataset and dataloader."""
+        log_section_header("DATASET SETUP")
         
         # Create full dataset
         full_dataset = HiggsAudioDataset(
@@ -165,9 +219,12 @@ class HiggsAudioTrainer:
             pin_memory=True,
             persistent_workers=False  # Disabled to prevent deadlock
         )
+        
+        log_success(f"Dataset setup complete - Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
     
     def setup_training(self):
         """Setup optimizer and scheduler."""
+        log_section_header("TRAINING SETUP")
         
         # Optimizer - target only LoRA parameters
         optimizer_params = []
@@ -193,6 +250,8 @@ class HiggsAudioTrainer:
         # Loss function - EXACT pattern from model implementation
         self.text_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
         self.audio_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
+        
+        log_success(f"Training setup complete - Total steps: {total_steps}")
     
     def compute_loss(self, batch):
         """Compute dual loss with complete PEFT bypass via custom forward implementation."""
@@ -314,7 +373,7 @@ class HiggsAudioTrainer:
             
             # Check for empty logits
             if audio_logits is not None and audio_logits.numel() == 0:
-                logger.warning("❌ CRITICAL: Audio logits are empty! This will cause zero audio loss.")
+                log_warning("CRITICAL: Audio logits are empty! This will cause zero audio loss.")
                 logger.warning("Check: 1) audio_out_ids in batch, 2) audio_out_mask generation")
             
             # Check label masking
@@ -325,7 +384,7 @@ class HiggsAudioTrainer:
                 logger.info(f"Audio labels masking: {masked_count}/{total_count} ({mask_percentage:.1f}%) masked")
                 
                 if mask_percentage > 90:
-                    logger.warning("⚠️  HIGH AUDIO LABEL MASKING: Over 90% of audio labels are masked!")
+                    log_warning("HIGH AUDIO LABEL MASKING: Over 90% of audio labels are masked!")
                     logger.warning("This may prevent effective audio learning.")
                 
                 # Log some sample audio label values for debugging
@@ -382,16 +441,16 @@ class HiggsAudioTrainer:
                 
                 # CRITICAL FIX: Add validation for near-zero audio loss
                 if audio_loss.item() < 0.001:  # Near zero threshold
-                    logger.warning(f"⚠️  NEAR-ZERO AUDIO LOSS DETECTED: {audio_loss.item():.6f}")
+                    log_warning(f"NEAR-ZERO AUDIO LOSS DETECTED: {audio_loss.item():.6f}")
                     logger.warning("This indicates potential issues with audio learning.")
                     logger.warning("Possible causes: 1) Over-masking 2) Empty logits 3) Data issues")
             else:
                 loss_dict['audio_loss'] = 0.0
-                logger.warning("⚠️  Audio logits are empty - audio loss set to 0.0")
+                log_warning("Audio logits are empty - audio loss set to 0.0")
         else:
             loss_dict['audio_loss'] = 0.0
             if self.global_step % self.args.log_steps == 0 and self.local_rank == 0:
-                logger.warning("⚠️  Audio logits or labels are None - audio loss set to 0.0")
+                log_warning("Audio logits or labels are None - audio loss set to 0.0")
         
         # Final loss summary
         loss_dict['total_loss'] = total_loss.item()
@@ -456,7 +515,7 @@ class HiggsAudioTrainer:
             
         # Handle empty sequences
         if audio_logits.numel() == 0 or audio_labels.numel() == 0:
-            logger.warning("⚠️  Audio logits or labels are empty - returning zero loss")
+            log_warning("Audio logits or labels are empty - returning zero loss")
             return torch.tensor(0.0, device=self.device)
         
         audio_loss = torch.tensor(0.0, device=self.device)
@@ -491,7 +550,7 @@ class HiggsAudioTrainer:
                     logger.info(f"Audio label quality - Valid: {valid_tokens}/{total_tokens} ({(valid_tokens/max(total_tokens, 1))*100:.1f}%)")
                 
                 if mask_ratio > 0.95:  # Over 95% masked
-                    logger.warning(f"⚠️  CRITICAL: Audio labels are {mask_ratio*100:.1f}% masked! This will prevent learning.")
+                    log_warning(f"CRITICAL: Audio labels are {mask_ratio*100:.1f}% masked! This will prevent learning.")
                     if self.local_rank == 0:
                         logger.warning("Suggested actions:")
                         logger.warning("1. Check dataset for proper audio label generation")
@@ -528,7 +587,7 @@ class HiggsAudioTrainer:
                     # CRITICAL FIX: Add validation for near-zero audio loss
                     avg_loss = audio_loss.item()
                     if avg_loss < 0.001:  # Near zero threshold
-                        logger.warning(f"⚠️  NEAR-ZERO AUDIO LOSS DETECTED: {avg_loss:.6f}")
+                        log_warning(f"NEAR-ZERO AUDIO LOSS DETECTED: {avg_loss:.6f}")
                         logger.warning("This indicates potential issues with audio learning.")
                         logger.warning("Possible causes: 1) Over-masking 2) Empty logits 3) Data issues")
                         
@@ -544,11 +603,11 @@ class HiggsAudioTrainer:
                             logger.warning("3. Ensure mask_audio_out_token_label=False in collator")
                             logger.warning("4. Validate audio tokenizer is working correctly")
                 else:
-                    logger.warning("⚠️  No valid codebooks found for audio loss computation")
+                    log_warning("No valid codebooks found for audio loss computation")
                     return torch.tensor(0.0, device=self.device)
         else:
             # Fallback: treat as single output
-            logger.warning(f"⚠️  Unexpected audio logits shape: {audio_logits.shape}")
+            log_warning(f"Unexpected audio logits shape: {audio_logits.shape}")
             audio_loss = self.audio_loss_fn(
                 audio_logits.view(-1, audio_logits.size(-1)),
                 audio_labels.view(-1)
@@ -704,6 +763,87 @@ class HiggsAudioTrainer:
         else:
             return 0.0, 0.0, 0.0
     
+    def save_checkpoint(self):
+        """Save checkpoint with enhanced verification and logging."""
+        try:
+            log_checkpoint_info(f"Saving checkpoint at step {self.global_step}")
+            
+            # Ensure output directory exists
+            os.makedirs(self.args.output_dir, exist_ok=True)
+            log_detailed_info(f"Created output directory: {self.args.output_dir}")
+            
+            # Check write permissions
+            if not os.access(self.args.output_dir, os.W_OK):
+                log_error(f"No write permission for output directory: {self.args.output_dir}")
+                raise PermissionError(f"No write permission for output directory: {self.args.output_dir}")
+                
+            # Create checkpoint directory
+            checkpoint_dir = f"{self.args.output_dir}/checkpoint-{self.global_step}"
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            log_detailed_info(f"Created checkpoint directory: {checkpoint_dir}")
+            
+            # Verify checkpoint directory is writable
+            test_file = os.path.join(checkpoint_dir, ".write_test")
+            try:
+                with open(test_file, "w") as f:
+                    f.write("test")
+                os.remove(test_file)
+                log_success("Write permission test passed")
+            except Exception as perm_error:
+                log_error(f"No write permission for checkpoint directory: {checkpoint_dir}, Error: {perm_error}")
+                raise PermissionError(f"No write permission for checkpoint directory: {checkpoint_dir}")
+            
+            # Save LoRA adapters
+            model_to_save = self.model.module if self.world_size > 1 else self.model
+            log_detailed_info("Attempting to save LoRA adapters...")
+            save_lora_adapters(model_to_save, checkpoint_dir)
+            log_success(f"Checkpoint saved successfully to: {checkpoint_dir}")
+            
+            # Verify checkpoint files were created
+            if os.path.exists(checkpoint_dir):
+                files = os.listdir(checkpoint_dir)
+                log_detailed_info(f"Checkpoint directory contains files: {files}")
+                
+                # Check for required files
+                required_files = ["adapter_config.json"]
+                model_files = ["adapter_model.bin", "adapter_model.safetensors"]
+                
+                has_config = "adapter_config.json" in files
+                has_model = any(f in files for f in model_files)
+                
+                if has_config and has_model:
+                    log_success("All required checkpoint files found")
+                    # Save checkpoint metadata
+                    metadata = {
+                        "step": self.global_step,
+                        "timestamp": datetime.now().isoformat(),
+                        "files": files,
+                        "world_size": self.world_size
+                    }
+                    metadata_path = os.path.join(checkpoint_dir, "checkpoint_metadata.json")
+                    with open(metadata_path, "w") as f:
+                        json.dump(metadata, f, indent=2)
+                    log_detailed_info(f"Checkpoint metadata saved to: {metadata_path}")
+                    return True
+                elif not files or (len(files) == 1 and '.write_test' in files):
+                    log_warning(f"Checkpoint directory may be incomplete: {checkpoint_dir}")
+                    logger.warning("Expected files: adapter_config.json, adapter_model.bin (or adapter_model.safetensors)")
+                    return False
+                else:
+                    log_warning("Checkpoint directory has some files but may be incomplete")
+                    return True
+            else:
+                log_error(f"Checkpoint directory was not created: {checkpoint_dir}")
+                raise FileNotFoundError(f"Checkpoint directory was not created: {checkpoint_dir}")
+                
+        except Exception as e:
+            log_error(f"Failed to save checkpoint at step {self.global_step}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Error message: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return False
+    
     def train(self):
         """Main training loop."""
         
@@ -713,7 +853,13 @@ class HiggsAudioTrainer:
         
         # Log training configuration only once
         if self.local_rank == 0:
-            logger.info(f"Starting training - Output: {self.args.output_dir}, Save steps: {self.args.save_steps}")
+            log_info_header("TRAINING STARTED")
+            logger.info(f"Output directory: {self.args.output_dir}")
+            logger.info(f"Save steps: {self.args.save_steps}")
+            logger.info(f"Log steps: {self.args.log_steps}")
+            logger.info(f"Validation steps: {self.args.val_steps}")
+            logger.info(f"World size: {self.world_size}")
+            logger.info(f"Starting training at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         for epoch in range(self.args.epochs):
             # Check if sampler has set_epoch method before calling it
@@ -748,6 +894,7 @@ class HiggsAudioTrainer:
                     
                     # Logging - only essential information
                     if self.global_step % self.args.log_steps == 0 and self.local_rank == 0:
+                        log_training_info(f"Step {self.global_step} - Loss: {loss_dict.get('total_loss', 0.0):.4f}")
                         # Check if pbar has set_postfix method before calling it
                         if hasattr(pbar, 'set_postfix') and callable(getattr(pbar, 'set_postfix', None)):
                             pbar.set_postfix({"loss": loss_dict.get('total_loss', 0.0)})
@@ -755,65 +902,20 @@ class HiggsAudioTrainer:
                     # Validation
                     if self.global_step % self.args.val_steps == 0 and self.local_rank == 0:
                         val_loss, val_text_loss, val_audio_loss = self.validate()
-                        logger.info(f"Step {self.global_step} - Val Loss: {val_loss:.4f}, Text: {val_text_loss:.4f}, Audio: {val_audio_loss:.4f}")
+                        log_validation_info(f"Step {self.global_step} - Val Loss: {val_loss:.4f}, Text: {val_text_loss:.4f}, Audio: {val_audio_loss:.4f}")
                     
                     # Checkpointing
                     if self.global_step % self.args.save_steps == 0:
-                        try:
-                            # Only save from main process in distributed training
-                            if self.local_rank == 0:
-                                # Ensure output directory exists
-                                os.makedirs(self.args.output_dir, exist_ok=True)
-                                logger.info(f"Created output directory: {self.args.output_dir}")
-                                
-                                # Check write permissions
-                                if not os.access(self.args.output_dir, os.W_OK):
-                                    logger.error(f"No write permission for output directory: {self.args.output_dir}")
-                                    raise PermissionError(f"No write permission for output directory: {self.args.output_dir}")
-                                    
-                                # Create checkpoint directory
-                                checkpoint_dir = f"{self.args.output_dir}/checkpoint-{self.global_step}"
-                                os.makedirs(checkpoint_dir, exist_ok=True)
-                                logger.info(f"Created checkpoint directory: {checkpoint_dir}")
-                                
-                                # Verify checkpoint directory is writable
-                                test_file = os.path.join(checkpoint_dir, ".write_test")
-                                try:
-                                    with open(test_file, "w") as f:
-                                        f.write("test")
-                                    os.remove(test_file)
-                                except Exception as perm_error:
-                                    logger.error(f"No write permission for checkpoint directory: {checkpoint_dir}, Error: {perm_error}")
-                                    raise PermissionError(f"No write permission for checkpoint directory: {checkpoint_dir}")
-                                
-                                # Save LoRA adapters
-                                model_to_save = self.model.module if self.world_size > 1 else self.model
-                                logger.info("Attempting to save LoRA adapters...")
-                                save_lora_adapters(model_to_save, checkpoint_dir)
-                                logger.info(f"Successfully saved checkpoint to: {checkpoint_dir}")
-                                
-                                # Verify checkpoint files were created
-                                if os.path.exists(checkpoint_dir):
-                                    files = os.listdir(checkpoint_dir)
-                                    logger.info(f"Checkpoint directory contains files: {files}")
-                                    if not files or (len(files) == 1 and '.write_test' in files):
-                                        logger.warning(f"Checkpoint directory may be incomplete: {checkpoint_dir}")
+                        checkpoint_success = self.save_checkpoint()
+                        
+                        # In distributed training, synchronize all processes
+                        if self.world_size > 1:
+                            torch.distributed.barrier()
+                            if self.local_rank == 0:  # Only log from main process
+                                if checkpoint_success:
+                                    log_success("Checkpoint saved and synchronized across all processes")
                                 else:
-                                    logger.error(f"Checkpoint directory was not created: {checkpoint_dir}")
-                                    raise FileNotFoundError(f"Checkpoint directory was not created: {checkpoint_dir}")
-                                
-                            # In distributed training, synchronize all processes
-                            if self.world_size > 1:
-                                torch.distributed.barrier()
-                                if self.local_rank == 0:  # Only log from main process
-                                    logger.info("Checkpoint saved and synchronized across all processes")
-                                
-                        except Exception as e:
-                            logger.error(f"Failed to save checkpoint at step {self.global_step}")
-                            logger.error(f"Error type: {type(e).__name__}")
-                            logger.error(f"Error message: {str(e)}")
-                            import traceback
-                            logger.error(f"Traceback: {traceback.format_exc()}")
+                                    log_warning("Checkpoint saving may have failed but synchronization completed")
     
     def verify_output_directory(self):
         """Verify that the output directory is properly configured and writable."""
@@ -827,14 +929,17 @@ class HiggsAudioTrainer:
                 f.write("test")
             os.remove(test_file)
             
+            log_success(f"Output directory verified: {self.args.output_dir}")
         except Exception as e:
             # Try to create a default output directory
             default_output_dir = "./output"
             try:
                 os.makedirs(default_output_dir, exist_ok=True)
                 self.args.output_dir = default_output_dir
+                log_warning(f"Using default output directory: {default_output_dir}")
             except Exception as fallback_error:
-                pass
+                log_error(f"Failed to create output directory: {e}")
+                raise
 
 
 def parse_args():
