@@ -304,6 +304,42 @@ class HiggsAudioTrainer:
         # Use the model's expanded_labels instead of the original batch labels
         model_expanded_labels = getattr(outputs, 'expanded_labels', None)
         
+        # ENHANCED LOGGING: Add detailed diagnostics for audio training
+        if self.global_step % self.args.log_steps == 0 and self.local_rank == 0:
+            logger.info(f"=== AUDIO TRAINING DIAGNOSTICS (Step {self.global_step}) ===")
+            logger.info(f"Audio logits shape: {audio_logits.shape if audio_logits is not None else 'None'}")
+            logger.info(f"Audio labels shape: {audio_labels.shape if audio_labels is not None else 'None'}")
+            logger.info(f"Audio logits numel: {audio_logits.numel() if audio_logits is not None else 0}")
+            logger.info(f"Audio labels numel: {audio_labels.numel() if audio_labels is not None else 0}")
+            
+            # Check for empty logits
+            if audio_logits is not None and audio_logits.numel() == 0:
+                logger.warning("❌ CRITICAL: Audio logits are empty! This will cause zero audio loss.")
+                logger.warning("Check: 1) audio_out_ids in batch, 2) audio_out_mask generation")
+            
+            # Check label masking
+            if audio_labels is not None and audio_labels.numel() > 0:
+                masked_count = (audio_labels == -100).sum().item()
+                total_count = audio_labels.numel()
+                mask_percentage = (masked_count / max(total_count, 1)) * 100
+                logger.info(f"Audio labels masking: {masked_count}/{total_count} ({mask_percentage:.1f}%) masked")
+                
+                if mask_percentage > 90:
+                    logger.warning("⚠️  HIGH AUDIO LABEL MASKING: Over 90% of audio labels are masked!")
+                    logger.warning("This may prevent effective audio learning.")
+                
+                # Log some sample audio label values for debugging
+                if total_count > 0:
+                    sample_labels = audio_labels.flatten()[:10].tolist()
+                    logger.info(f"Sample audio labels (first 10): {sample_labels}")
+            
+            # Log text diagnostics as well
+            if text_logits is not None and model_expanded_labels is not None:
+                text_masked_count = (model_expanded_labels == -100).sum().item()
+                text_total_count = model_expanded_labels.numel()
+                text_mask_percentage = (text_masked_count / max(text_total_count, 1)) * 100
+                logger.info(f"Text labels masking: {text_masked_count}/{text_total_count} ({text_mask_percentage:.1f}%) masked")
+        
         # Text loss with OPTIMAL teacher forcing alignment
         if text_logits is not None and model_expanded_labels is not None:
             # BEST CASE: Use model's expanded_labels which are already correctly aligned!
@@ -343,10 +379,19 @@ class HiggsAudioTrainer:
                 audio_loss = self._compute_audio_loss(audio_logits, audio_labels)
                 total_loss = total_loss + audio_loss
                 loss_dict['audio_loss'] = audio_loss.item()
+                
+                # CRITICAL FIX: Add validation for near-zero audio loss
+                if audio_loss.item() < 0.001:  # Near zero threshold
+                    logger.warning(f"⚠️  NEAR-ZERO AUDIO LOSS DETECTED: {audio_loss.item():.6f}")
+                    logger.warning("This indicates potential issues with audio learning.")
+                    logger.warning("Possible causes: 1) Over-masking 2) Empty logits 3) Data issues")
             else:
                 loss_dict['audio_loss'] = 0.0
+                logger.warning("⚠️  Audio logits are empty - audio loss set to 0.0")
         else:
             loss_dict['audio_loss'] = 0.0
+            if self.global_step % self.args.log_steps == 0 and self.local_rank == 0:
+                logger.warning("⚠️  Audio logits or labels are None - audio loss set to 0.0")
         
         # Final loss summary
         loss_dict['total_loss'] = total_loss.item()
@@ -361,7 +406,7 @@ class HiggsAudioTrainer:
                 self._log_minimal_text_predictions(text_logits, model_expanded_labels)
             
             # Log audio predictions if we have audio logits
-            if audio_logits is not None and audio_labels is not None:
+            if audio_logits is not None and audio_labels is not None and audio_logits.numel() > 0:
                 self._log_minimal_audio_predictions(audio_logits, audio_labels)
         
         return total_loss, loss_dict
@@ -411,6 +456,7 @@ class HiggsAudioTrainer:
             
         # Handle empty sequences
         if audio_logits.numel() == 0 or audio_labels.numel() == 0:
+            logger.warning("⚠️  Audio logits or labels are empty - returning zero loss")
             return torch.tensor(0.0, device=self.device)
         
         audio_loss = torch.tensor(0.0, device=self.device)
@@ -436,23 +482,73 @@ class HiggsAudioTrainer:
                     audio_labels = audio_labels[:, :seq_len_logits]
                     seq_len_labels = seq_len_logits
                 
+                # CRITICAL FIX: Enhanced validation for audio label quality
+                total_tokens = audio_labels.numel()
+                valid_tokens = (audio_labels != -100).sum().item()
+                mask_ratio = 1.0 - (valid_tokens / max(total_tokens, 1))
+                
+                if self.global_step % self.args.log_steps == 0 and self.local_rank == 0:
+                    logger.info(f"Audio label quality - Valid: {valid_tokens}/{total_tokens} ({(valid_tokens/max(total_tokens, 1))*100:.1f}%)")
+                
+                if mask_ratio > 0.95:  # Over 95% masked
+                    logger.warning(f"⚠️  CRITICAL: Audio labels are {mask_ratio*100:.1f}% masked! This will prevent learning.")
+                    if self.local_rank == 0:
+                        logger.warning("Suggested actions:")
+                        logger.warning("1. Check dataset for proper audio label generation")
+                        logger.warning("2. Verify collator mask_audio_out_token_label=False")
+                        logger.warning("3. Ensure audio files exist and are accessible")
+                
                 valid_codebooks = 0
+                codebook_losses = []
+                
                 for cb in range(num_codebooks):
                     cb_logits = audio_logits[:, cb, :]  # [seq_len, vocab_size]
                     cb_labels = audio_labels[cb, :]     # [seq_len]
                     
                     # Only compute loss on valid tokens (ignore -100)
                     valid_mask = cb_labels != -100
-                    if valid_mask.sum() > 0:
+                    valid_token_count = valid_mask.sum().item()
+                    
+                    if valid_token_count > 0:
                         cb_loss = self.audio_loss_fn(cb_logits, cb_labels)
                         if torch.isfinite(cb_loss):
                             audio_loss += cb_loss
                             valid_codebooks += 1
+                            codebook_losses.append(cb_loss.item())
+                            
+                            # Log individual codebook loss for debugging
+                            if self.global_step % (self.args.log_steps * 10) == 0 and self.local_rank == 0:
+                                logger.info(f"  Codebook {cb} loss: {cb_loss.item():.4f} ({valid_token_count} valid tokens)")
+                    elif self.global_step % (self.args.log_steps * 10) == 0 and self.local_rank == 0:
+                        logger.info(f"  Codebook {cb}: No valid tokens (all masked)")
                 
                 if valid_codebooks > 0:
                     audio_loss = audio_loss / valid_codebooks
+                    
+                    # CRITICAL FIX: Add validation for near-zero audio loss
+                    avg_loss = audio_loss.item()
+                    if avg_loss < 0.001:  # Near zero threshold
+                        logger.warning(f"⚠️  NEAR-ZERO AUDIO LOSS DETECTED: {avg_loss:.6f}")
+                        logger.warning("This indicates potential issues with audio learning.")
+                        logger.warning("Possible causes: 1) Over-masking 2) Empty logits 3) Data issues")
+                        
+                        # Add detailed diagnostics
+                        if codebook_losses:
+                            logger.info(f"  Individual codebook losses: {[f'{loss:.6f}' for loss in codebook_losses]}")
+                        
+                        # Suggest corrective actions
+                        if self.local_rank == 0:
+                            logger.warning("Suggested corrective actions:")
+                            logger.warning("1. Verify audio files exist and are readable")
+                            logger.warning("2. Check that audio_label_contents is properly extracted in dataset")
+                            logger.warning("3. Ensure mask_audio_out_token_label=False in collator")
+                            logger.warning("4. Validate audio tokenizer is working correctly")
+                else:
+                    logger.warning("⚠️  No valid codebooks found for audio loss computation")
+                    return torch.tensor(0.0, device=self.device)
         else:
             # Fallback: treat as single output
+            logger.warning(f"⚠️  Unexpected audio logits shape: {audio_logits.shape}")
             audio_loss = self.audio_loss_fn(
                 audio_logits.view(-1, audio_logits.size(-1)),
                 audio_labels.view(-1)
