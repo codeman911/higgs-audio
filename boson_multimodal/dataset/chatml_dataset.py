@@ -519,8 +519,8 @@ def prepare_chatml_dataframe_single_process(df, tokenizer):
     """Prepare the ChatML DataFrame."""
     ret = []
     for _, row in df.iterrows():
-        input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(row.to_dict(), tokenizer)
-        ret.append((input_tokens, label_tokens, audio_contents, speaker_id))
+        input_tokens, label_tokens, audio_contents, audio_label_contents, speaker_id = prepare_chatml_sample(row.to_dict(), tokenizer)
+        ret.append((input_tokens, label_tokens, audio_contents, audio_label_contents, speaker_id))
     return ret
 
 

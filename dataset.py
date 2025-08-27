@@ -41,7 +41,7 @@ class HiggsAudioDataset(Dataset):
         # Updated to handle audio labels properly
         result = prepare_chatml_sample(sample, self.tokenizer)
         
-        # Handle both old and new versions of prepare_chatml_sample
+        # Handle different versions of prepare_chatml_sample
         if len(result) == 4:
             input_tokens, label_tokens, audio_contents, speaker_id = result
             # For the old version, we need to manually identify audio labels
