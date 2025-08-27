@@ -353,7 +353,7 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
             except Exception as e:
                 print(f"Failed to convert to ChatMLSample: {e}")
                 print(f"Clean sample: {json.dumps(clean_sample, indent=2)}")
-                return None, None, None, None
+                return None, None, None, None, None
 
         input_tokens = []
         label_tokens = []
@@ -406,7 +406,7 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                     text_tokens = tokenizer.encode(content.text, add_special_tokens=False)
                     input_tokens.extend(text_tokens)
                     # Fix: Ensure assistant responses are properly labeled for training
-                    if role == "assistant":
+                    if role == "assistant" and (sample.start_index is None or turn_id >= sample.start_index):
                         label_tokens.extend(text_tokens)
                     else:
                         label_tokens.extend([-100 for _ in text_tokens])
@@ -430,7 +430,10 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                         )
                         input_tokens.extend(text_tokens)
                         # Fix: Ensure assistant audio responses are properly labeled for training
-                        label_tokens.extend(text_tokens)
+                        if sample.start_index is None or turn_id >= sample.start_index:
+                            label_tokens.extend(text_tokens)
+                        else:
+                            label_tokens.extend([-100 for _ in text_tokens])
             next_id = turn_id + 1
             if role == "assistant" and next_id != total_m and sample.messages[next_id].role == "assistant":
                 postfix_tokens = tokenizer.encode(eom_postfix, add_special_tokens=False)
@@ -439,17 +442,39 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                 postfix_tokens = tokenizer.encode(eot_postfix, add_special_tokens=False)
                 input_tokens.extend(postfix_tokens)
             # Fix: Ensure assistant responses are properly labeled for training
-            if role == "assistant":
+            if role == "assistant" and (sample.start_index is None or turn_id >= sample.start_index):
                 label_tokens.extend(postfix_tokens)
             else:
                 label_tokens.extend([-100 for _ in postfix_tokens])
 
-        return input_tokens, label_tokens, audio_contents, speaker_id
+        # Extract audio label contents from assistant messages with start_index consideration
+        audio_label_contents = []
+        messages = sample.messages
+        for turn_id, message in enumerate(messages):
+            role = message.role
+            content = message.content
+            
+            # Check if this message should be treated as a label based on start_index
+            should_label = sample.start_index is None or turn_id >= sample.start_index
+            
+            if role == "assistant" and should_label:
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "audio":
+                            audio_label_contents.append(item)
+                        elif hasattr(item, "type") and getattr(item, "type", None) == "audio":
+                            audio_label_contents.append(item)
+                elif isinstance(content, dict) and content.get("type") == "audio":
+                    audio_label_contents.append(content)
+                elif hasattr(content, "type") and getattr(content, "type", None) == "audio":
+                    audio_label_contents.append(content)
+            
+        return input_tokens, label_tokens, audio_contents, audio_label_contents, speaker_id
 
     except Exception as e:
         print(f"Error in prepare_chatml_sample: {str(e)}")
         print(f"Sample data: {json.dumps(sample, indent=2)}")
-        return None, None, None, None
+        return None, None, None, None, None
 
 
 def extract_generation_prompt_from_input_tokens(input_tokens, tokenizer):
