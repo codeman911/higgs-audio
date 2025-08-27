@@ -3,9 +3,6 @@ import os
 import torch
 import librosa
 from torch.utils.data import Dataset
-from dataclasses import dataclass
-from typing import List
-from loguru import logger
 
 from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
 
@@ -28,7 +25,6 @@ class HiggsAudioDataset(Dataset):
         
         self.tokenizer = tokenizer
         self.audio_tokenizer = audio_tokenizer
-        self.debug_sample_count = 0  # For debugging first few samples
         
     def __len__(self) -> int:
         return len(self.samples)
@@ -74,23 +70,6 @@ class HiggsAudioDataset(Dataset):
             # Skip invalid samples, try next one
             return self.__getitem__((idx + 1) % len(self.samples))
         
-        # Debug logging for first few samples
-        if self.debug_sample_count < 3:
-            logger.info(f"DEBUG SAMPLE {self.debug_sample_count + 1} (idx={idx}):")
-            logger.info(f"  Input tokens length: {len(input_tokens)}")
-            logger.info(f"  Label tokens length: {len(label_tokens)}")
-            logger.info(f"  Audio contents count: {len(audio_contents) if isinstance(audio_contents, list) else 0}")
-            logger.info(f"  Audio label contents count: {len(audio_label_contents) if isinstance(audio_label_contents, list) else 0}")
-            if len(label_tokens) > 10:
-                logger.info(f"  First 10 input tokens: {input_tokens[:10]}")
-                logger.info(f"  First 10 label tokens: {label_tokens[:10]}")
-                logger.info(f"  Last 10 label tokens: {label_tokens[-10:]}")
-            
-            # Count masked vs unmasked tokens
-            masked_count = sum(1 for t in label_tokens if t == -100)
-            unmasked_count = len(label_tokens) - masked_count
-            logger.info(f"  Text Label Stats: {masked_count} masked, {unmasked_count} unmasked, {len(label_tokens)} total")
-        
         # Process audio using audio_tokenizer - EXACT pattern from training scripts
         audio_ids_list = []
         audio_waveforms_list = []
@@ -123,7 +102,7 @@ class HiggsAudioDataset(Dataset):
                         audio_ids_list.append(audio_codes)
                         audio_waveforms_list.append(waveform)
                     except Exception as e:
-                        logger.warning(f"Failed to process audio {audio_path}: {e}")
+                        pass
         
         # CRITICAL FIX: Process target audio labels (goes to label_audio_ids_list for training)
         # This is the key fix - we need to process audio_label_contents to create label_audio_ids
@@ -137,7 +116,7 @@ class HiggsAudioDataset(Dataset):
                             label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
                             label_audio_ids_list.append(label_audio_codes)
                         except Exception as e:
-                            logger.warning(f"Failed to process label audio {label_audio_path}: {e}")
+                            pass
                 # Check if it's a dict with audio_url key
                 elif isinstance(audio_label_content, dict) and 'audio_url' in audio_label_content:
                     label_audio_path = audio_label_content['audio_url']
@@ -146,7 +125,7 @@ class HiggsAudioDataset(Dataset):
                             label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
                             label_audio_ids_list.append(label_audio_codes)
                         except Exception as e:
-                            logger.warning(f"Failed to process label audio {label_audio_path}: {e}")
+                            pass
         
         if audio_ids_list:
             # Concatenate audio data - EXACT pattern from working scripts
@@ -159,15 +138,8 @@ class HiggsAudioDataset(Dataset):
             # CRITICAL FIX: Concatenate audio label data if available
             if label_audio_ids_list:
                 label_audio_ids_concat = torch.cat(label_audio_ids_list, dim=1)
-                if self.debug_sample_count < 3:
-                    logger.info(f"  Audio label codes shape: {label_audio_ids_concat.shape}")
-                    if label_audio_ids_concat.numel() > 0:
-                        logger.info(f"  First 10 audio label codes (first codebook): {label_audio_ids_concat[0, :10].tolist()}")
-                        logger.info(f"  Last 10 audio label codes (first codebook): {label_audio_ids_concat[0, -10:].tolist()}")
             else:
                 label_audio_ids_concat = None
-                if self.debug_sample_count < 3:
-                    logger.info(f"  No audio labels available")
         else:
             # Empty audio tensors - EXACT pattern from working scripts  
             audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)  # 8 codebooks (matches bosonai/higgs-audio-v2-tokenizer)
@@ -181,18 +153,6 @@ class HiggsAudioDataset(Dataset):
         numeric_speaker_id = 0 if isinstance(speaker_id, str) or speaker_id is None else int(speaker_id)
         audio_speaker_indices = torch.tensor([numeric_speaker_id], dtype=torch.long)
         
-        # Debug logging for audio data
-        if self.debug_sample_count < 3:
-            logger.info(f"  Audio IDs concat shape: {audio_ids_concat.shape}")
-            logger.info(f"  Audio waveforms concat shape: {audio_waveforms_concat.shape}")
-            if label_audio_ids_concat is not None:
-                masked_audio_count = (label_audio_ids_concat == -100).sum().item()
-                unmasked_audio_count = label_audio_ids_concat.numel() - masked_audio_count
-                logger.info(f"  Audio Label Stats: {masked_audio_count} masked, {unmasked_audio_count} unmasked, {label_audio_ids_concat.numel()} total")
-            logger.info("-" * 50)
-        
-        self.debug_sample_count += 1
-        
         # Create ChatMLDatasetSample with EXACT field structure
         return ChatMLDatasetSample(
             input_ids=torch.tensor(input_tokens, dtype=torch.long),
@@ -205,83 +165,3 @@ class HiggsAudioDataset(Dataset):
             audio_speaker_indices=audio_speaker_indices.long() if audio_speaker_indices is not None else torch.tensor([0], dtype=torch.long),
             audio_label_ids_concat=label_audio_ids_concat.long() if label_audio_ids_concat is not None else None
         )
-
-
-def create_collator(config, whisper_processor):
-    """Create collator with EXACT parameters from working implementation"""
-    return ExtendedHiggsAudioSampleCollator(
-        whisper_processor=whisper_processor,
-        encode_whisper_embed=True,  # Always enable for training
-        audio_in_token_id=config.audio_in_token_idx,
-        audio_out_token_id=config.audio_out_token_idx,
-        audio_stream_bos_id=config.audio_stream_bos_id,
-        audio_stream_eos_id=config.audio_stream_eos_id,
-        pad_token_id=config.pad_token_id,
-        return_audio_in_tokens=True,  # CRITICAL FIX: Enable for proper audio handling
-        use_delay_pattern=False,      # Match working implementation
-        audio_num_codebooks=8,        # Explicitly set to 8 codebooks
-        round_to=8,                   # Match working implementation
-        mask_audio_out_token_label=False,  # CRITICAL FIX: Disable over-masking
-    )
-
-
-@dataclass
-class ExtendedHiggsAudioBatchInput:
-    """
-    Extended HiggsAudioBatchInput with __len__ method for Trainer compatibility
-    """
-    
-    def __init__(self, **kwargs):
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-    
-    def __len__(self):
-        """Return the batch size based on input_ids"""
-        if hasattr(self, 'input_ids') and getattr(self, 'input_ids', None) is not None:
-            return self.input_ids.shape[0]
-        else:
-            return 0
-    
-    def __getitem__(self, key):
-        """Allow dictionary-style access for compatibility"""
-        return getattr(self, key, None)
-    
-    def __contains__(self, key):
-        """Check if attribute exists"""
-        return hasattr(self, key)
-    
-    def keys(self):
-        """Return all attribute names for compatibility"""
-        return [attr for attr in dir(self) if not attr.startswith('_') and not callable(getattr(self, attr))]
-
-
-class ExtendedHiggsAudioSampleCollator:
-    """
-    Extended collator that returns our custom batch input class
-    """
-    
-    def __init__(self, **kwargs):
-        from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
-        self.base_collator = HiggsAudioSampleCollator(**kwargs)
-    
-    def __call__(self, batch: List[ChatMLDatasetSample]):
-        # 1. Call the official base collator to do all the complex padding and alignment work
-        batch_input = self.base_collator(batch)
-        
-        # 2. Convert to our extended class and pass in the perfectly aligned labels
-        extended_batch = ExtendedHiggsAudioBatchInput(
-            input_ids=batch_input.input_ids,
-            attention_mask=batch_input.attention_mask,
-            audio_features=batch_input.audio_features,
-            audio_feature_attention_mask=batch_input.audio_feature_attention_mask,
-            audio_out_ids=batch_input.audio_out_ids,
-            audio_out_ids_start=batch_input.audio_out_ids_start,
-            audio_out_ids_start_group_loc=batch_input.audio_out_ids_start_group_loc,
-            audio_in_ids=batch_input.audio_in_ids,
-            audio_in_ids_start=batch_input.audio_in_ids_start,
-            label_ids=batch_input.label_ids,
-            label_audio_ids=batch_input.label_audio_ids, # Use the properly aligned labels from base collator
-            reward=batch_input.reward,
-        )
-        
-        return extended_batch
