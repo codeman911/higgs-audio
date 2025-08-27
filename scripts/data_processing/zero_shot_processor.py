@@ -175,7 +175,7 @@ class ZeroShotDataProcessor:
                         raw_audio="",  # Will be loaded during training
                         duration=None  # Will be computed during training
                     ),
-                    TextContent(text=f"Please generate speech for given text in reference audio's voice: {target_text}")
+                    TextContent(text=target_text)
                 ]
             ),
             
