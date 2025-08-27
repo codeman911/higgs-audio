@@ -1,3 +1,63 @@
+# Higgs Audio Training Fixes Summary
+
+## Issues Identified
+
+1. **Cross-Modal Conditioning Disabled**: `use_audio_out_self_attention=False` meant text pathway couldn't attend to audio context
+2. **Incomplete LoRA Targeting**: Missing audio attention modules in LoRA configuration
+3. **Text Learning Failure**: Text loss remained high while audio loss converged to near zero
+
+## Fixes Implemented
+
+### 1. Enable Cross-Modal Conditioning ([trainer.py](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/trainer.py))
+
+```python
+# CRITICAL FIX: Enable cross-modal conditioning
+if not getattr(self.config, 'use_audio_out_self_attention', None):
+    logger.info("ENABLING cross-modal conditioning (use_audio_out_self_attention=True)")
+    self.config.use_audio_out_self_attention = True
+```
+
+**Impact**: Allows text pathway to access audio context for voice cloning.
+
+### 2. Expand LoRA Targeting ([lora.py](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/lora.py))
+
+```python
+# In get_target_modules():
+if "audio_attn" in name and any(proj in name for proj in ["q_proj", "k_proj", "v_proj", "o_proj"]):
+    target_modules.append(name)
+
+# In create_lora_config():
+target_modules = [
+    # ... existing targets ...
+    "audio_attn.q_proj", "audio_attn.k_proj", "audio_attn.v_proj", "audio_attn.o_proj"
+]
+```
+
+**Impact**: Enables training of audio attention modules for cross-modal learning.
+
+## Expected Results
+
+1. **Reduced Text Loss**: Text pathway will begin learning from audio context
+2. **Meaningful Text Predictions**: Arabic text predictions should become coherent
+3. **Balanced Training**: Both text and audio pathways will learn in coordination
+4. **Effective Voice Cloning**: Generated speech will better match reference voice
+
+## Files Modified
+
+1. [trainer.py](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/trainer.py) - Enabled cross-modal conditioning
+2. [lora.py](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/lora.py) - Expanded LoRA targeting to include audio attention
+3. [AUDIO_TEXT_TRAINING_ANALYSIS.md](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/AUDIO_TEXT_TRAINING_ANALYSIS.md) - Comprehensive analysis document
+
+## Verification Steps
+
+1. Restart training with fixes applied
+2. Monitor text loss reduction over subsequent steps
+3. Check for meaningful Arabic text predictions in logs
+4. Validate that audio loss remains stable
+5. Test voice cloning quality with trained model
+
+These fixes address the root cause of the training imbalance by enabling proper cross-modal attention between text and audio pathways in the DualFFN architecture.
+
 # Training Fixes Summary
 
 ## 1. Log Analysis Results

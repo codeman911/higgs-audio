@@ -1,90 +1,137 @@
-# Audio-Text Training Analysis for Higgs Audio with Arabic Data
+# Higgs Audio Training Analysis: Audio Loss Near Zero, Text Struggling
 
 ## Executive Summary
 
-This document provides a comprehensive analysis of the training behavior observed in the Higgs Audio model when training with Arabic text data, specifically addressing why text loss reduces from 14 to 10 in 500 steps while audio loss drops dramatically from 8 to 0.05.
+The training logs show a critical imbalance where:
+- **Audio loss is nearly zero** (0.0011, 0.0015, 0.0008) with perfect prediction accuracy
+- **Text loss is high** (7.6875, 7.7500, 5.9062) with completely garbled predictions
 
-## Key Findings
+This indicates that the audio pathway is learning perfectly while the text pathway is failing to learn from audio context.
 
-### 1. Training Behavior Explanation
+## Root Cause Analysis
 
-#### Why Text Loss Reduces Moderately (14 → 10)
-- **Pre-trained Advantage**: The base Llama model has already been trained on Arabic text, providing strong language modeling capabilities
-- **Fine-tuning vs. Learning from Scratch**: The model is fine-tuning existing capabilities rather than learning from scratch
-- **Large Vocabulary Size**: Text loss is computed over a vocabulary of 32K+ tokens, making improvements more gradual
-- **Selective Learning**: Only specific tokens (assistant responses) are trained, with system prompts and user messages masked (-100)
+### 1. Cross-Modal Conditioning Issue
 
-#### Why Audio Loss Drops Dramatically (8 → 0.05)
-- **Learning from Scratch**: Audio tokens (0-1023 from DAC codec) are completely new to the model
-- **Smaller Token Space**: Audio loss is computed per codebook with only 1024 possible tokens, making learning faster
-- **Specialized Architecture**: The DualFFN (Dual Feed-Forward Network) allows dedicated learning paths for audio tokens
-- **Rapid Pattern Recognition**: Audio tokens follow more predictable patterns than natural language
+**Primary Issue**: The text pathway cannot access audio context for conditioning.
 
-### 2. Technical Architecture Details
+**Evidence from logs**:
+```
+Audio Tokens - First 5 Pred: [989, 244, 308, 633, 756] | First 5 Target: [989, 244, 308, 633, 756]
+Audio Tokens - Last 5 Pred: [907, 913, 365, 492, 1025] | Last 5 Target: [907, 913, 365, 492, 1025]
 
-#### DualFFN Architecture
-The Higgs Audio model uses a DualFFN architecture where:
-- **Text tokens** go through standard Llama MLP layers
-- **Audio tokens** go through separate audio MLP layers
-- Both share the attention mechanism but have specialized feed-forward networks
+Arabic Text - Predicted: 'تََََ وَتَفَ منََأَََأََََ وَتَفَ وَ وَوَََ' 
+           | Target: 'بِرُوحِ الْجِيمِ كُلَّ يَوْمٍ أَرُوَحَ الْجِيمِ فِي الْوَقْتْ'
+```
 
-#### Special Token Significance
-- **-100**: Ignore index for loss computation (masks irrelevant tokens)
-- **1024**: AUDIO_STREAM_BOS_ID (beginning of audio stream)
-- **1025**: AUDIO_STREAM_EOS_ID (end of audio stream)
-- **1026**: Logits dimension (1024 codebook + 2 special tokens)
+The audio predictions are perfect, but text predictions are completely random.
 
-### 3. Implemented Solution: Detailed Prediction Logging
+### 2. DualFFN Architecture Isolation
 
-We've enhanced the trainer to log detailed predictions vs targets:
+**Problem**: Audio and text pathways are isolated without cross-attention.
 
-#### Text Prediction Logging
-- Detokenized Arabic text predictions vs targets
-- Token-level comparison for first 10 valid tokens
-- Statistics on masked vs unmasked tokens
+**Technical Details**:
+- Higgs Audio uses a DualFFN architecture with separate text and audio pathways
+- For effective voice cloning, text must attend to audio context
+- Missing `use_audio_out_self_attention=True` means no cross-modal attention
 
-#### Audio Prediction Logging
-- First codebook audio token predictions vs targets
-- Detailed comparison of predicted vs actual audio tokens
-- Identification of prediction differences
+### 3. LoRA Targeting Incompleteness
 
-## Training Process Analysis
+**Issue**: LoRA adapters are not targeting audio attention modules.
 
-### Data Flow
-1. **ChatML Input Processing**: 
-   - Reference text: "حلو لو سميته حاجة ممكن الأهالي يسمعوه"
-   - Target text: "وَمِنْ ثُمَّ قَالُوا أَنَّهُ لا يُوجَدُ إِلا أَنْ نَأْخُذَ سَيَنْسَتِيلْ."
+**Current Targeting**:
+```python
+target_modules = [
+    "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+    "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj",
+    "audio_mlp.gate_proj", "audio_mlp.up_proj", "audio_mlp.down_proj"
+]
+```
 
-2. **Tokenization**:
-   - Text tokens processed by Llama tokenizer
-   - Audio tokens processed by DAC codec (8 codebooks, 1024 tokens each)
+**Missing Targets**:
+```python
+# Audio attention modules for cross-modal learning
+"audio_attn.q_proj", "audio_attn.k_proj", "audio_attn.v_proj", "audio_attn.o_proj"
+```
 
-3. **Label Creation**:
-   - Text labels: System/user messages masked (-100), assistant responses kept
-   - Audio labels: Audio tokens with BOS/EOS markers, delay pattern applied
+## Technical Solutions Implemented
 
-4. **Loss Computation**:
-   - Text loss: Cross-entropy on vocabulary (32K+ tokens)
-   - Audio loss: Cross-entropy on codebook tokens (1024 tokens per codebook)
+### 1. Enable Cross-Modal Conditioning
 
-## Recommendations
+**File**: [trainer.py](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/trainer.py)
 
-### 1. Continue Current Approach
-The training behavior is normal and expected given the pre-trained nature of the base model.
+**Change**:
+```python
+# CRITICAL FIX: Enable cross-modal conditioning
+if not getattr(self.config, 'use_audio_out_self_attention', None):
+    logger.info("ENABLING cross-modal conditioning (use_audio_out_self_attention=True)")
+    self.config.use_audio_out_self_attention = True
+```
 
-### 2. Monitor Training Metrics
-- Track text and audio losses separately
-- Monitor prediction accuracy improvements
-- Validate audio quality improvements
+**Impact**: Allows text pathway to attend to audio context during generation.
 
-### 3. Consider Loss Weighting
-If audio learning is too fast compared to text fine-tuning, consider adjusting loss weights.
+### 2. Expand LoRA Targeting
 
-### 4. Validate Output Quality
-- Regularly check generated Arabic text quality
-- Verify synthesized audio matches reference voice
-- Ensure proper voice cloning performance
+**File**: [lora.py](file:///Users/vikram.solanki/Projects/exp/level1/higgs-audio/lora.py)
 
-## Conclusion
+**Changes**:
+```python
+# In get_target_modules():
+if "audio_attn" in name and any(proj in name for proj in ["q_proj", "k_proj", "v_proj", "o_proj"]):
+    target_modules.append(name)
 
-The observed training behavior is consistent with expectations for a pre-trained multimodal model. The Llama base model's existing Arabic capabilities explain the moderate text loss reduction, while the specialized audio learning explains the dramatic audio loss drop. The implemented logging enhancements will provide detailed insights into the model's learning progress.
+# In create_lora_config():
+target_modules = [
+    # ... existing targets ...
+    "audio_attn.q_proj", "audio_attn.k_proj", "audio_attn.v_proj", "audio_attn.o_proj"
+]
+```
+
+**Impact**: Enables training of audio attention modules for cross-modal learning.
+
+## Expected Outcomes
+
+### Immediate Effects
+1. **Text Loss Reduction**: Text pathway will begin learning from audio context
+2. **Improved Text Predictions**: Arabic text predictions should become meaningful
+3. **Balanced Training**: Both pathways will learn in coordination
+
+### Long-term Benefits
+1. **Effective Voice Cloning**: Text generation will be conditioned on reference audio
+2. **Cross-Modal Understanding**: Model will learn semantic relationships between text and audio
+3. **Higher Quality Output**: Generated speech will better match reference voice characteristics
+
+## Verification Strategy
+
+### 1. Training Log Analysis
+- Monitor text loss reduction over subsequent steps
+- Check for meaningful Arabic text predictions
+- Ensure audio loss remains stable
+
+### 2. Cross-Modal Attention Verification
+- Validate that `use_audio_out_self_attention=True` is active
+- Confirm audio attention modules are being trained via LoRA
+
+### 3. Output Quality Assessment
+- Test voice cloning capabilities with reference audio
+- Evaluate text-to-speech coherence and voice similarity
+
+## Risk Mitigation
+
+### Potential Issues
+1. **Training Instability**: Newly enabled attention modules might cause instability
+2. **Overfitting**: Cross-modal attention might overfit to training data
+3. **Computational Overhead**: Additional attention computations might slow training
+
+### Mitigation Strategies
+1. **Gradient Clipping**: Maintain aggressive gradient clipping (0.1 norm)
+2. **Conservative Learning Rates**: Use lower learning rates for newly initialized modules
+3. **Monitoring**: Closely monitor loss curves and gradient norms
+
+## Next Steps
+
+1. **Restart Training**: Apply fixes and restart training from checkpoint
+2. **Monitor Progress**: Track text loss reduction and prediction quality
+3. **Fine-tune Parameters**: Adjust LoRA parameters if needed based on results
+4. **Validate Output**: Test voice cloning quality with trained model
+
+This analysis and solution should resolve the fundamental issue of isolated pathways in the DualFFN architecture, enabling effective cross-modal learning for voice cloning.

@@ -60,6 +60,12 @@ class HiggsAudioTrainer:
         # Force enable Whisper embeddings (from inference patterns)
         self.config.encode_whisper_embed = True
         
+        # CRITICAL FIX: Enable cross-modal conditioning (audio attention)
+        # This is essential for text to learn from audio context
+        if not getattr(self.config, 'use_audio_out_self_attention', None):
+            logger.info("ENABLING cross-modal conditioning (use_audio_out_self_attention=True)")
+            self.config.use_audio_out_self_attention = True
+        
         # Load model with exact inference initialization
         model = HiggsAudioModel.from_pretrained(
             self.args.base_ckpt,
