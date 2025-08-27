@@ -855,7 +855,7 @@ def parse_args():
                         help="Batch size per device")
     parser.add_argument("--lr", type=float, default=2e-4,
                         help="Learning rate")
-    parser.add_argument("--wd", type=float, default=0.0,
+    parser.add_argument("--wd", type=float, default=0.01,
                         help="Weight decay")
     parser.add_argument("--epochs", type=int, default=1,
                         help="Number of training epochs")
