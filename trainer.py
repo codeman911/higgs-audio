@@ -144,7 +144,7 @@ class HiggsAudioTrainer:
             sampler=train_sampler,
             shuffle=(train_sampler is None),
             collate_fn=self.collator,
-            num_workers=64,  # Keeping high value for CPU utilization
+            num_workers=24,  # Keeping high value for CPU utilization
             pin_memory=True,
             persistent_workers=False  # Disabled to prevent deadlock
         )
@@ -155,7 +155,7 @@ class HiggsAudioTrainer:
             sampler=val_sampler,
             shuffle=False,
             collate_fn=self.collator,
-            num_workers=64,  # Keeping high value for CPU utilization
+            num_workers=16,  # Keeping high value for CPU utilization
             pin_memory=True,
             persistent_workers=False  # Disabled to prevent deadlock
         )
