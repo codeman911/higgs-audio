@@ -56,7 +56,9 @@ class HiggsAudioDataset(Dataset):
             # For the old version, we need to manually identify audio labels
             # We'll assume that audio contents in assistant responses are labels
             audio_label_contents = []
-            for message in sample['messages'] if isinstance(sample, dict) else sample.messages:
+            # Extract audio label contents from assistant messages
+            messages = sample['messages'] if isinstance(sample, dict) else sample.messages
+            for message in messages:
                 role = message['role'] if isinstance(message, dict) else message.role
                 content = message['content'] if isinstance(message, dict) else message.content
                 
@@ -65,18 +67,10 @@ class HiggsAudioDataset(Dataset):
                         for item in content:
                             if isinstance(item, dict) and item.get('type') == 'audio':
                                 audio_label_contents.append(item)
-                            else:
-                                audio_label_contents.append(None)
+                            elif isinstance(item, dict) and item.get('type') == 'audio':
+                                audio_label_contents.append(item)
                     elif isinstance(content, dict) and content.get('type') == 'audio':
                         audio_label_contents.append(content)
-                    else:
-                        # For text-only content, no audio labels
-                        audio_label_contents = [None] * len(audio_contents) if isinstance(audio_contents, list) else []
-                        break
-                else:
-                    # For non-assistant roles, no audio labels
-                    if isinstance(audio_contents, list):
-                        audio_label_contents.extend([None] * len([c for c in (content if isinstance(content, list) else [content]) if isinstance(c, dict) and c.get('type') == 'audio']))
         elif len(result) == 5:
             input_tokens, label_tokens, audio_contents, audio_label_contents, speaker_id = result
         else:
@@ -135,13 +129,22 @@ class HiggsAudioDataset(Dataset):
                     audio_ids_list.append(audio_codes)
                     audio_waveforms_list.append(waveform)
         
-        # Process target audio labels (goes to label_audio_ids_list for training)
+        # CRITICAL FIX: Process target audio labels (goes to label_audio_ids_list for training)
+        # This is the key fix - we need to process audio_label_contents to create label_audio_ids
         for i, audio_label_content in enumerate(audio_label_contents):
-            if audio_label_content is not None and hasattr(audio_label_content, 'audio_url'):
-                label_audio_path = audio_label_content.audio_url
-                if label_audio_path and os.path.exists(label_audio_path):
-                    label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
-                    label_audio_ids_list.append(label_audio_codes)
+            if audio_label_content is not None:
+                # Check if it's an AudioContent object with audio_url attribute
+                if hasattr(audio_label_content, 'audio_url'):
+                    label_audio_path = audio_label_content.audio_url
+                    if label_audio_path and os.path.exists(label_audio_path):
+                        label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
+                        label_audio_ids_list.append(label_audio_codes)
+                # Check if it's a dict with audio_url key
+                elif isinstance(audio_label_content, dict) and 'audio_url' in audio_label_content:
+                    label_audio_path = audio_label_content['audio_url']
+                    if label_audio_path and os.path.exists(label_audio_path):
+                        label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
+                        label_audio_ids_list.append(label_audio_codes)
         
         if audio_ids_list:
             # Concatenate audio data - EXACT pattern from working scripts
@@ -151,7 +154,7 @@ class HiggsAudioDataset(Dataset):
             audio_waveforms_start = torch.tensor([0] + [wv.shape[0] for wv in audio_waveforms_list[:-1]], dtype=torch.long).cumsum(dim=0)
             audio_sample_rate = torch.tensor([24000])
             
-            # Concatenate audio label data if available
+            # CRITICAL FIX: Concatenate audio label data if available
             if label_audio_ids_list:
                 label_audio_ids_concat = torch.cat(label_audio_ids_list, dim=1)
                 if self.debug_sample_count < 3:
