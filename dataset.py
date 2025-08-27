@@ -7,6 +7,7 @@ import os
 import json
 import torch
 import librosa
+import logging
 from typing import List, Dict, Any
 from torch.utils.data import Dataset
 
@@ -15,6 +16,7 @@ from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare
 from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
 from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
 
+logger = logging.getLogger(__name__)
 
 class HiggsAudioDataset(Dataset):
     """Dataset that mirrors inference preprocessing exactly."""
@@ -34,6 +36,7 @@ class HiggsAudioDataset(Dataset):
         
         self.tokenizer = tokenizer
         self.audio_tokenizer = audio_tokenizer
+        self.debug_sample_count = 0  # For debugging first few samples
         
     def __len__(self) -> int:
         return len(self.samples)
@@ -59,6 +62,22 @@ class HiggsAudioDataset(Dataset):
         if input_tokens is None or label_tokens is None:
             # Skip invalid samples, try next one
             return self.__getitem__((idx + 1) % len(self.samples))
+        
+        # Debug logging for first few samples
+        if self.debug_sample_count < 3:
+            logger.info(f"DEBUG SAMPLE {self.debug_sample_count + 1} (idx={idx}):")
+            logger.info(f"  Input tokens length: {len(input_tokens)}")
+            logger.info(f"  Label tokens length: {len(label_tokens)}")
+            logger.info(f"  Audio contents count: {len(audio_contents)}")
+            if len(label_tokens) > 10:
+                logger.info(f"  First 10 input tokens: {input_tokens[:10]}")
+                logger.info(f"  First 10 label tokens: {label_tokens[:10]}")
+                logger.info(f"  Last 10 label tokens: {label_tokens[-10:]}")
+            
+            # Count masked vs unmasked tokens
+            masked_count = sum(1 for t in label_tokens if t == -100)
+            unmasked_count = len(label_tokens) - masked_count
+            logger.info(f"  Text Label Stats: {masked_count} masked, {unmasked_count} unmasked, {len(label_tokens)} total")
         
         # Process audio using audio_tokenizer - EXACT pattern from training scripts
         audio_ids_list = []
@@ -94,8 +113,15 @@ class HiggsAudioDataset(Dataset):
             # Concatenate audio label data if available
             if label_audio_ids_list:
                 audio_label_ids_concat = torch.cat(label_audio_ids_list, dim=1)
+                if self.debug_sample_count < 3:
+                    logger.info(f"  Audio label codes shape: {audio_label_ids_concat.shape}")
+                    if audio_label_ids_concat.numel() > 0:
+                        logger.info(f"  First 10 audio label codes (first codebook): {audio_label_ids_concat[0, :10].tolist()}")
+                        logger.info(f"  Last 10 audio label codes (first codebook): {audio_label_ids_concat[0, -10:].tolist()}")
             else:
                 audio_label_ids_concat = None
+                if self.debug_sample_count < 3:
+                    logger.info(f"  No audio labels available")
         else:
             # Empty audio tensors - EXACT pattern from working scripts  
             audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)  # 8 codebooks (matches bosonai/higgs-audio-v2-tokenizer)
@@ -108,6 +134,18 @@ class HiggsAudioDataset(Dataset):
         # Handle speaker ID conversion
         numeric_speaker_id = 0 if isinstance(speaker_id, str) or speaker_id is None else int(speaker_id)
         audio_speaker_indices = torch.tensor([numeric_speaker_id], dtype=torch.long)
+        
+        # Debug logging for audio data
+        if self.debug_sample_count < 3:
+            logger.info(f"  Audio IDs concat shape: {audio_ids_concat.shape}")
+            logger.info(f"  Audio waveforms concat shape: {audio_waveforms_concat.shape}")
+            if audio_label_ids_concat is not None:
+                masked_audio_count = (audio_label_ids_concat == -100).sum().item()
+                unmasked_audio_count = audio_label_ids_concat.numel() - masked_audio_count
+                logger.info(f"  Audio Label Stats: {masked_audio_count} masked, {unmasked_audio_count} unmasked, {audio_label_ids_concat.numel()} total")
+            logger.info("-" * 50)
+        
+        self.debug_sample_count += 1
         
         # Create ChatMLDatasetSample with EXACT field structure
         return ChatMLDatasetSample(
