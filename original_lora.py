@@ -1,13 +1,3 @@
-"""
-Minimal LoRA configuration targeting DualFFN architecture.
-Uses PEFT library with precise module targeting.
-"""
-
-import torch
-from peft import LoraConfig, get_peft_model, TaskType
-from transformers import AutoTokenizer
-
-
 def get_target_modules(model):
     """Dynamically discover target modules from actual model structure."""
     target_modules = []
@@ -58,28 +48,3 @@ def create_lora_config(r: int = 16,
         task_type=TaskType.CAUSAL_LM,
         inference_mode=False
     )
-
-
-def apply_lora(model, lora_config=None):
-    """Apply LoRA to model with proper module targeting."""
-    
-    if lora_config is None:
-        # Dynamically discover target modules
-        discovered_modules = get_target_modules(model)
-        lora_config = create_lora_config(target_modules=discovered_modules)
-    
-    # Apply LoRA
-    lora_model = get_peft_model(model, lora_config)
-    
-    return lora_model
-
-
-def save_lora_adapters(model, output_dir: str):
-    """Save only LoRA adapters."""
-    model.save_pretrained(output_dir)
-
-
-def load_lora_adapters(base_model, adapter_path: str):
-    """Load LoRA adapters onto base model."""
-    from peft import PeftModel
-    return PeftModel.from_pretrained(base_model, adapter_path)
