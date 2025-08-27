@@ -136,14 +136,14 @@ class HiggsAudioTrainer:
         ) if self.world_size > 1 else None
         
         # Create dataloaders with optimal settings for CPU utilization
-        # Increased num_workers to better utilize 128 core CPU
+        # Optimized for 129-core CPU with 8xH200 GPUs
         self.train_dataloader = DataLoader(
             train_dataset,
             batch_size=self.args.batch_size,
             sampler=train_sampler,
             shuffle=(train_sampler is None),
             collate_fn=self.collator,
-            num_workers=16,  # Increased from 32 to better utilize 128 core CPU
+            num_workers=64,  # Increased to better utilize 129-core CPU
             pin_memory=True,
             persistent_workers=True
         )
@@ -154,7 +154,7 @@ class HiggsAudioTrainer:
             sampler=val_sampler,
             shuffle=False,
             collate_fn=self.collator,
-            num_workers=16,  # Increased from 32 to better utilize 128 core CPU
+            num_workers=64,  # Increased to better utilize 129-core CPU
             pin_memory=True,
             persistent_workers=True
         )
