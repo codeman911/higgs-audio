@@ -135,16 +135,16 @@ class HiggsAudioTrainer:
             shuffle=False
         ) if self.world_size > 1 else None
         
-        # Create dataloaders with optimal settings for CPU utilization
-        # Optimized for 129-core CPU with 8xH200 GPUs
-        # Disabling persistent_workers to prevent deadlock with high num_workers
+        # Optimize DataLoader settings for performance
+        # Using moderate num_workers to balance CPU utilization and overhead
+        # Keeping persistent_workers=False to prevent deadlocks in distributed training
         self.train_dataloader = DataLoader(
             train_dataset,
             batch_size=self.args.batch_size,
             sampler=train_sampler,
             shuffle=(train_sampler is None),
             collate_fn=self.collator,
-            num_workers=24,  # Keeping high value for CPU utilization
+            num_workers=8,  # Moderate value for balanced performance
             pin_memory=True,
             persistent_workers=False  # Disabled to prevent deadlock
         )
@@ -155,7 +155,7 @@ class HiggsAudioTrainer:
             sampler=val_sampler,
             shuffle=False,
             collate_fn=self.collator,
-            num_workers=16,  # Keeping high value for CPU utilization
+            num_workers=4,  # Lower value for validation
             pin_memory=True,
             persistent_workers=False  # Disabled to prevent deadlock
         )
