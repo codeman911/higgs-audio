@@ -805,7 +805,8 @@ class HiggsAudioTrainer:
                             # In distributed training, synchronize all processes
                             if self.world_size > 1:
                                 torch.distributed.barrier()
-                                logger.info("Checkpoint saved and synchronized across all processes")
+                                if self.local_rank == 0:  # Only log from main process
+                                    logger.info("Checkpoint saved and synchronized across all processes")
                                 
                         except Exception as e:
                             logger.error(f"Failed to save checkpoint at step {self.global_step}")
