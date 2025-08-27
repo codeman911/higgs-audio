@@ -764,22 +764,56 @@ class HiggsAudioTrainer:
                             if self.local_rank == 0:
                                 # Ensure output directory exists
                                 os.makedirs(self.args.output_dir, exist_ok=True)
+                                logger.info(f"Created output directory: {self.args.output_dir}")
                                 
+                                # Check write permissions
+                                if not os.access(self.args.output_dir, os.W_OK):
+                                    logger.error(f"No write permission for output directory: {self.args.output_dir}")
+                                    raise PermissionError(f"No write permission for output directory: {self.args.output_dir}")
+                                    
                                 # Create checkpoint directory
                                 checkpoint_dir = f"{self.args.output_dir}/checkpoint-{self.global_step}"
                                 os.makedirs(checkpoint_dir, exist_ok=True)
+                                logger.info(f"Created checkpoint directory: {checkpoint_dir}")
+                                
+                                # Verify checkpoint directory is writable
+                                test_file = os.path.join(checkpoint_dir, ".write_test")
+                                try:
+                                    with open(test_file, "w") as f:
+                                        f.write("test")
+                                    os.remove(test_file)
+                                except Exception as perm_error:
+                                    logger.error(f"No write permission for checkpoint directory: {checkpoint_dir}, Error: {perm_error}")
+                                    raise PermissionError(f"No write permission for checkpoint directory: {checkpoint_dir}")
                                 
                                 # Save LoRA adapters
                                 model_to_save = self.model.module if self.world_size > 1 else self.model
+                                logger.info("Attempting to save LoRA adapters...")
                                 save_lora_adapters(model_to_save, checkpoint_dir)
+                                logger.info(f"Successfully saved checkpoint to: {checkpoint_dir}")
+                                
+                                # Verify checkpoint files were created
+                                if os.path.exists(checkpoint_dir):
+                                    files = os.listdir(checkpoint_dir)
+                                    logger.info(f"Checkpoint directory contains files: {files}")
+                                    if not files or (len(files) == 1 and '.write_test' in files):
+                                        logger.warning(f"Checkpoint directory may be incomplete: {checkpoint_dir}")
+                                else:
+                                    logger.error(f"Checkpoint directory was not created: {checkpoint_dir}")
+                                    raise FileNotFoundError(f"Checkpoint directory was not created: {checkpoint_dir}")
                                 
                             # In distributed training, synchronize all processes
                             if self.world_size > 1:
                                 torch.distributed.barrier()
+                                logger.info("Checkpoint saved and synchronized across all processes")
                                 
                         except Exception as e:
-                            logger.error(f"Failed to save checkpoint at step {self.global_step}: {e}")
-
+                            logger.error(f"Failed to save checkpoint at step {self.global_step}")
+                            logger.error(f"Error type: {type(e).__name__}")
+                            logger.error(f"Error message: {str(e)}")
+                            import traceback
+                            logger.error(f"Traceback: {traceback.format_exc()}")
+    
     def verify_output_directory(self):
         """Verify that the output directory is properly configured and writable."""
         try:

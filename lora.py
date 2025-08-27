@@ -75,9 +75,44 @@ def apply_lora(model, lora_config=None):
 
 
 def save_lora_adapters(model, output_dir: str):
-    """Save only LoRA adapters."""
-    model.save_pretrained(output_dir)
-
+    """Save only LoRA adapters with enhanced error handling."""
+    try:
+        import os
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"Saving LoRA adapters to {output_dir}")
+        # Check if output directory exists and is writable
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+            logger.info(f"Created directory: {output_dir}")
+            
+        if not os.access(output_dir, os.W_OK):
+            raise PermissionError(f"No write permission for directory: {output_dir}")
+            
+        # Save the model
+        logger.info("Calling model.save_pretrained...")
+        model.save_pretrained(output_dir)
+        logger.info(f"Successfully saved LoRA adapters to {output_dir}")
+        
+        # Verify files were created
+        if os.path.exists(output_dir):
+            files = os.listdir(output_dir)
+            logger.info(f"Saved files: {files}")
+            if not files:
+                logger.warning(f"No files were saved to {output_dir}")
+        else:
+            logger.error(f"Directory was not created: {output_dir}")
+            
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to save LoRA adapters to {output_dir}")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error message: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise
 
 def load_lora_adapters(base_model, adapter_path: str):
     """Load LoRA adapters onto base model."""
