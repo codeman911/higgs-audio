@@ -409,6 +409,9 @@ class HiggsAudioTrainer:
                 num_valid_tokens = valid_mask.sum().item()
                 logger.info(f"✓ Perfect alignment! Computing loss on {num_valid_tokens} valid tokens")
                 
+                # ADD DETAILED TEXT PREDICTION LOGGING
+                self._log_text_predictions(shift_logits, shift_labels)
+                
                 text_loss = self.text_loss_fn(
                     shift_logits.view(-1, shift_logits.size(-1)),  # [batch*seq_len, vocab]
                     shift_labels.view(-1)                          # [batch*seq_len]
@@ -446,6 +449,9 @@ class HiggsAudioTrainer:
                 valid_mask = shift_labels != -100
                 num_valid_tokens = valid_mask.sum().item()
                 logger.info(f"✓ Fallback alignment OK! Computing loss on {num_valid_tokens} valid tokens")
+                
+                # ADD DETAILED TEXT PREDICTION LOGGING
+                self._log_text_predictions(shift_logits, shift_labels)
                 
                 text_loss = self.text_loss_fn(
                     shift_logits.view(-1, shift_logits.size(-1)),
@@ -489,7 +495,63 @@ class HiggsAudioTrainer:
             logger.error("Check: 1) Model inputs, 2) Label alignment, 3) Data preprocessing")
         
         return total_loss, loss_dict
-    
+
+    def _log_text_predictions(self, logits, labels):
+        """Log detailed text predictions vs target labels with detokenization for Arabic text."""
+        try:
+            # Get predictions (argmax of logits)
+            predictions = torch.argmax(logits, dim=-1)
+            
+            # Log for first sample in batch
+            batch_size = logits.size(0)
+            if batch_size > 0:
+                logger.info("=== ARABIC TEXT PREDICTION ANALYSIS ===")
+                
+                # Get sequence for first sample
+                sample_idx = 0
+                sample_logits = logits[sample_idx]
+                sample_predictions = predictions[sample_idx]
+                sample_labels = labels[sample_idx]
+                
+                # Find valid (non-masked) positions
+                valid_mask = sample_labels != -100
+                if valid_mask.sum() > 0:
+                    # Get valid predictions and labels
+                    valid_predictions = sample_predictions[valid_mask]
+                    valid_labels = sample_labels[valid_mask]
+                    
+                    # Limit to first 20 tokens for readability
+                    max_tokens = min(20, len(valid_predictions))
+                    valid_predictions = valid_predictions[:max_tokens]
+                    valid_labels = valid_labels[:max_tokens]
+                    
+                    # Convert to lists for easier handling
+                    pred_tokens = valid_predictions.tolist()
+                    label_tokens = valid_labels.tolist()
+                    
+                    # Detokenize to Arabic text
+                    try:
+                        predicted_text = self.tokenizer.decode(pred_tokens, skip_special_tokens=True)
+                        target_text = self.tokenizer.decode(label_tokens, skip_special_tokens=True)
+                        
+                        logger.info(f"Predicted Arabic Text: {predicted_text}")
+                        logger.info(f"Target Arabic Text:    {target_text}")
+                        
+                        # Show token-level comparison
+                        logger.info("Token-level comparison (first 10 tokens):")
+                        for i in range(min(10, len(pred_tokens))):
+                            logger.info(f"  Position {i}: Predicted={pred_tokens[i]} vs Target={label_tokens[i]}")
+                            
+                    except Exception as decode_error:
+                        logger.warning(f"Failed to decode tokens to text: {decode_error}")
+                        logger.info(f"Predicted tokens: {pred_tokens}")
+                        logger.info(f"Target tokens:    {label_tokens}")
+                else:
+                    logger.warning("No valid (non-masked) tokens found for text prediction analysis")
+                    
+        except Exception as e:
+            logger.warning(f"Failed to log text predictions: {e}")
+
     def _compute_audio_loss(self, audio_logits, audio_labels):
         """Compute audio loss across multiple codebooks with proper sequence alignment."""
         if audio_logits is None or audio_labels is None:
@@ -545,6 +607,9 @@ class HiggsAudioTrainer:
                 if valid_codebooks > 0:
                     audio_loss = audio_loss / valid_codebooks
                     logger.info(f"Audio loss computed across {valid_codebooks} codebooks")
+                    
+                    # ADD DETAILED AUDIO PREDICTION LOGGING
+                    self._log_audio_predictions(audio_logits, audio_labels)
             else:
                 logger.warning(f"Unexpected audio labels shape: {audio_labels.shape}")
         else:
@@ -556,6 +621,55 @@ class HiggsAudioTrainer:
             )
         
         return audio_loss
+
+    def _log_audio_predictions(self, audio_logits, audio_labels):
+        """Log detailed audio predictions vs target labels."""
+        try:
+            logger.info("=== AUDIO PREDICTION ANALYSIS ===")
+            
+            # Get predictions for first codebook (most significant)
+            if len(audio_logits.shape) == 3 and audio_logits.size(1) >= 1:
+                # Get first codebook logits and labels
+                first_codebook_logits = audio_logits[:, 0, :]  # [seq_len, vocab_size]
+                first_codebook_labels = audio_labels[0, :]     # [seq_len]
+                
+                # Get predictions (argmax)
+                predictions = torch.argmax(first_codebook_logits, dim=-1)
+                
+                # Find valid positions
+                valid_mask = first_codebook_labels != -100
+                if valid_mask.sum() > 0:
+                    valid_predictions = predictions[valid_mask]
+                    valid_labels = first_codebook_labels[valid_mask]
+                    
+                    # Limit to first 10 tokens for readability
+                    max_tokens = min(10, len(valid_predictions))
+                    valid_predictions = valid_predictions[:max_tokens]
+                    valid_labels = valid_labels[:max_tokens]
+                    
+                    pred_tokens = valid_predictions.tolist()
+                    label_tokens = valid_labels.tolist()
+                    
+                    logger.info("First codebook audio token predictions:")
+                    logger.info(f"  Predicted tokens: {pred_tokens}")
+                    logger.info(f"  Target tokens:    {label_tokens}")
+                    
+                    # Show differences
+                    differences = []
+                    for i, (pred, target) in enumerate(zip(pred_tokens, label_tokens)):
+                        if pred != target:
+                            differences.append(f"Pos {i}: {pred} vs {target}")
+                    
+                    if differences:
+                        logger.info(f"  Differences: {', '.join(differences)}")
+                    else:
+                        logger.info("  Perfect match for first 10 tokens!")
+                        
+                else:
+                    logger.warning("No valid (non-masked) audio tokens found for prediction analysis")
+                    
+        except Exception as e:
+            logger.warning(f"Failed to log audio predictions: {e}")
 
     def _log_predictions_vs_labels_detailed(self, logits, labels):
         """Log first and last 10 text predictions vs labels for a few samples."""
@@ -814,6 +928,13 @@ class HiggsAudioTrainer:
                         if hasattr(pbar, 'set_postfix') and callable(getattr(pbar, 'set_postfix', None)):
                             pbar.set_postfix({"loss": loss_dict.get('total_loss', 0.0)})
                         logger.info(log_msg)
+                        
+                        # ADD DETAILED PREDICTION LOGGING EVERY 10 LOG STEPS
+                        if self.global_step % (self.args.log_steps * 10) == 0:
+                            logger.info("=== DETAILED PREDICTION LOGGING ===")
+                            logger.info(f"Current losses - Total: {loss_dict.get('total_loss', 0.0):.4f}, "
+                                      f"Text: {loss_dict.get('text_loss', 0.0):.4f}, "
+                                      f"Audio: {loss_dict.get('audio_loss', 0.0):.4f}")
                     
                     # Validation
                     if self.global_step % self.args.val_steps == 0 and self.local_rank == 0:
