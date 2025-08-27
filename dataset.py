@@ -1,24 +1,3 @@
-"""
-Minimal dataset implementation that mirrors inference preprocessing exactly.
-Strictly reuses boson_multimodal components without modifications.
-"""
-
-import os
-import json
-import torch
-import librosa
-import logging
-from typing import List, Dict, Any
-from torch.utils.data import Dataset
-from dataclasses import dataclass
-
-# Import exact components from boson_multimodal
-from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
-from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
-from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
-
-logger = logging.getLogger(__name__)
-
 class HiggsAudioDataset(Dataset):
     """Dataset that mirrors inference preprocessing exactly."""
     
@@ -67,9 +46,11 @@ class HiggsAudioDataset(Dataset):
                         for item in content:
                             if isinstance(item, dict) and item.get('type') == 'audio':
                                 audio_label_contents.append(item)
-                            elif isinstance(item, dict) and item.get('type') == 'audio':
+                            elif hasattr(item, 'type') and item.type == 'audio':
                                 audio_label_contents.append(item)
                     elif isinstance(content, dict) and content.get('type') == 'audio':
+                        audio_label_contents.append(content)
+                    elif hasattr(content, 'type') and content.type == 'audio':
                         audio_label_contents.append(content)
         elif len(result) == 5:
             input_tokens, label_tokens, audio_contents, audio_label_contents, speaker_id = result
@@ -117,17 +98,20 @@ class HiggsAudioDataset(Dataset):
         # CRITICAL FIX: Process reference audio (for conditioning) and target audio (for labels) separately
         # Process reference audio (goes to audio_ids_list for conditioning)
         for i, audio_content in enumerate(audio_contents):
-            if audio_content and hasattr(audio_content, 'audio_url'):
-                audio_path = audio_content.audio_url
+            if audio_content and (hasattr(audio_content, 'audio_url') or isinstance(audio_content, dict)):
+                audio_path = audio_content.audio_url if hasattr(audio_content, 'audio_url') else audio_content.get('audio_url')
                 if audio_path and os.path.exists(audio_path):
                     # Tokenize audio - EXACT pattern from inference
-                    audio_codes = self.audio_tokenizer.encode(audio_path)
-                    # Load waveform at exact sample rate (24000Hz matches inference)
-                    waveform, sr = librosa.load(audio_path, sr=24000, mono=True)
-                    waveform = torch.tensor(waveform, dtype=torch.float32)
-                    
-                    audio_ids_list.append(audio_codes)
-                    audio_waveforms_list.append(waveform)
+                    try:
+                        audio_codes = self.audio_tokenizer.encode(audio_path)
+                        # Load waveform at exact sample rate (24000Hz matches inference)
+                        waveform, sr = librosa.load(audio_path, sr=24000, mono=True)
+                        waveform = torch.tensor(waveform, dtype=torch.float32)
+                        
+                        audio_ids_list.append(audio_codes)
+                        audio_waveforms_list.append(waveform)
+                    except Exception as e:
+                        logger.warning(f"Failed to process audio {audio_path}: {e}")
         
         # CRITICAL FIX: Process target audio labels (goes to label_audio_ids_list for training)
         # This is the key fix - we need to process audio_label_contents to create label_audio_ids
@@ -137,14 +121,20 @@ class HiggsAudioDataset(Dataset):
                 if hasattr(audio_label_content, 'audio_url'):
                     label_audio_path = audio_label_content.audio_url
                     if label_audio_path and os.path.exists(label_audio_path):
-                        label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
-                        label_audio_ids_list.append(label_audio_codes)
+                        try:
+                            label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
+                            label_audio_ids_list.append(label_audio_codes)
+                        except Exception as e:
+                            logger.warning(f"Failed to process label audio {label_audio_path}: {e}")
                 # Check if it's a dict with audio_url key
                 elif isinstance(audio_label_content, dict) and 'audio_url' in audio_label_content:
                     label_audio_path = audio_label_content['audio_url']
                     if label_audio_path and os.path.exists(label_audio_path):
-                        label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
-                        label_audio_ids_list.append(label_audio_codes)
+                        try:
+                            label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
+                            label_audio_ids_list.append(label_audio_codes)
+                        except Exception as e:
+                            logger.warning(f"Failed to process label audio {label_audio_path}: {e}")
         
         if audio_ids_list:
             # Concatenate audio data - EXACT pattern from working scripts
@@ -205,6 +195,24 @@ class HiggsAudioDataset(Dataset):
         )
 
 
+def create_collator(config, whisper_processor):
+    """Create collator with EXACT parameters from working implementation"""
+    return ExtendedHiggsAudioSampleCollator(
+        whisper_processor=whisper_processor,
+        encode_whisper_embed=True,  # Always enable for training
+        audio_in_token_id=config.audio_in_token_idx,
+        audio_out_token_id=config.audio_out_token_idx,
+        audio_stream_bos_id=config.audio_stream_bos_id,
+        audio_stream_eos_id=config.audio_stream_eos_id,
+        pad_token_id=config.pad_token_id,
+        return_audio_in_tokens=True,  # CRITICAL FIX: Enable for proper audio handling
+        use_delay_pattern=False,      # Match working implementation
+        audio_num_codebooks=8,        # Explicitly set to 8 codebooks
+        round_to=8,                   # Match working implementation
+        mask_audio_out_token_label=False,  # CRITICAL FIX: Disable over-masking
+    )
+
+
 @dataclass
 class ExtendedHiggsAudioBatchInput:
     """
@@ -248,9 +256,6 @@ class ExtendedHiggsAudioSampleCollator:
         # 1. Call the official base collator to do all the complex padding and alignment work
         batch_input = self.base_collator(batch)
         
-        # batch_input.audio_out_ids is properly padded and processed, matching the length of model's audio_logits
-        label_audio_ids = batch_input.audio_out_ids
-        
         # 2. Convert to our extended class and pass in the perfectly aligned labels
         extended_batch = ExtendedHiggsAudioBatchInput(
             input_ids=batch_input.input_ids,
@@ -263,26 +268,8 @@ class ExtendedHiggsAudioSampleCollator:
             audio_in_ids=batch_input.audio_in_ids,
             audio_in_ids_start=batch_input.audio_in_ids_start,
             label_ids=batch_input.label_ids,
-            label_audio_ids=label_audio_ids, # <-- Use the properly aligned labels
+            label_audio_ids=batch_input.label_audio_ids, # Use the properly aligned labels from base collator
             reward=batch_input.reward,
         )
         
         return extended_batch
-
-
-def create_collator(config, whisper_processor):
-    """Create collator with EXACT parameters from working implementation"""
-    return ExtendedHiggsAudioSampleCollator(
-        whisper_processor=whisper_processor,
-        encode_whisper_embed=True,  # Always enable for training
-        audio_in_token_id=config.audio_in_token_idx,
-        audio_out_token_id=config.audio_out_token_idx,
-        audio_stream_bos_id=config.audio_stream_bos_id,
-        audio_stream_eos_id=config.audio_stream_eos_id,
-        pad_token_id=config.pad_token_id,
-        return_audio_in_tokens=True,  # CRITICAL FIX: Enable for proper audio handling
-        use_delay_pattern=False,      # Match working implementation
-        audio_num_codebooks=8,        # Explicitly set to 8 codebooks
-        round_to=8,                   # Match working implementation
-        mask_audio_out_token_label=False,  # CRITICAL FIX: Disable over-masking
-    )

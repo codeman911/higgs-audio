@@ -218,7 +218,6 @@ class HiggsAudioTrainer:
                 if v.dtype == torch.float32:
                     # Cast float32 tensors to bfloat16 for consistency
                     dtype_corrected_inputs[k] = v.to(dtype=target_dtype)
-                    logger.debug(f"Cast {k} from {v.dtype} to {target_dtype}")
                 elif v.dtype == torch.bfloat16:
                     # Already correct dtype
                     dtype_corrected_inputs[k] = v
@@ -237,7 +236,7 @@ class HiggsAudioTrainer:
         try:
             with torch.autocast(device_type='cuda', dtype=target_dtype):
                 # Direct call to HiggsAudioModel forward method, bypassing all wrappers
-                if hasattr(base_model, 'forward'):
+                if callable(getattr(base_model, 'forward', None)):
                     outputs = base_model.forward(**dtype_corrected_inputs)
                 else:
                     # Fallback for models that don't have explicit forward method
@@ -271,7 +270,12 @@ class HiggsAudioTrainer:
         # Iteratively unwrap until we find HiggsAudioModel
         max_depth = 20
         for depth in range(max_depth):
-            model_type = type(model).__name__
+            # Check if model is a tensor (error case)
+            if isinstance(model, torch.Tensor):
+                logger.error("Model became a tensor during unwrapping - this should not happen")
+                break
+                
+            model_type = type(model).__name__ if hasattr(model, '__class__') else str(type(model))
             path.append(model_type)
             
             # Found the target model
@@ -279,15 +283,21 @@ class HiggsAudioTrainer:
                 # logger.info(f"Found HiggsAudioModel at depth {depth}: {' -> '.join(path)}")
                 return model
             
-            # Try different unwrapping attributes
-            if hasattr(model, 'module') and model.module is not None:  # DDP wrapper
+            # Try different unwrapping attributes in order of likelihood
+            if hasattr(model, 'module') and model.module is not None and not isinstance(model.module, torch.Tensor):  # DDP wrapper
                 model = model.module
                 continue
-            elif hasattr(model, 'base_model') and model.base_model is not None:  # PEFT wrapper
+            elif hasattr(model, 'base_model') and model.base_model is not None and not isinstance(model.base_model, torch.Tensor):  # PEFT wrapper
                 model = model.base_model
                 continue
-            elif hasattr(model, 'model') and model.model is not None:  # Generic wrapper
+            elif hasattr(model, 'model') and model.model is not None and not isinstance(model.model, torch.Tensor):  # Generic wrapper
                 model = model.model
+                continue
+            elif (hasattr(model, 'base_model') and 
+                  hasattr(model.base_model, 'model') and 
+                  model.base_model.model is not None and 
+                  not isinstance(model.base_model.model, torch.Tensor)):
+                model = model.base_model.model
                 continue
             else:
                 # No more wrappers found, check if this is the right model
@@ -516,20 +526,33 @@ class HiggsAudioTrainer:
         audio_loss = torch.tensor(0.0, device=self.device)
         
         # Handle different tensor shapes for multi-codebook audio
-        if len(audio_logits.shape) == 3 and audio_logits.size(1) == 8:
-            # Shape: [seq_len, 8_codebooks, vocab_size]
-            num_codebooks = 8
-            seq_len_logits = audio_logits.size(0)
+        # Check if audio_logits has the expected shape for Higgs Audio model
+        if len(audio_logits.shape) == 3:
+            # Shape: [seq_len, num_codebooks, vocab_size] or [num_codebooks, seq_len, vocab_size]
+            # Audio labels should be [num_codebooks, seq_len] or [seq_len, num_codebooks]
+            
+            # Determine the correct dimensions
+            if audio_logits.size(1) == 8:  # Likely [seq_len, 8_codebooks, vocab_size]
+                # Transpose to [8_codebooks, seq_len, vocab_size]
+                audio_logits = audio_logits.transpose(0, 1)
+                num_codebooks = 8
+                seq_len_logits = audio_logits.size(1)
+            elif audio_logits.size(0) == 8:  # Likely [8_codebooks, seq_len, vocab_size]
+                num_codebooks = 8
+                seq_len_logits = audio_logits.size(1)
+            else:
+                # Fallback for unexpected shapes
+                logger.warning(f"Unexpected audio logits shape: {audio_logits.shape}")
+                return torch.tensor(0.0, device=self.device)
             
             # Audio labels should be [8_codebooks, seq_len]
             if audio_labels.dim() == 2 and audio_labels.size(0) == 8:
                 seq_len_labels = audio_labels.size(1)
                 
-                # Apply teacher forcing shift for audio (similar to text)
-                # Audio logits predict next audio token
+                # Align sequences if needed
                 if seq_len_logits > seq_len_labels:
                     # Trim logits to match labels
-                    audio_logits = audio_logits[:seq_len_labels, :, :]
+                    audio_logits = audio_logits[:, :seq_len_labels, :]
                     seq_len_logits = seq_len_labels
                 elif seq_len_labels > seq_len_logits:
                     # Trim labels to match logits  
@@ -545,7 +568,7 @@ class HiggsAudioTrainer:
                 
                 # CRITICAL FIX: Compute loss for each codebook separately
                 for cb in range(num_codebooks):
-                    cb_logits = audio_logits[:, cb, :]  # [seq_len, vocab_size]
+                    cb_logits = audio_logits[cb, :, :]  # [seq_len, vocab_size]
                     cb_labels = audio_labels[cb, :]     # [seq_len]
                     
                     # Only compute loss on valid tokens (ignore -100)
@@ -569,7 +592,11 @@ class HiggsAudioTrainer:
                     audio_loss = audio_loss / valid_codebooks
                     # logger.info(f"Audio loss computed across {valid_codebooks} codebooks")
                 else:
-                    logger.warning(f"Unexpected audio labels shape: {audio_labels.shape}")
+                    logger.warning("No valid codebooks found for audio loss computation")
+                    audio_loss = torch.tensor(0.0, device=self.device)
+            else:
+                logger.warning(f"Unexpected audio labels shape: {audio_labels.shape}")
+                audio_loss = torch.tensor(0.0, device=self.device)
         else:
             # Fallback: treat as single output
             valid_mask = audio_labels != -100
@@ -811,7 +838,10 @@ class HiggsAudioTrainer:
         
         for epoch in range(self.args.epochs):
             # Check if sampler has set_epoch method before calling it
-            if self.world_size > 1 and hasattr(self.train_dataloader.sampler, 'set_epoch') and callable(getattr(self.train_dataloader.sampler, 'set_epoch', None)):
+            if (self.world_size > 1 and 
+                hasattr(self.train_dataloader, 'sampler') and
+                hasattr(self.train_dataloader.sampler, 'set_epoch') and 
+                callable(getattr(self.train_dataloader.sampler, 'set_epoch', None))):
                 self.train_dataloader.sampler.set_epoch(epoch)
             
             # Create progress bar for this epoch
