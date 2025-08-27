@@ -38,6 +38,7 @@ class HiggsAudioTrainer:
         self.load_model_and_tokenizers()
         self.setup_dataset()
         self.setup_training()
+        self.verify_output_directory()  # Add verification of output directory
     
     def setup_distributed(self):
         """Setup DDP training."""
@@ -890,6 +891,16 @@ class HiggsAudioTrainer:
         self.global_step = 0
         accum_step = 0
         
+        # Log training configuration
+        if self.local_rank == 0:
+            logger.info(f"Starting training with configuration:")
+            logger.info(f"  Output directory: {self.args.output_dir}")
+            logger.info(f"  Save steps: {self.args.save_steps}")
+            logger.info(f"  Log steps: {self.args.log_steps}")
+            logger.info(f"  Validation steps: {self.args.val_steps}")
+            logger.info(f"  World size: {self.world_size}")
+            logger.info(f"  Local rank: {self.local_rank}")
+        
         for epoch in range(self.args.epochs):
             # Check if sampler has set_epoch method before calling it
             if (self.world_size > 1 and 
@@ -941,14 +952,43 @@ class HiggsAudioTrainer:
                         val_loss, val_text_loss, val_audio_loss = self.validate()
                         logger.info(f"Step {self.global_step} - Val Loss: {val_loss:.4f}, Text: {val_text_loss:.4f}, Audio: {val_audio_loss:.4f}")
                     
-                    # Checkpointing
-                    if self.global_step % self.args.save_steps == 0 and self.local_rank == 0:
-                        checkpoint_dir = f"{self.args.output_dir}/checkpoint-{self.global_step}"
-                        os.makedirs(checkpoint_dir, exist_ok=True)
-                        save_lora_adapters(self.model.module if self.world_size > 1 else self.model, 
-                                         checkpoint_dir)
-                        logger.info(f"Saved checkpoint at step {self.global_step}")
-    
+                    # Checkpointing - ENHANCED WITH BETTER LOGGING AND ERROR HANDLING
+                    if self.global_step % self.args.save_steps == 0:
+                        try:
+                            # Only save from main process in distributed training
+                            if self.local_rank == 0:
+                                logger.info(f"Attempting to save checkpoint at step {self.global_step}")
+                                logger.info(f"Output directory: {self.args.output_dir}")
+                                
+                                # Ensure output directory exists
+                                os.makedirs(self.args.output_dir, exist_ok=True)
+                                
+                                # Create checkpoint directory
+                                checkpoint_dir = f"{self.args.output_dir}/checkpoint-{self.global_step}"
+                                logger.info(f"Creating checkpoint directory: {checkpoint_dir}")
+                                os.makedirs(checkpoint_dir, exist_ok=True)
+                                
+                                # Save LoRA adapters
+                                model_to_save = self.model.module if self.world_size > 1 else self.model
+                                logger.info(f"Saving LoRA adapters to {checkpoint_dir}")
+                                save_lora_adapters(model_to_save, checkpoint_dir)
+                                
+                                # Verify checkpoint was saved
+                                if os.path.exists(checkpoint_dir):
+                                    checkpoint_files = os.listdir(checkpoint_dir)
+                                    logger.info(f"Checkpoint saved successfully. Files: {checkpoint_files}")
+                                else:
+                                    logger.error(f"Failed to create checkpoint directory: {checkpoint_dir}")
+                                    
+                            # In distributed training, synchronize all processes
+                            if self.world_size > 1:
+                                torch.distributed.barrier()
+                                
+                        except Exception as e:
+                            logger.error(f"Failed to save checkpoint at step {self.global_step}: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
+
     def _take_corrective_action(self, batch, alert):
         """Take corrective action when near-zero audio loss is detected."""
         logger.warning("⚠️  INITIATING CORRECTIVE ACTION FOR NEAR-ZERO AUDIO LOSS")
@@ -994,6 +1034,41 @@ class HiggsAudioTrainer:
             # 4. Or stop training entirely
             
             # For now, we'll just log the critical condition
+    
+    def verify_output_directory(self):
+        """Verify that the output directory is properly configured and writable."""
+        try:
+            # Ensure output directory exists
+            os.makedirs(self.args.output_dir, exist_ok=True)
+            
+            # Test write access by creating a temporary file
+            test_file = os.path.join(self.args.output_dir, ".write_test")
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+            
+            logger.info(f"Output directory verified: {self.args.output_dir}")
+            logger.info(f"  - Directory exists: {os.path.exists(self.args.output_dir)}")
+            logger.info(f"  - Write access: True")
+            
+            # Log available disk space
+            import shutil
+            total, used, free = shutil.disk_usage(self.args.output_dir)
+            logger.info(f"  - Available disk space: {free / (1024**3):.2f} GB")
+            
+        except Exception as e:
+            logger.error(f"Output directory verification failed: {e}")
+            logger.error(f"  - Directory: {self.args.output_dir}")
+            logger.error(f"  - Error: {str(e)}")
+            
+            # Try to create a default output directory
+            default_output_dir = "./output"
+            try:
+                os.makedirs(default_output_dir, exist_ok=True)
+                logger.info(f"Falling back to default output directory: {default_output_dir}")
+                self.args.output_dir = default_output_dir
+            except Exception as fallback_error:
+                logger.error(f"Failed to create default output directory: {fallback_error}")
 
 
 def parse_args():
