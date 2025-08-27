@@ -1,3 +1,15 @@
+import json
+import os
+import torch
+import librosa
+from torch.utils.data import Dataset
+from dataclasses import dataclass
+from typing import List
+from loguru import logger
+
+from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
+
+
 class HiggsAudioDataset(Dataset):
     """Dataset that mirrors inference preprocessing exactly."""
     
@@ -46,11 +58,11 @@ class HiggsAudioDataset(Dataset):
                         for item in content:
                             if isinstance(item, dict) and item.get('type') == 'audio':
                                 audio_label_contents.append(item)
-                            elif hasattr(item, 'type') and item.type == 'audio':
+                            elif hasattr(item, 'type') and getattr(item, 'type', None) == 'audio':
                                 audio_label_contents.append(item)
                     elif isinstance(content, dict) and content.get('type') == 'audio':
                         audio_label_contents.append(content)
-                    elif hasattr(content, 'type') and content.type == 'audio':
+                    elif hasattr(content, 'type') and getattr(content, 'type', None) == 'audio':
                         audio_label_contents.append(content)
         elif len(result) == 5:
             input_tokens, label_tokens, audio_contents, audio_label_contents, speaker_id = result
@@ -185,13 +197,13 @@ class HiggsAudioDataset(Dataset):
         return ChatMLDatasetSample(
             input_ids=torch.tensor(input_tokens, dtype=torch.long),
             label_ids=torch.tensor(label_tokens, dtype=torch.long),
-            audio_ids_concat=audio_ids_concat,
-            audio_ids_start=audio_ids_start,
+            audio_ids_concat=audio_ids_concat.long() if audio_ids_concat is not None else torch.zeros((8, 0), dtype=torch.long),
+            audio_ids_start=audio_ids_start.long() if audio_ids_start is not None else torch.tensor([], dtype=torch.long),
             audio_waveforms_concat=audio_waveforms_concat,
-            audio_waveforms_start=audio_waveforms_start,
-            audio_sample_rate=audio_sample_rate,
-            audio_speaker_indices=audio_speaker_indices,
-            audio_label_ids_concat=label_audio_ids_concat  # Add audio labels
+            audio_waveforms_start=audio_waveforms_start.long() if audio_waveforms_start is not None else torch.tensor([], dtype=torch.long),
+            audio_sample_rate=audio_sample_rate.float() if audio_sample_rate is not None else torch.tensor([24000], dtype=torch.float32),
+            audio_speaker_indices=audio_speaker_indices.long() if audio_speaker_indices is not None else torch.tensor([0], dtype=torch.long),
+            audio_label_ids_concat=label_audio_ids_concat.long() if label_audio_ids_concat is not None else None
         )
 
 
@@ -225,14 +237,14 @@ class ExtendedHiggsAudioBatchInput:
     
     def __len__(self):
         """Return the batch size based on input_ids"""
-        if hasattr(self, 'input_ids') and self.input_ids is not None:
+        if hasattr(self, 'input_ids') and getattr(self, 'input_ids', None) is not None:
             return self.input_ids.shape[0]
         else:
             return 0
     
     def __getitem__(self, key):
         """Allow dictionary-style access for compatibility"""
-        return getattr(self, key)
+        return getattr(self, key, None)
     
     def __contains__(self, key):
         """Check if attribute exists"""
