@@ -120,7 +120,9 @@ class HiggsAudioDataset(Dataset):
             # Pad audio_label_contents if it's shorter than audio_contents
             audio_label_contents.extend([None] * (len(audio_contents) - len(audio_label_contents)))
         
-        for i, (audio_content, audio_label_content) in enumerate(zip(audio_contents, audio_label_contents)):
+        # CRITICAL FIX: Process reference audio (for conditioning) and target audio (for labels) separately
+        # Process reference audio (goes to audio_ids_list for conditioning)
+        for i, audio_content in enumerate(audio_contents):
             if audio_content and hasattr(audio_content, 'audio_url'):
                 audio_path = audio_content.audio_url
                 if audio_path and os.path.exists(audio_path):
@@ -132,13 +134,14 @@ class HiggsAudioDataset(Dataset):
                     
                     audio_ids_list.append(audio_codes)
                     audio_waveforms_list.append(waveform)
-                    
-                    # Process audio labels if available
-                    if audio_label_content is not None and hasattr(audio_label_content, 'audio_url'):
-                        label_audio_path = audio_label_content.audio_url
-                        if label_audio_path and os.path.exists(label_audio_path):
-                            label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
-                            label_audio_ids_list.append(label_audio_codes)
+        
+        # Process target audio labels (goes to label_audio_ids_list for training)
+        for i, audio_label_content in enumerate(audio_label_contents):
+            if audio_label_content is not None and hasattr(audio_label_content, 'audio_url'):
+                label_audio_path = audio_label_content.audio_url
+                if label_audio_path and os.path.exists(label_audio_path):
+                    label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
+                    label_audio_ids_list.append(label_audio_codes)
         
         if audio_ids_list:
             # Concatenate audio data - EXACT pattern from working scripts
@@ -274,9 +277,9 @@ def create_collator(config, whisper_processor):
         audio_stream_bos_id=config.audio_stream_bos_id,
         audio_stream_eos_id=config.audio_stream_eos_id,
         pad_token_id=config.pad_token_id,
-        return_audio_in_tokens=True,  # Enable for proper audio handling
+        return_audio_in_tokens=True,  # CRITICAL FIX: Enable for proper audio handling
         use_delay_pattern=False,      # Match working implementation
         audio_num_codebooks=8,        # Explicitly set to 8 codebooks
         round_to=8,                   # Match working implementation
-        mask_audio_out_token_label=False,  # Disable over-masking
+        mask_audio_out_token_label=False,  # CRITICAL FIX: Disable over-masking
     )

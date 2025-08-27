@@ -15,6 +15,7 @@ from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, AutoProcessor, get_cosine_schedule_with_warmup
 import logging
 from tqdm import tqdm
+from typing import Any, Dict, Union
 
 # Import exact components from boson_multimodal
 from boson_multimodal.model.higgs_audio import HiggsAudioConfig, HiggsAudioModel
@@ -61,11 +62,12 @@ class HiggsAudioTrainer:
         self.config.encode_whisper_embed = True
         
         # Load model with exact inference initialization
-        self.model = HiggsAudioModel.from_pretrained(
+        model = HiggsAudioModel.from_pretrained(
             self.args.base_ckpt,
             config=self.config,
             torch_dtype=torch.bfloat16
-        ).to(self.device)
+        )
+        self.model = model.to(self.device)
         
         # Load tokenizers - EXACT pattern from serve_engine.py
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.base_ckpt)
@@ -234,8 +236,12 @@ class HiggsAudioTrainer:
         # This completely avoids PEFT's parameter injection
         try:
             with torch.autocast(device_type='cuda', dtype=target_dtype):
-                # Direct call to HiggsAudioModel.forward, bypassing all wrappers
-                outputs = base_model.forward(**dtype_corrected_inputs)
+                # Direct call to HiggsAudioModel forward method, bypassing all wrappers
+                if hasattr(base_model, 'forward'):
+                    outputs = base_model.forward(**dtype_corrected_inputs)
+                else:
+                    # Fallback for models that don't have explicit forward method
+                    outputs = base_model(**dtype_corrected_inputs)
         except Exception as e:
             logger.error(f"Direct forward call failed: {e}")
             logger.error(f"Base model type: {type(base_model)}")
@@ -274,13 +280,13 @@ class HiggsAudioTrainer:
                 return model
             
             # Try different unwrapping attributes
-            if hasattr(model, 'module'):  # DDP wrapper
+            if hasattr(model, 'module') and model.module is not None:  # DDP wrapper
                 model = model.module
                 continue
-            elif hasattr(model, 'base_model'):  # PEFT wrapper
+            elif hasattr(model, 'base_model') and model.base_model is not None:  # PEFT wrapper
                 model = model.base_model
                 continue
-            elif hasattr(model, 'model'):  # Generic wrapper
+            elif hasattr(model, 'model') and model.model is not None:  # Generic wrapper
                 model = model.model
                 continue
             else:
@@ -537,6 +543,7 @@ class HiggsAudioTrainer:
                 total_valid_tokens = 0
                 total_tokens = 0
                 
+                # CRITICAL FIX: Compute loss for each codebook separately
                 for cb in range(num_codebooks):
                     cb_logits = audio_logits[:, cb, :]  # [seq_len, vocab_size]
                     cb_labels = audio_labels[cb, :]     # [seq_len]
@@ -803,7 +810,8 @@ class HiggsAudioTrainer:
         accum_step = 0
         
         for epoch in range(self.args.epochs):
-            if self.world_size > 1 and hasattr(self.train_dataloader.sampler, 'set_epoch'):
+            # Check if sampler has set_epoch method before calling it
+            if self.world_size > 1 and hasattr(self.train_dataloader.sampler, 'set_epoch') and callable(getattr(self.train_dataloader.sampler, 'set_epoch', None)):
                 self.train_dataloader.sampler.set_epoch(epoch)
             
             # Create progress bar for this epoch
@@ -832,7 +840,9 @@ class HiggsAudioTrainer:
                     # Logging
                     if global_step % self.args.log_steps == 0 and self.local_rank == 0:
                         log_msg = f"Step {global_step} - Train Loss: {loss_dict}"
-                        pbar.set_postfix({"loss": loss_dict.get('total_loss', 0.0)})
+                        # Check if pbar has set_postfix method before calling it
+                        if hasattr(pbar, 'set_postfix') and callable(getattr(pbar, 'set_postfix', None)):
+                            pbar.set_postfix({"loss": loss_dict.get('total_loss', 0.0)})
                         logger.info(log_msg)
                     
                     # Validation

@@ -177,7 +177,14 @@ After implementing these minimal fixes:
 
 ## Conclusion
 
-The zero audio loss issue stems from improper audio label creation where the same audio file is used for both reference conditioning and target labels. By correctly distinguishing between these two roles and ensuring proper data flow through the collator to the loss computation, the training pipeline will be able to learn meaningful audio generation capabilities for zero-shot voice cloning.While the current pipeline has implemented a good fix with `mask_audio_out_token_label=False` to prevent over-masking, there might be other parameter mismatches between what the collator is producing and what the model expects for proper audio loss computation.
+The zero audio loss issue stems from improper audio label creation where the same audio file is used for both reference conditioning and target labels. By correctly distinguishing between these two roles and ensuring proper data flow through the collator to the loss computation, the training pipeline will be able to learn meaningful audio generation capabilities for zero-shot voice cloning.
+
+The three critical fixes identified are:
+1. **Dataset Fix**: Properly separate reference audio (for conditioning) from target audio (for learning)
+2. **Collator Fix**: Enable `return_audio_in_tokens=True` for proper audio conditioning
+3. **Loss Computation Fix**: Add validation and logging to ensure audio loss is properly computed
+
+These minimal changes will restore the audio training signal without over-engineering the pipeline, maintaining the zero-shot voice cloning capabilities while ensuring proper loss computation.While the current pipeline has implemented a good fix with `mask_audio_out_token_label=False` to prevent over-masking, there might be other parameter mismatches between what the collator is producing and what the model expects for proper audio loss computation.
 
 #### Issue 3: Loss Computation Skipping
 
