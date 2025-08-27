@@ -39,18 +39,32 @@ def validate_checkpoint_directory(checkpoint_path):
         files = os.listdir(checkpoint_path)
         logger.info(f"Directory contents: {files}")
         
-        # Check for expected files
-        expected_files = ["adapter_config.json", "adapter_model.bin"]
-        found_files = [f for f in files if f in expected_files]
-        missing_files = [f for f in expected_files if f not in files]
+        # Check for expected files (newer PEFT versions use safetensors)
+        expected_files = ["adapter_config.json", "adapter_model.safetensors"]
+        alternate_files = ["adapter_config.json", "adapter_model.bin"]  # Older format
         
-        if found_files:
+        found_files = [f for f in files if f in expected_files]
+        found_alternate = [f for f in files if f in alternate_files]
+        
+        if len(found_files) >= 1:  # At least one of the main files
             logger.info(f"Found expected files: {found_files}")
+        elif len(found_alternate) >= 1:  # At least one of the alternate files
+            logger.info(f"Found alternate expected files: {found_alternate}")
         else:
             logger.warning("No expected checkpoint files found")
             
-        if missing_files:
-            logger.warning(f"Missing expected files: {missing_files}")
+        # Check if we have the config file
+        if "adapter_config.json" in files:
+            logger.info("✅ Found adapter_config.json")
+        else:
+            logger.warning("❌ Missing adapter_config.json")
+            
+        # Check if we have at least one model file
+        model_files = ["adapter_model.safetensors", "adapter_model.bin"]
+        if any(f in files for f in model_files):
+            logger.info("✅ Found at least one model file")
+        else:
+            logger.warning("❌ Missing model files")
             
         return True
         
