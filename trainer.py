@@ -38,13 +38,6 @@ class HiggsAudioTrainer:
         self.load_model_and_tokenizers()
         self.setup_dataset()
         self.setup_training()
-        
-        # Initialize near-zero audio loss monitoring system
-        self.audio_loss_monitor = AudioLossMonitor(
-            window_size=100,  # Monitor over 100 steps
-            threshold=0.01,   # Alert when audio loss drops below 0.01
-            critical_threshold=0.005  # Critical alert when audio loss drops below 0.005
-        )
     
     def setup_distributed(self):
         """Setup DDP training."""
@@ -191,8 +184,8 @@ class HiggsAudioTrainer:
         )
         
         # Loss function - EXACT pattern from model implementation
-        self.text_loss_fn = nn.CrossEntropyLoss(ignore_index=-100, reduction='none')  # Keep per-element losses for debugging
-        self.audio_loss_fn = nn.CrossEntropyLoss(ignore_index=-100, reduction='none')  # Keep per-element losses for debugging
+        self.text_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
+        self.audio_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
     
     def compute_loss(self, batch):
         """Compute dual loss with complete PEFT bypass via custom forward implementation."""
@@ -212,7 +205,7 @@ class HiggsAudioTrainer:
             # Keep all model-specific label parameters
             if k not in ['labels']:  # Remove ONLY the generic PEFT-injected 'labels'
                 clean_inputs[k] = v
-            
+        
         # CRITICAL FIX: Ensure all tensors have consistent dtype for mixed precision training
         # The error occurs because audio embeddings are Float32 but final_embedding is BFloat16
         target_dtype = torch.bfloat16
@@ -238,19 +231,12 @@ class HiggsAudioTrainer:
         text_labels = batch.get('label_ids')
         audio_labels = batch.get('label_audio_ids')
         
-        # CRITICAL VALIDATION: Check that essential model inputs are present
-        self._validate_model_inputs(batch, clean_inputs)
-        
         # BYPASS PEFT: Call the forward method directly on the base model
         # This completely avoids PEFT's parameter injection
         try:
             with torch.autocast(device_type='cuda', dtype=target_dtype):
-                # Direct call to HiggsAudioModel forward method, bypassing all wrappers
-                if callable(getattr(base_model, 'forward', None)):
-                    outputs = base_model.forward(**dtype_corrected_inputs)
-                else:
-                    # Fallback for models that don't have explicit forward method
-                    outputs = base_model(**dtype_corrected_inputs)
+                # Direct call to HiggsAudioModel.forward, bypassing all wrappers
+                outputs = base_model.forward(**dtype_corrected_inputs)
         except Exception as e:
             logger.error(f"Direct forward call failed: {e}")
             logger.error(f"Base model type: {type(base_model)}")
@@ -264,9 +250,12 @@ class HiggsAudioTrainer:
             raise
         
         try:
-            return self._compute_dual_loss(outputs, text_labels, audio_labels, batch)
+            return self._compute_dual_loss(outputs, text_labels, audio_labels)
         except Exception as e:
             logger.error(f"Loss computation failed: {e}")
+            # Log batch info for debugging
+            logger.error(f"Batch keys: {list(batch.keys())}")
+            logger.error(f"Batch shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in batch.items()]}")
             raise
     
     def _validate_model_inputs(self, original_batch, clean_inputs):
@@ -371,37 +360,34 @@ class HiggsAudioTrainer:
         # logger.warning(f"Unwrapping path: {' -> '.join(path)}")
         return model
     
-    def _compute_dual_loss(self, outputs, text_labels, audio_labels, batch):
+    def _compute_dual_loss(self, outputs, text_labels, audio_labels):
         """Compute dual loss from model outputs and labels."""
         total_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
         loss_dict = {}
-        
-        # For logging predictions vs labels
-        self.forward_step_count = getattr(self, "forward_step_count", 0)
-        self.forward_step_count += 1
         
         # Extract outputs
         text_logits = getattr(outputs, 'logits', None)
         audio_logits = getattr(outputs, 'audio_logits', None)
         
-        # CRITICAL FIX: Check if model's expanded_labels are properly aligned before using them
-        # Only use expanded_labels if they have the same sequence length as logits
+        # CRITICAL INSIGHT: The model already provides correctly aligned labels!
+        # Use the model's expanded_labels instead of the original batch labels
         model_expanded_labels = getattr(outputs, 'expanded_labels', None)
         
-        # Validate expanded_labels alignment before using them
-        if model_expanded_labels is not None and text_logits is not None:
-            if model_expanded_labels.size(1) != text_logits.size(1):
-                logger.warning(f"⚠️  Model expanded_labels misaligned: {model_expanded_labels.size(1)} vs {text_logits.size(1)}")
-                logger.warning("⚠️  Falling back to original labels to avoid alignment issues")
-                model_expanded_labels = None
-        
-        # Only log shapes if needed for debugging
-        # if text_logits is not None:
-        #     logger.info(f"Text logits shape: {text_logits.shape}")
-        # if audio_logits is not None:
-        #     logger.info(f"Audio logits shape: {audio_logits.shape}")
-        # if model_expanded_labels is not None:
-        #     logger.info(f"Model expanded labels shape: {model_expanded_labels.shape}")
+        if text_logits is not None:
+            logger.info(f"Text logits shape: {text_logits.shape}")
+        if audio_logits is not None:
+            logger.info(f"Audio logits shape: {audio_logits.shape}")
+            if audio_logits.numel() == 0:
+                logger.error("❌ Audio logits are empty! This means no audio output positions were detected.")
+                logger.error("Check: 1) audio_out_ids in batch, 2) audio_out_mask generation, 3) audio output tokens in data")
+            else:
+                logger.info(f"✓ Audio logits non-empty: {audio_logits.shape}")
+        else:
+            logger.warning("⚠️  Audio logits are None")
+        if model_expanded_labels is not None:
+            logger.info(f"✓ Model expanded labels shape: {model_expanded_labels.shape}")
+        else:
+            logger.warning("⚠️  Model expanded_labels is None - falling back to manual alignment")
         
         # Text loss with OPTIMAL teacher forcing alignment
         if text_logits is not None and model_expanded_labels is not None:
@@ -413,45 +399,29 @@ class HiggsAudioTrainer:
             shift_logits = text_logits.contiguous()  # [batch, seq_len, vocab]
             shift_labels = model_expanded_labels.contiguous()  # [batch, seq_len]
             
+            logger.info(f"Final logits shape: {shift_logits.shape}")
+            logger.info(f"Final labels shape: {shift_labels.shape}")
+            
             # Validate alignment
             if shift_logits.size(1) == shift_labels.size(1):
                 # Count valid (non-ignore) tokens for loss computation
                 valid_mask = shift_labels != -100
                 num_valid_tokens = valid_mask.sum().item()
-                # Only log detailed alignment info if needed
-                # logger.info(f"Perfect alignment! Computing loss on {num_valid_tokens} valid tokens")
+                logger.info(f"✓ Perfect alignment! Computing loss on {num_valid_tokens} valid tokens")
                 
-                # DEBUG: Log detailed token masking information
-                if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
-                    logger.info(f"TEXT LOSS DEBUG: Total tokens: {shift_labels.numel()}, Valid (unmasked) tokens: {num_valid_tokens}")
-                
-                # Compute loss only on unmasked tokens
-                text_loss_per_element = self.text_loss_fn(
+                text_loss = self.text_loss_fn(
                     shift_logits.view(-1, shift_logits.size(-1)),  # [batch*seq_len, vocab]
                     shift_labels.view(-1)                          # [batch*seq_len]
                 )
-                
-                # Only average over valid (unmasked) tokens
-                if num_valid_tokens > 0:
-                    text_loss = text_loss_per_element[valid_mask.view(-1)].mean()
-                else:
-                    text_loss = torch.tensor(0.0, device=self.device)
-                
                 total_loss = total_loss + text_loss
                 loss_dict['text_loss'] = text_loss.item()
                 logger.info(f"✓ Text loss: {text_loss.item():.4f}")
-                
-                # Log first and last 10 predictions vs labels every n log steps
-                if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
-                    self._log_predictions_vs_labels_detailed(shift_logits, shift_labels)
             else:
                 logger.error(f"❌ Model expanded_labels alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
                 logger.error("This should never happen with properly functioning model!")
-                # Fall back to original labels
-                model_expanded_labels = None
-        # CRITICAL FIX: Skip the expanded_labels path and go directly to fallback
+                
         elif text_logits is not None and text_labels is not None:
-            # FALLBACK: Use manual alignment if expanded_labels not available or misaligned
+            # FALLBACK: Use manual alignment if expanded_labels not available
             logger.warning("⚠️  Using fallback text loss computation with original labels")
             
             # Check if we need to handle audio token expansion manually
@@ -463,135 +433,49 @@ class HiggsAudioTrainer:
             
             if expansion_factor > 1.5:  # Significant expansion likely due to audio tokens
                 logger.warning("Detected significant sequence expansion - likely due to audio tokens")
-                logger.warning("⚠️  Complex alignment needed for audio-expanded sequences")
+                logger.warning("Manual alignment may be inaccurate. Check model input filtering.")
+            
+            # STANDARD teacher forcing shift for autoregressive models
+            shift_logits = text_logits[..., :-1, :].contiguous()  # Remove last logit
+            shift_labels = text_labels[..., 1:].contiguous()      # Remove first label
+            
+            logger.info(f"Fallback logits shape: {shift_logits.shape}")
+            logger.info(f"Fallback labels shape: {shift_labels.shape}")
+            
+            if shift_logits.size(1) == shift_labels.size(1):
+                valid_mask = shift_labels != -100
+                num_valid_tokens = valid_mask.sum().item()
+                logger.info(f"✓ Fallback alignment OK! Computing loss on {num_valid_tokens} valid tokens")
                 
-                # For audio-expanded sequences, we need a different approach
-                # Since we can't do simple teacher-forcing shifts, we'll compute loss on overlapping regions
-                # This is a simplified approach - in practice, you might want to implement more sophisticated alignment
-                
-                # Use only the text portion of the logits that corresponds to the original sequence length
-                # This is a heuristic approach to handle the expansion
-                effective_logits_len = min(logits_seq_len, input_seq_len)
-                effective_labels_len = min(logits_seq_len - 1, input_seq_len - 1)
-                
-                if effective_labels_len > 0:
-                    shift_logits = text_logits[:, :effective_labels_len, :].contiguous()
-                    shift_labels = text_labels[:, :effective_labels_len].contiguous()
-                    
-                    logger.info(f"Adjusted alignment: logits {shift_logits.size(1)} vs labels {shift_labels.size(1)}")
-                    
-                    if shift_logits.size(1) == shift_labels.size(1):
-                        valid_mask = shift_labels != -100
-                        num_valid_tokens = valid_mask.sum().item()
-                        
-                        # DEBUG: Log detailed token masking information
-                        if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
-                            logger.info(f"TEXT LOSS DEBUG (FALLBACK): Total tokens: {shift_labels.numel()}, Valid (unmasked) tokens: {num_valid_tokens}")
-                        
-                        if num_valid_tokens > 0:
-                            text_loss_per_element = self.text_loss_fn(
-                                shift_logits.view(-1, shift_logits.size(-1)),
-                                shift_labels.view(-1)
-                            )
-                            text_loss = text_loss_per_element[valid_mask.view(-1)].mean()
-                            
-                            total_loss = total_loss + text_loss
-                            loss_dict['text_loss'] = text_loss.item()
-                            logger.info(f"✓ Adjusted fallback text loss: {text_loss.item():.4f}")
-                            
-                            # Log first and last 10 predictions vs labels every n log steps
-                            if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
-                                self._log_predictions_vs_labels_detailed(shift_logits, shift_labels)
-                        else:
-                            logger.warning("⚠️  No valid tokens in adjusted alignment - skipping text loss")
-                    else:
-                        logger.error(f"❌ Adjusted alignment still failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
-                else:
-                    logger.warning("⚠️  Insufficient sequence length for adjusted alignment - skipping text loss")
+                text_loss = self.text_loss_fn(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1)
+                )
+                total_loss = total_loss + text_loss
+                loss_dict['text_loss'] = text_loss.item()
+                logger.info(f"✓ Fallback text loss: {text_loss.item():.4f}")
             else:
-                # STANDARD teacher forcing shift for autoregressive models (normal case)
-                shift_logits = text_logits[..., :-1, :].contiguous()  # Remove last logit
-                shift_labels = text_labels[..., 1:].contiguous()      # Remove first label
-                
-                if shift_logits.size(1) == shift_labels.size(1):
-                    valid_mask = shift_labels != -100
-                    num_valid_tokens = valid_mask.sum().item()
-                    
-                    # DEBUG: Log detailed token masking information
-                    if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
-                        logger.info(f"TEXT LOSS DEBUG (STANDARD): Total tokens: {shift_labels.numel()}, Valid (unmasked) tokens: {num_valid_tokens}")
-                    
-                    if num_valid_tokens > 0:
-                        text_loss_per_element = self.text_loss_fn(
-                            shift_logits.view(-1, shift_logits.size(-1)),
-                            shift_labels.view(-1)
-                        )
-                        text_loss = text_loss_per_element[valid_mask.view(-1)].mean()
-                        
-                        total_loss = total_loss + text_loss
-                        loss_dict['text_loss'] = text_loss.item()
-                        logger.info(f"✓ Standard fallback text loss: {text_loss.item():.4f}")
-                        
-                        # Log first and last 10 predictions vs labels every n log steps
-                        if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
-                            self._log_predictions_vs_labels_detailed(shift_logits, shift_labels)
-                    else:
-                        logger.warning("⚠️  No valid tokens in standard alignment - skipping text loss")
-                else:
-                    logger.error(f"❌ Standard fallback alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
-                    logger.error("Skipping text loss - check data preprocessing and model inputs")
+                logger.error(f"❌ Fallback alignment failed: {shift_logits.size(1)} vs {shift_labels.size(1)}")
+                logger.error("Skipping text loss - check data preprocessing and model inputs")
         else:
             logger.warning("⚠️  Skipping text loss computation - insufficient data")
         
         # Audio loss - handle multi-codebook structure
         if audio_logits is not None and audio_labels is not None:
             if audio_logits.numel() > 0:
-                audio_loss = self._compute_audio_loss_detailed(audio_logits, audio_labels)
+                logger.info("✓ Computing audio loss on non-empty logits")
+                audio_loss = self._compute_audio_loss(audio_logits, audio_labels)
                 total_loss = total_loss + audio_loss
                 loss_dict['audio_loss'] = audio_loss.item()
                 logger.info(f"✓ Audio loss: {audio_loss.item():.4f}")
-                
-                # CRITICAL: Monitor audio loss for near-zero conditions
-                if hasattr(self, 'audio_loss_monitor'):
-                    alerts = self.audio_loss_monitor.update(audio_loss.item(), getattr(self, 'global_step', 0))
-                    for alert in alerts:
-                        if alert['type'] == 'critical':
-                            logger.error(alert['message'])
-                            # Add detailed diagnostics
-                            diagnostics = self.audio_loss_monitor.get_detailed_diagnostics()
-                            logger.error(f"DETAILED DIAGNOSTICS: {diagnostics}")
-                            
-                            # Implement corrective actions for critical conditions
-                            if alert.get('requires_action', False):
-                                self._take_corrective_action(batch, alert)
-                        elif alert['type'] in ['warning', 'sustained_warning']:
-                            logger.warning(alert['message'])
-                            
-                            # Take corrective action for sustained warnings
-                            if alert.get('requires_action', False):
-                                self._take_corrective_action(batch, alert)
-                
-                # Log first and last 10 audio predictions vs labels every n log steps
-                if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
-                    self._log_audio_predictions_vs_labels_detailed(audio_logits, audio_labels)
             else:
                 logger.warning("⚠️  Audio logits are empty - skipping audio loss")
                 loss_dict['audio_loss'] = 0.0
-                
-                # CRITICAL: Empty audio logits is a serious issue
-                logger.error("❌ CRITICAL: Empty audio logits detected!")
-                logger.error("This will cause audio loss to be zero and prevent audio learning!")
-                logger.error("Immediate action required to prevent training failure!")
         else:
             logger.warning("⚠️  Skipping audio loss computation - missing audio_logits or audio_labels")
             loss_dict['audio_loss'] = 0.0
-            
-            # CRITICAL: Missing audio components is a serious issue
-            logger.error("❌ CRITICAL: Missing audio components for loss computation!")
-            logger.error("This will cause audio loss to be zero and prevent audio learning!")
-            logger.error("Check that audio_out_ids and label_audio_ids are present in batch!")
         
-        # Final loss summary with enhanced monitoring
+        # Final loss summary
         loss_dict['total_loss'] = total_loss.item()
         
         if total_loss.item() > 0:
@@ -600,218 +484,79 @@ class HiggsAudioTrainer:
                 logger.info(f"  ✓ Text contribution: {loss_dict['text_loss']:.4f}")
             if 'audio_loss' in loss_dict and loss_dict['audio_loss'] > 0:
                 logger.info(f"  ✓ Audio contribution: {loss_dict['audio_loss']:.4f}")
-                
-                # Additional validation: Check if audio loss is suspiciously low
-                if loss_dict['audio_loss'] < 0.01:
-                    logger.warning(f"⚠️  Audio loss is very low ({loss_dict['audio_loss']:.6f}) - monitor for potential issues")
-            else:
-                logger.error("❌ CRITICAL: Audio loss is zero! This indicates a serious problem with audio training.")
-                logger.error("Check: 1) Model inputs, 2) Label alignment, 3) Data preprocessing, 4) Audio logits generation")
         else:
             logger.error("❌ CRITICAL: Total loss is ZERO! Training will not work.")
             logger.error("Check: 1) Model inputs, 2) Label alignment, 3) Data preprocessing")
-            
-            # Add detailed diagnostics
-            if hasattr(self, 'audio_loss_monitor'):
-                diagnostics = self.audio_loss_monitor.get_detailed_diagnostics()
-                logger.error(f"LOSS DIAGNOSTICS: {diagnostics}")
         
         return total_loss, loss_dict
     
-    def _compute_audio_loss_detailed(self, audio_logits, audio_labels):
-        """Compute audio loss across multiple codebooks with proper sequence alignment and detailed logging."""
+    def _compute_audio_loss(self, audio_logits, audio_labels):
+        """Compute audio loss across multiple codebooks with proper sequence alignment."""
         if audio_logits is None or audio_labels is None:
             return torch.tensor(0.0, device=self.device)
             
+        # Log shapes for debugging
+        logger.info(f"Audio logits shape: {audio_logits.shape}")
+        logger.info(f"Audio labels shape: {audio_labels.shape}")
+        
         # Handle empty sequences
         if audio_logits.numel() == 0 or audio_labels.numel() == 0:
-            # Only log if needed for debugging
-            # logger.info("Empty audio sequences, returning zero loss")
+            logger.info("Empty audio sequences, returning zero loss")
             return torch.tensor(0.0, device=self.device)
         
         audio_loss = torch.tensor(0.0, device=self.device)
         
         # Handle different tensor shapes for multi-codebook audio
-        # Check if audio_logits has the expected shape for Higgs Audio model
-        if len(audio_logits.shape) == 3:
-            # Shape: [seq_len, num_codebooks, vocab_size] or [num_codebooks, seq_len, vocab_size]
-            # Audio labels should be [num_codebooks, seq_len] or [seq_len, num_codebooks]
-            
-            # Determine the correct dimensions
-            if audio_logits.size(1) == 8:  # Likely [seq_len, 8_codebooks, vocab_size]
-                # Transpose to [8_codebooks, seq_len, vocab_size]
-                audio_logits = audio_logits.transpose(0, 1)
-                num_codebooks = 8
-                seq_len_logits = audio_logits.size(1)
-            elif audio_logits.size(0) == 8:  # Likely [8_codebooks, seq_len, vocab_size]
-                num_codebooks = 8
-                seq_len_logits = audio_logits.size(1)
-            else:
-                # Fallback for unexpected shapes
-                logger.warning(f"Unexpected audio logits shape: {audio_logits.shape}")
-                return torch.tensor(0.0, device=self.device)
+        if len(audio_logits.shape) == 3 and audio_logits.size(1) == 8:
+            # Shape: [seq_len, 8_codebooks, vocab_size]
+            num_codebooks = 8
+            seq_len_logits = audio_logits.size(0)
             
             # Audio labels should be [8_codebooks, seq_len]
             if audio_labels.dim() == 2 and audio_labels.size(0) == 8:
                 seq_len_labels = audio_labels.size(1)
                 
-                # Align sequences if needed
+                # Apply teacher forcing shift for audio (similar to text)
+                # Audio logits predict next audio token
                 if seq_len_logits > seq_len_labels:
                     # Trim logits to match labels
-                    audio_logits = audio_logits[:, :seq_len_labels, :]
+                    audio_logits = audio_logits[:seq_len_labels, :, :]
                     seq_len_logits = seq_len_labels
                 elif seq_len_labels > seq_len_logits:
                     # Trim labels to match logits  
                     audio_labels = audio_labels[:, :seq_len_logits]
                     seq_len_labels = seq_len_logits
                 
-                # Only log detailed alignment if needed
-                # logger.info(f"Aligned - Audio logits: {audio_logits.shape}, Audio labels: {audio_labels.shape}")
+                logger.info(f"Aligned - Audio logits: {audio_logits.shape}, Audio labels: {audio_labels.shape}")
                 
                 valid_codebooks = 0
-                total_valid_tokens = 0
-                total_tokens = 0
-                
-                # CRITICAL FIX: Compute loss for each codebook separately
                 for cb in range(num_codebooks):
-                    cb_logits = audio_logits[cb, :, :]  # [seq_len, vocab_size]
+                    cb_logits = audio_logits[:, cb, :]  # [seq_len, vocab_size]
                     cb_labels = audio_labels[cb, :]     # [seq_len]
                     
                     # Only compute loss on valid tokens (ignore -100)
                     valid_mask = cb_labels != -100
-                    num_valid_tokens = valid_mask.sum().item()
-                    total_tokens += cb_labels.numel()
-                    total_valid_tokens += num_valid_tokens
-                    
-                    if num_valid_tokens > 0:
-                        cb_loss_per_element = self.audio_loss_fn(cb_logits, cb_labels)
-                        cb_loss = cb_loss_per_element[valid_mask].mean()
+                    if valid_mask.sum() > 0:
+                        cb_loss = self.audio_loss_fn(cb_logits, cb_labels)
                         if torch.isfinite(cb_loss):
                             audio_loss += cb_loss
                             valid_codebooks += 1
                 
-                # DEBUG: Log detailed audio token masking information
-                if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
-                    logger.info(f"AUDIO LOSS DEBUG: Total tokens: {total_tokens}, Valid (unmasked) tokens: {total_valid_tokens}, Valid codebooks: {valid_codebooks}")
-                
                 if valid_codebooks > 0:
                     audio_loss = audio_loss / valid_codebooks
-                    # logger.info(f"Audio loss computed across {valid_codebooks} codebooks")
-                else:
-                    logger.warning("No valid codebooks found for audio loss computation")
-                    audio_loss = torch.tensor(0.0, device=self.device)
+                    logger.info(f"Audio loss computed across {valid_codebooks} codebooks")
             else:
                 logger.warning(f"Unexpected audio labels shape: {audio_labels.shape}")
-                audio_loss = torch.tensor(0.0, device=self.device)
         else:
             # Fallback: treat as single output
-            valid_mask = audio_labels != -100
-            num_valid_tokens = valid_mask.sum().item()
-            
-            # DEBUG: Log detailed audio token masking information
-            if self.local_rank == 0 and self.forward_step_count % self.args.log_steps == 0:
-                logger.info(f"AUDIO LOSS DEBUG (FALLBACK): Total tokens: {audio_labels.numel()}, Valid (unmasked) tokens: {num_valid_tokens}")
-            
-            if num_valid_tokens > 0:
-                audio_loss_per_element = self.audio_loss_fn(
-                    audio_logits.view(-1, audio_logits.size(-1)),
-                    audio_labels.view(-1)
-                )
-                audio_loss = audio_loss_per_element[valid_mask.view(-1)].mean()
-            else:
-                audio_loss = torch.tensor(0.0, device=self.device)
+            logger.info("Using fallback audio loss computation")
+            audio_loss = self.audio_loss_fn(
+                audio_logits.view(-1, audio_logits.size(-1)),
+                audio_labels.view(-1)
+            )
         
         return audio_loss
-    
-    def _validate_audio_logits(self, audio_logits, audio_labels):
-        """Validate audio logits dimensions and content."""
-        if audio_logits is None:
-            logger.warning("⚠️  Audio logits is None")
-            return
-            
-        if audio_logits.numel() == 0:
-            logger.error("❌ CRITICAL: Audio logits are empty!")
-            logger.error("This means no audio output positions were detected.")
-            logger.error("Check: 1) audio_out_ids in batch, 2) audio_out_mask generation")
-            
-            # Add detailed debugging for empty logits
-            logger.error("DETAILED AUDIO LOGITS DEBUGGING:")
-            logger.error("  This typically happens when:")
-            logger.error("  1. audio_out_ids is missing or empty in the batch")
-            logger.error("  2. The audio_out_mask generation failed")
-            logger.error("  3. There's a mismatch in data preprocessing")
-            logger.error("  4. PEFT wrappers are filtering out required inputs")
-            return
-            
-        logger.info(f"✓ Audio logits non-empty: {audio_logits.shape}")
-        
-        # Check for expected shape patterns
-        if len(audio_logits.shape) == 3:
-            # Expected shapes for Higgs Audio:
-            # [seq_len, num_codebooks, vocab_size] or [num_codebooks, seq_len, vocab_size]
-            seq_len, codebooks, vocab_size = audio_logits.shape
-            
-            # Check if vocab_size matches expected audio vocabulary (1026 = 1024 + 2 special tokens)
-            if vocab_size == 1026:
-                logger.info(f"✓ Audio logits vocab size matches expected: {vocab_size}")
-            else:
-                logger.warning(f"⚠️  Audio logits vocab size ({vocab_size}) differs from expected (1026)")
-                
-            # Check if codebooks matches expected count (8)
-            expected_codebooks = [1, 8]  # Could be 1 for single output or 8 for multi-codebook
-            if codebooks in expected_codebooks:
-                logger.info(f"✓ Audio logits codebooks count matches expected: {codebooks}")
-            else:
-                logger.warning(f"⚠️  Audio logits codebooks count ({codebooks}) not in expected range {expected_codebooks}")
-        else:
-            logger.warning(f"⚠️  Audio logits have unexpected shape: {audio_logits.shape}")
-            
-        # Check for NaN or Inf values
-        if torch.isnan(audio_logits).any():
-            logger.error("❌ CRITICAL: Audio logits contain NaN values!")
-        if torch.isinf(audio_logits).any():
-            logger.error("❌ CRITICAL: Audio logits contain Inf values!")
-        
-        # Additional detailed validation
-        self._log_audio_logits_detailed_info(audio_logits, audio_labels)
-    
-    def _log_audio_logits_detailed_info(self, audio_logits, audio_labels):
-        """Log detailed information about audio logits for debugging."""
-        logger.info("DETAILED AUDIO LOGITS ANALYSIS:")
-        
-        # Check value ranges
-        if audio_logits.numel() > 0:
-            min_val = audio_logits.min().item()
-            max_val = audio_logits.max().item()
-            mean_val = audio_logits.mean().item()
-            logger.info(f"  Value range: [{min_val:.4f}, {max_val:.4f}], Mean: {mean_val:.4f}")
-            
-            # Check for NaN/Inf
-            nan_count = torch.isnan(audio_logits).sum().item()
-            inf_count = torch.isinf(audio_logits).sum().item()
-            if nan_count > 0 or inf_count > 0:
-                logger.error(f"  ❌ Invalid values: {nan_count} NaN, {inf_count} Inf")
-            else:
-                logger.info("  ✓ No NaN or Inf values detected")
-        
-        # Check label information
-        if audio_labels is not None and hasattr(audio_labels, 'shape'):
-            logger.info(f"  Audio labels shape: {audio_labels.shape}")
-            
-            # Check label value distribution
-            if audio_labels.numel() > 0:
-                unique_labels = torch.unique(audio_labels[audio_labels != -100])
-                logger.info(f"  Unique non-masked label values: {unique_labels[:10].tolist()}{'...' if len(unique_labels) > 10 else ''}")
-                
-                masked_count = (audio_labels == -100).sum().item()
-                total_count = audio_labels.numel()
-                mask_ratio = masked_count / total_count if total_count > 0 else 0
-                logger.info(f"  Label masking: {masked_count}/{total_count} ({mask_ratio:.2%}) tokens masked")
-                
-                # Check for suspiciously high masking
-                if mask_ratio > 0.95:
-                    logger.warning(f"  ⚠️  Very high masking ratio ({mask_ratio:.2%}) - may prevent effective learning")
-    
+
     def _log_predictions_vs_labels_detailed(self, logits, labels):
         """Log first and last 10 text predictions vs labels for a few samples."""
         try:
@@ -1063,33 +808,33 @@ class HiggsAudioTrainer:
                     self.global_step += 1
                     
                     # Logging
-                    if global_step % self.args.log_steps == 0 and self.local_rank == 0:
-                        log_msg = f"Step {global_step} - Train Loss: {loss_dict}"
+                    if self.global_step % self.args.log_steps == 0 and self.local_rank == 0:
+                        log_msg = f"Step {self.global_step} - Train Loss: {loss_dict}"
                         # Check if pbar has set_postfix method before calling it
                         if hasattr(pbar, 'set_postfix') and callable(getattr(pbar, 'set_postfix', None)):
                             pbar.set_postfix({"loss": loss_dict.get('total_loss', 0.0)})
                         logger.info(log_msg)
                     
                     # Validation
-                    if global_step % self.args.val_steps == 0 and self.local_rank == 0:
+                    if self.global_step % self.args.val_steps == 0 and self.local_rank == 0:
                         val_loss, val_text_loss, val_audio_loss = self.validate()
-                        logger.info(f"Step {global_step} - Val Loss: {val_loss:.4f}, Text: {val_text_loss:.4f}, Audio: {val_audio_loss:.4f}")
+                        logger.info(f"Step {self.global_step} - Val Loss: {val_loss:.4f}, Text: {val_text_loss:.4f}, Audio: {val_audio_loss:.4f}")
                     
                     # Checkpointing
-                    if global_step % self.args.save_steps == 0 and self.local_rank == 0:
-                        checkpoint_dir = f"{self.args.output_dir}/checkpoint-{global_step}"
+                    if self.global_step % self.args.save_steps == 0 and self.local_rank == 0:
+                        checkpoint_dir = f"{self.args.output_dir}/checkpoint-{self.global_step}"
                         os.makedirs(checkpoint_dir, exist_ok=True)
                         save_lora_adapters(self.model.module if self.world_size > 1 else self.model, 
                                          checkpoint_dir)
-                        logger.info(f"Saved checkpoint at step {global_step}")
+                        logger.info(f"Saved checkpoint at step {self.global_step}")
     
     def _take_corrective_action(self, batch, alert):
         """Take corrective action when near-zero audio loss is detected."""
         logger.warning("⚠️  INITIATING CORRECTIVE ACTION FOR NEAR-ZERO AUDIO LOSS")
         
         # Record the recovery attempt
-        if hasattr(self, 'audio_loss_monitor'):
-            self.audio_loss_monitor.record_recovery_attempt(getattr(self, 'global_step', 0))
+        # if hasattr(self, 'audio_loss_monitor'):
+        #     self.audio_loss_monitor.record_recovery_attempt(getattr(self, 'global_step', 0))
         
         # Log detailed information about the current state
         logger.warning("CORRECTIVE ACTION DETAILS:")
@@ -1190,100 +935,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-class AudioLossMonitor:
-    """Monitor audio loss to detect near-zero conditions and trigger alerts."""
-    
-    def __init__(self, window_size=100, threshold=0.01, critical_threshold=0.005):
-        self.window_size = window_size
-        self.threshold = threshold
-        self.critical_threshold = critical_threshold
-        self.loss_history = []
-        self.alert_triggered = False
-        self.critical_alert_triggered = False
-        self.step_count = 0
-        self.recovery_attempts = 0
-        self.last_recovery_step = 0
-        
-    def update(self, audio_loss, global_step):
-        """Update the monitor with a new audio loss value."""
-        self.step_count = global_step
-        self.loss_history.append(audio_loss)
-        
-        # Keep only the last window_size values
-        if len(self.loss_history) > self.window_size:
-            self.loss_history.pop(0)
-        
-        # Check for near-zero conditions
-        return self._check_conditions(audio_loss)
-    
-    def _check_conditions(self, current_loss):
-        """Check if current loss indicates a problem."""
-        alerts = []
-        
-        # Check for critical near-zero loss
-        if current_loss <= self.critical_threshold and not self.critical_alert_triggered:
-            alerts.append({
-                'type': 'critical',
-                'message': f"CRITICAL ALERT: Audio loss ({current_loss:.6f}) is below critical threshold ({self.critical_threshold}) at step {self.step_count}",
-                'severity': 'high',
-                'requires_action': True
-            })
-            self.critical_alert_triggered = True
-            
-        # Check for near-zero loss
-        elif current_loss <= self.threshold and not self.alert_triggered:
-            alerts.append({
-                'type': 'warning',
-                'message': f"WARNING: Audio loss ({current_loss:.6f}) is below threshold ({self.threshold}) at step {self.step_count}",
-                'severity': 'medium',
-                'requires_action': False
-            })
-            self.alert_triggered = True
-            
-        # Check for sustained low loss (average over window)
-        if len(self.loss_history) >= self.window_size:
-            avg_loss = sum(self.loss_history) / len(self.loss_history)
-            if avg_loss <= self.threshold:
-                alerts.append({
-                    'type': 'sustained_warning',
-                    'message': f"SUSTAINED WARNING: Average audio loss over {self.window_size} steps is {avg_loss:.6f} (below threshold {self.threshold})",
-                    'severity': 'medium',
-                    'requires_action': True
-                })
-        
-        # Reset alerts if loss recovers
-        if current_loss > self.threshold:
-            self.alert_triggered = False
-        if current_loss > self.critical_threshold:
-            self.critical_alert_triggered = False
-            
-        return alerts
-    
-    def get_detailed_diagnostics(self):
-        """Get detailed diagnostics about the loss history."""
-        if not self.loss_history:
-            return "No loss history available"
-            
-        recent_losses = self.loss_history[-10:] if len(self.loss_history) >= 10 else self.loss_history
-        avg_loss = sum(self.loss_history) / len(self.loss_history)
-        min_loss = min(self.loss_history)
-        max_loss = max(self.loss_history)
-        
-        return {
-            'recent_losses': recent_losses,
-            'average_loss': avg_loss,
-            'min_loss': min_loss,
-            'max_loss': max_loss,
-            'total_steps_monitored': len(self.loss_history),
-            'current_step': self.step_count,
-            'recovery_attempts': self.recovery_attempts,
-            'last_recovery_step': self.last_recovery_step
-        }
-    
-    def record_recovery_attempt(self, step):
-        """Record a recovery attempt."""
-        self.recovery_attempts += 1
-        self.last_recovery_step = step
-
