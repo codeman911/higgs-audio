@@ -143,7 +143,7 @@ class HiggsAudioTrainer:
             sampler=train_sampler,
             shuffle=(train_sampler is None),
             collate_fn=self.collator,
-            num_workers=32,  # Increased from 32 to better utilize 128 core CPU
+            num_workers=24,  # Increased from 32 to better utilize 128 core CPU
             pin_memory=True,
             persistent_workers=True
         )
