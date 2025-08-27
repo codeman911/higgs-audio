@@ -405,7 +405,8 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                 if content.type == "text":
                     text_tokens = tokenizer.encode(content.text, add_special_tokens=False)
                     input_tokens.extend(text_tokens)
-                    if role == "assistant" and (sample.start_index is None or turn_id >= sample.start_index):
+                    # Fix: Ensure assistant responses are properly labeled for training
+                    if role == "assistant":
                         label_tokens.extend(text_tokens)
                     else:
                         label_tokens.extend([-100 for _ in text_tokens])
@@ -428,10 +429,8 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
                             add_special_tokens=False,
                         )
                         input_tokens.extend(text_tokens)
-                        if sample.start_index is None or turn_id >= sample.start_index:
-                            label_tokens.extend(text_tokens)
-                        else:
-                            label_tokens.extend([-100 for _ in text_tokens])
+                        # Fix: Ensure assistant audio responses are properly labeled for training
+                        label_tokens.extend(text_tokens)
             next_id = turn_id + 1
             if role == "assistant" and next_id != total_m and sample.messages[next_id].role == "assistant":
                 postfix_tokens = tokenizer.encode(eom_postfix, add_special_tokens=False)
@@ -439,7 +438,8 @@ def prepare_chatml_sample(sample: Union[ChatMLSample, Dict], tokenizer):
             else:
                 postfix_tokens = tokenizer.encode(eot_postfix, add_special_tokens=False)
                 input_tokens.extend(postfix_tokens)
-            if role == "assistant" and (sample.start_index is None or turn_id >= sample.start_index):
+            # Fix: Ensure assistant responses are properly labeled for training
+            if role == "assistant":
                 label_tokens.extend(postfix_tokens)
             else:
                 label_tokens.extend([-100 for _ in postfix_tokens])
