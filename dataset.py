@@ -3,6 +3,8 @@ import os
 import torch
 import librosa
 from torch.utils.data import Dataset
+from dataclasses import dataclass
+from typing import List
 
 from boson_multimodal.dataset.chatml_dataset import ChatMLDatasetSample, prepare_chatml_sample
 
@@ -165,3 +167,83 @@ class HiggsAudioDataset(Dataset):
             audio_speaker_indices=audio_speaker_indices.long() if audio_speaker_indices is not None else torch.tensor([0], dtype=torch.long),
             audio_label_ids_concat=label_audio_ids_concat.long() if label_audio_ids_concat is not None else None
         )
+
+
+def create_collator(config, whisper_processor):
+    """Create collator with EXACT parameters from working implementation"""
+    return ExtendedHiggsAudioSampleCollator(
+        whisper_processor=whisper_processor,
+        encode_whisper_embed=True,  # Always enable for training
+        audio_in_token_id=config.audio_in_token_idx,
+        audio_out_token_id=config.audio_out_token_idx,
+        audio_stream_bos_id=config.audio_stream_bos_id,
+        audio_stream_eos_id=config.audio_stream_eos_id,
+        pad_token_id=config.pad_token_id,
+        return_audio_in_tokens=True,  # CRITICAL FIX: Enable for proper audio handling
+        use_delay_pattern=False,      # Match working implementation
+        audio_num_codebooks=8,        # Explicitly set to 8 codebooks
+        round_to=8,                   # Match working implementation
+        mask_audio_out_token_label=False,  # CRITICAL FIX: Disable over-masking
+    )
+
+
+@dataclass
+class ExtendedHiggsAudioBatchInput:
+    """
+    Extended HiggsAudioBatchInput with __len__ method for Trainer compatibility
+    """
+    
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+    
+    def __len__(self):
+        """Return the batch size based on input_ids"""
+        if hasattr(self, 'input_ids') and getattr(self, 'input_ids', None) is not None:
+            return self.input_ids.shape[0]
+        else:
+            return 0
+    
+    def __getitem__(self, key):
+        """Allow dictionary-style access for compatibility"""
+        return getattr(self, key, None)
+    
+    def __contains__(self, key):
+        """Check if attribute exists"""
+        return hasattr(self, key)
+    
+    def keys(self):
+        """Return all attribute names for compatibility"""
+        return [attr for attr in dir(self) if not attr.startswith('_') and not callable(getattr(self, attr))]
+
+
+class ExtendedHiggsAudioSampleCollator:
+    """
+    Extended collator that returns our custom batch input class
+    """
+    
+    def __init__(self, **kwargs):
+        from boson_multimodal.data_collator.higgs_audio_collator import HiggsAudioSampleCollator
+        self.base_collator = HiggsAudioSampleCollator(**kwargs)
+    
+    def __call__(self, batch: List[ChatMLDatasetSample]):
+        # 1. Call the official base collator to do all the complex padding and alignment work
+        batch_input = self.base_collator(batch)
+        
+        # 2. Convert to our extended class and pass in the perfectly aligned labels
+        extended_batch = ExtendedHiggsAudioBatchInput(
+            input_ids=batch_input.input_ids,
+            attention_mask=batch_input.attention_mask,
+            audio_features=batch_input.audio_features,
+            audio_feature_attention_mask=batch_input.audio_feature_attention_mask,
+            audio_out_ids=batch_input.audio_out_ids,
+            audio_out_ids_start=batch_input.audio_out_ids_start,
+            audio_out_ids_start_group_loc=batch_input.audio_out_ids_start_group_loc,
+            audio_in_ids=batch_input.audio_in_ids,
+            audio_in_ids_start=batch_input.audio_in_ids_start,
+            label_ids=batch_input.label_ids,
+            label_audio_ids=batch_input.label_audio_ids, # Use the properly aligned labels from base collator
+            reward=batch_input.reward,
+        )
+        
+        return extended_batch
