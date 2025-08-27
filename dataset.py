@@ -43,9 +43,18 @@ class HiggsAudioDataset(Dataset):
         sample = self.samples[idx]
         
         # Use EXACT prepare_chatml_sample from boson_multimodal
-        input_tokens, label_tokens, audio_contents, speaker_id = prepare_chatml_sample(
-            sample, self.tokenizer
-        )
+        # Updated to handle audio labels properly
+        result = prepare_chatml_sample(sample, self.tokenizer)
+        
+        # Handle both old and new versions of prepare_chatml_sample
+        if len(result) == 4:
+            input_tokens, label_tokens, audio_contents, speaker_id = result
+            audio_label_contents = [None] * len(audio_contents)  # Default to no audio labels for old version
+        elif len(result) == 5:
+            input_tokens, label_tokens, audio_contents, audio_label_contents, speaker_id = result
+        else:
+            # Skip invalid samples, try next one
+            return self.__getitem__((idx + 1) % len(self.samples))
         
         if input_tokens is None or label_tokens is None:
             # Skip invalid samples, try next one
@@ -54,8 +63,9 @@ class HiggsAudioDataset(Dataset):
         # Process audio using audio_tokenizer - EXACT pattern from training scripts
         audio_ids_list = []
         audio_waveforms_list = []
+        label_audio_ids_list = []  # For audio labels
         
-        for audio_content in audio_contents:
+        for i, audio_content in enumerate(audio_contents):
             if audio_content and hasattr(audio_content, 'audio_url'):
                 audio_path = audio_content.audio_url
                 if audio_path and os.path.exists(audio_path):
@@ -67,6 +77,11 @@ class HiggsAudioDataset(Dataset):
                     
                     audio_ids_list.append(audio_codes)
                     audio_waveforms_list.append(waveform)
+                    
+                    # Process audio labels if available
+                    if i < len(audio_label_contents) and audio_label_contents[i] is not None:
+                        label_audio_codes = self.audio_tokenizer.encode(audio_path)
+                        label_audio_ids_list.append(label_audio_codes)
         
         if audio_ids_list:
             # Concatenate audio data - EXACT pattern from working scripts
@@ -75,6 +90,12 @@ class HiggsAudioDataset(Dataset):
             audio_waveforms_concat = torch.cat(audio_waveforms_list, dim=0)
             audio_waveforms_start = torch.tensor([0] + [wv.shape[0] for wv in audio_waveforms_list[:-1]], dtype=torch.long).cumsum(dim=0)
             audio_sample_rate = torch.tensor([24000])
+            
+            # Concatenate audio label data if available
+            if label_audio_ids_list:
+                audio_label_ids_concat = torch.cat(label_audio_ids_list, dim=1)
+            else:
+                audio_label_ids_concat = None
         else:
             # Empty audio tensors - EXACT pattern from working scripts  
             audio_ids_concat = torch.zeros((8, 0), dtype=torch.long)  # 8 codebooks (matches bosonai/higgs-audio-v2-tokenizer)
@@ -82,6 +103,7 @@ class HiggsAudioDataset(Dataset):
             audio_waveforms_concat = torch.zeros((0,), dtype=torch.float32)
             audio_waveforms_start = torch.tensor([], dtype=torch.long)
             audio_sample_rate = torch.tensor([24000])
+            audio_label_ids_concat = None
         
         # Handle speaker ID conversion
         numeric_speaker_id = 0 if isinstance(speaker_id, str) or speaker_id is None else int(speaker_id)
@@ -96,7 +118,8 @@ class HiggsAudioDataset(Dataset):
             audio_waveforms_concat=audio_waveforms_concat,
             audio_waveforms_start=audio_waveforms_start,
             audio_sample_rate=audio_sample_rate,
-            audio_speaker_indices=audio_speaker_indices
+            audio_speaker_indices=audio_speaker_indices,
+            audio_label_ids_concat=audio_label_ids_concat  # Add audio labels
         )
 
 
