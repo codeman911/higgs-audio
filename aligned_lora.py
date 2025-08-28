@@ -72,36 +72,10 @@ def apply_aligned_lora(model, lora_config=None):
         discovered_modules = get_target_modules(model)
         lora_config = create_aligned_lora_config(target_modules=discovered_modules)
     
-    # Apply LoRA - match train-higgs-audio approach exactly
-    # Check if we have our HiggsAudioModelWrapper
-    if isinstance(model, HiggsAudioModelWrapper):
-        # Get the actual model inside our wrapper
-        inner_model = model.model
-        
-        # Apply the same logic as train-higgs-audio
-        if hasattr(inner_model, 'model') and hasattr(inner_model.model, 'text_model'):
-            inner_model.model.text_model = get_peft_model(inner_model.model.text_model, lora_config)
-        elif hasattr(inner_model, 'model'):
-            inner_model.model = get_peft_model(inner_model.model, lora_config)
-        else:
-            # This shouldn't happen with HiggsAudioModel, but just in case
-            inner_model = get_peft_model(inner_model, lora_config)
-            
-        # Update our wrapper's model reference
-        model.model = inner_model
-        return model
-    else:
-        # Standard approach for non-wrapped models (fallback)
-        if hasattr(model, 'model') and hasattr(model.model, 'text_model'):
-            model.model.text_model = get_peft_model(model.model.text_model, lora_config)
-            return model
-        elif hasattr(model, 'model'):
-            model.model = get_peft_model(model.model, lora_config)
-            return model
-        else:
-            # Fallback to direct application if no inner model structure found
-            lora_model = get_peft_model(model, lora_config)
-            return lora_model
+    # Apply LoRA directly to the model (our wrapper in this case)
+    # This is a simpler approach that should work
+    lora_model = get_peft_model(model, lora_config)
+    return lora_model
 
 
 def save_aligned_lora_adapters(model, output_dir: str):
