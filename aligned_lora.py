@@ -72,10 +72,30 @@ def apply_aligned_lora(model, lora_config=None):
         discovered_modules = get_target_modules(model)
         lora_config = create_aligned_lora_config(target_modules=discovered_modules)
     
-    # Apply LoRA
-    lora_model = get_peft_model(model, lora_config)
-    
-    return lora_model
+    # Apply LoRA - match train-higgs-audio approach by checking for inner model components
+    # Handle our HiggsAudioModelWrapper specifically
+    if isinstance(model, HiggsAudioModelWrapper):
+        # Apply LoRA to the actual model inside our wrapper
+        if hasattr(model.model, 'model') and hasattr(model.model.model, 'text_model'):
+            model.model.model.text_model = get_peft_model(model.model.model.text_model, lora_config)
+        elif hasattr(model.model, 'model'):
+            model.model.model = get_peft_model(model.model.model, lora_config)
+        else:
+            # Fallback to direct application to the inner model
+            model.model = get_peft_model(model.model, lora_config)
+        return model
+    else:
+        # Standard approach for non-wrapped models
+        if hasattr(model, 'model') and hasattr(model.model, 'text_model'):
+            model.model.text_model = get_peft_model(model.model.text_model, lora_config)
+            return model
+        elif hasattr(model, 'model'):
+            model.model = get_peft_model(model.model, lora_config)
+            return model
+        else:
+            # Fallback to direct application if no inner model structure found
+            lora_model = get_peft_model(model, lora_config)
+            return lora_model
 
 
 def save_aligned_lora_adapters(model, output_dir: str):
@@ -175,3 +195,11 @@ class HiggsAudioModelWrapper(torch.nn.Module):
                 labels = model_kwargs.get('label_ids')[..., 1:].contiguous()
                 loss = nn.CrossEntropyLoss()(logits.view(-1, logits.size(-1)), labels.view(-1))
             return {"loss": loss, "logits": outputs.logits}
+    
+    def __getattr__(self, name):
+        """Delegate attribute access to the wrapped model for PEFT compatibility"""
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            # Delegate to the wrapped model
+            return getattr(self.model, name)
