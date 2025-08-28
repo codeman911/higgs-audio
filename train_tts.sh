@@ -33,7 +33,7 @@ srun --ntasks="$NNODES" --ntasks-per-node=1 --cpus-per-task="$SLURM_CPUS_PER_TAS
       --train_manifest ../ms-swift/lora_training_data_zr/chatml_fixed/train_chatml_samples.json \
       --output_dir expmt_v1 \
       --base_ckpt bosonai/higgs-audio-v2-generation-3B-base \
-      --batch_size 12 \
+      --batch_size 4 \
       --lr 1e-5 \
       --epochs 1 \
       --grad_accum 4 \
