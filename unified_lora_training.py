@@ -140,6 +140,18 @@ class HiggsAudioTrainer:
         )
         self.model = model.to(self.device)
         
+        # Load tokenizers - EXACT pattern from serve_engine.py
+        self.tokenizer = AutoTokenizer.from_pretrained(self.args.base_ckpt)
+        self.audio_tokenizer = load_higgs_audio_tokenizer(
+            "bosonai/higgs-audio-v2-tokenizer", 
+            device='cpu'
+        )
+        
+        # Load Whisper processor
+        self.whisper_processor = AutoProcessor.from_pretrained(
+            "openai/whisper-large-v3", trust_remote_code=True
+        )
+        
         # Stage-specific model configuration
         if self.args.training_stage == "stage1":
             # Freeze audio components for stage 1
