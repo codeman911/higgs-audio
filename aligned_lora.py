@@ -159,7 +159,19 @@ class HiggsAudioModelWrapper(torch.nn.Module):
             # The HiggsAudioModel should be able to handle the label_ids parameter
             if self.model.device != kwargs['input_ids'].device:
                 self.model = self.model.to(kwargs['input_ids'].device)
-            return self.model(**model_kwargs)
+            result = self.model(**model_kwargs)
+            
+            # Ensure we return a proper format that Trainer expects
+            # If result is a ModelOutput object with loss, extract the loss tensor
+            if hasattr(result, 'loss') and result.loss is not None:
+                # Return just the loss tensor directly, not the entire object
+                return result.loss
+            elif isinstance(result, dict) and "loss" in result:
+                # If it's a dict, return the loss from the dict
+                return result["loss"]
+            else:
+                # Return the result as is
+                return result
         else:
             # Fallback logic similar to train-higgs-audio
             input_ids = model_kwargs.get('input_ids')

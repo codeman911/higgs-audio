@@ -69,9 +69,18 @@ class AlignedHiggsAudioTrainer(Trainer):
         outputs = model(**inputs_dict)
         
         # Extract loss from model outputs
-        if isinstance(outputs, dict) and "loss" in outputs:
+        # Handle different possible return types:
+        # 1. Scalar tensor (direct loss)
+        # 2. Dictionary with "loss" key
+        # 3. Object with loss attribute
+        if isinstance(outputs, torch.Tensor):
+            # Model returned loss directly as a scalar tensor
+            loss = outputs
+        elif isinstance(outputs, dict) and "loss" in outputs:
+            # Model returned a dictionary with loss key
             loss = outputs["loss"]
         elif hasattr(outputs, "loss"):
+            # Model returned an object with loss attribute
             loss = outputs.loss
         else:
             # Fallback if no loss computed by model
