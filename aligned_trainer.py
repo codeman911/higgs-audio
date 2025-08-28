@@ -21,7 +21,7 @@ from transformers import (
     get_cosine_schedule_with_warmup
 )
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Union
 
 # Import exact components from boson_multimodal
@@ -87,7 +87,7 @@ class HiggsAudioTrainingPipeline:
             self.local_rank = int(os.environ["LOCAL_RANK"])
             self.world_size = int(os.environ["WORLD_SIZE"])
             # Initialize process group with timeout settings to prevent hanging
-            dist.init_process_group(backend="nccl", timeout=datetime.timedelta(seconds=1800))  # 30 minutes timeout
+            dist.init_process_group(backend="nccl", timeout=timedelta(seconds=1800))  # 30 minutes timeout
             torch.cuda.set_device(self.local_rank)
         else:
             self.local_rank = 0
@@ -245,7 +245,7 @@ class HiggsAudioTrainingPipeline:
             warmup_steps=self.args.warmup,
             logging_steps=self.args.log_steps,
             save_steps=self.args.save_steps,
-            eval_steps=self.args.val_steps,
+            eval_steps=self.args.val_steps if self.args.val_steps > 0 else None,
             evaluation_strategy="steps" if self.args.val_steps > 0 else "no",
             save_total_limit=3,
             load_best_model_at_end=False,  # Disable for DDP compatibility
