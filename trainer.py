@@ -91,7 +91,9 @@ class HiggsAudioTrainer:
         if "LOCAL_RANK" in os.environ:
             self.local_rank = int(os.environ["LOCAL_RANK"])
             self.world_size = int(os.environ["WORLD_SIZE"])
-            dist.init_process_group(backend="nccl")
+            # Initialize process group with timeout settings to prevent hanging
+            import datetime
+            dist.init_process_group(backend="nccl", timeout=datetime.timedelta(seconds=1800))  # 30 minutes timeout
             torch.cuda.set_device(self.local_rank)
         else:
             self.local_rank = 0
