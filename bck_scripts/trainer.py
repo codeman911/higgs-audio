@@ -59,14 +59,12 @@ class HiggsAudioTrainer:
             self.world_size = 1
         
         self.device = torch.device(f"cuda:{self.local_rank}")
-        # Only log on global rank 0
-        if dist.get_rank() == 0:
+        if self.local_rank == 0:
             logger.info(f"Distributed setup complete - Local rank: {self.local_rank}, World size: {self.world_size}")
     
     def load_model_and_tokenizers(self):
         """Load model and tokenizers exactly as inference does."""
-        # Only log on global rank 0
-        if dist.get_rank() == 0:
+        if self.local_rank == 0:
             logger.info("Loading model and tokenizers...")
         
         # Load configuration
@@ -78,8 +76,7 @@ class HiggsAudioTrainer:
         # CRITICAL FIX: Enable cross-modal conditioning (audio attention)
         # This is essential for text to learn from audio context
         if not getattr(self.config, 'use_audio_out_self_attention', None):
-            # Only log on global rank 0
-            if dist.get_rank() == 0:
+            if self.local_rank == 0:
                 logger.info("Enabling cross-modal conditioning (use_audio_out_self_attention=True)")
             self.config.use_audio_out_self_attention = True
         
@@ -89,8 +86,7 @@ class HiggsAudioTrainer:
             config=self.config,
             torch_dtype=torch.bfloat16
         )
-        model = model.to(self.device)
-        self.model = model
+        self.model = model.to(self.device)
         
         # Load tokenizers - EXACT pattern from serve_engine.py
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.base_ckpt)
@@ -114,22 +110,14 @@ class HiggsAudioTrainer:
         
         # Wrap with DDP
         if self.world_size > 1:
-            self.model = DDP(self.model, device_ids=[self.local_rank], 
-                           broadcast_buffers=False, 
-                           gradient_as_bucket_view=True, 
-                           static_graph=True)
+            self.model = DDP(self.model, device_ids=[self.local_rank])
         
-        # Cache the base model reference after DDP wrapping
-        self._base_higgs = self._get_base_higgs_model()
-        
-        # Only log on global rank 0
-        if dist.get_rank() == 0:
+        if self.local_rank == 0:
             logger.info("Model and tokenizers loaded successfully")
     
     def setup_dataset(self):
         """Setup dataset and dataloader."""
-        # Only log on global rank 0
-        if dist.get_rank() == 0:
+        if self.local_rank == 0:
             logger.info("Setting up dataset...")
         
         # Create full dataset
@@ -160,7 +148,7 @@ class HiggsAudioTrainer:
         train_sampler = DistributedSampler(
             train_dataset, 
             num_replicas=self.world_size, 
-            rank=dist.get_rank() if self.world_size > 1 else 0,
+            rank=self.local_rank,
             shuffle=True
         ) if self.world_size > 1 else None
         
@@ -168,7 +156,7 @@ class HiggsAudioTrainer:
         val_sampler = DistributedSampler(
             val_dataset, 
             num_replicas=self.world_size, 
-            rank=dist.get_rank() if self.world_size > 1 else 0,
+            rank=self.local_rank,
             shuffle=False
         ) if self.world_size > 1 else None
         
@@ -179,10 +167,9 @@ class HiggsAudioTrainer:
             sampler=train_sampler,
             shuffle=(train_sampler is None),
             collate_fn=self.collator,
-            num_workers=4,  # Reduced from 8 to prevent FS saturation
+            num_workers=8,
             pin_memory=True,
-            persistent_workers=True,  # Keep workers alive between epochs
-            prefetch_factor=2  # Prefetch 2 batches per worker
+            persistent_workers=False
         )
         
         self.val_dataloader = DataLoader(
@@ -191,20 +178,17 @@ class HiggsAudioTrainer:
             sampler=val_sampler,
             shuffle=False,
             collate_fn=self.collator,
-            num_workers=2,  # Reduced from 4
+            num_workers=4,
             pin_memory=True,
-            persistent_workers=True,  # Keep workers alive between epochs
-            prefetch_factor=2  # Prefetch 2 batches per worker
+            persistent_workers=False
         )
         
-        # Only log on global rank 0
-        if dist.get_rank() == 0:
+        if self.local_rank == 0:
             logger.info(f"Dataset setup complete - Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
     
     def setup_training(self):
         """Setup optimizer and scheduler."""
-        # Only log on global rank 0
-        if dist.get_rank() == 0:
+        if self.local_rank == 0:
             logger.info("Setting up training...")
         
         # Optimizer - target only LoRA parameters
@@ -232,8 +216,7 @@ class HiggsAudioTrainer:
         self.text_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
         self.audio_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
         
-        # Only log on global rank 0
-        if dist.get_rank() == 0:
+        if self.local_rank == 0:
             logger.info(f"Training setup complete - Total steps: {total_steps}")
     
     def compute_loss(self, batch):
@@ -243,8 +226,8 @@ class HiggsAudioTrainer:
         if not isinstance(batch, dict):
             raise ValueError(f"Expected batch to be dict, got {type(batch)}")
         
-        # Get the true underlying HiggsAudioModel (cached after DDP wrapping)
-        base_model = self._base_higgs
+        # Get the true underlying HiggsAudioModel
+        base_model = self._get_base_higgs_model()
         
         # Prepare inputs - only remove the generic 'labels' key that PEFT might inject
         # Keep label_ids, label_audio_ids, and audio_out_ids which are required by the model
@@ -255,6 +238,27 @@ class HiggsAudioTrainer:
             if k not in ['labels']:  # Remove ONLY the generic PEFT-injected 'labels'
                 clean_inputs[k] = v
         
+        # CRITICAL FIX: Ensure all tensors have consistent dtype for mixed precision training
+        # The error occurs because audio embeddings are Float32 but final_embedding is BFloat16
+        target_dtype = torch.bfloat16
+        
+        # Check for potential dtype issues and cast tensors to target dtype
+        dtype_corrected_inputs = {}
+        for k, v in clean_inputs.items():
+            if isinstance(v, torch.Tensor):
+                # Cast all tensor inputs to the target dtype to prevent dtype mismatches
+                if v.dtype == torch.float32:
+                    # Cast float32 tensors to bfloat16 for consistency
+                    dtype_corrected_inputs[k] = v.to(dtype=target_dtype)
+                elif v.dtype == torch.bfloat16:
+                    # Already correct dtype
+                    dtype_corrected_inputs[k] = v
+                else:
+                    # For non-float tensors (like int64 for indices), keep as is
+                    dtype_corrected_inputs[k] = v
+            else:
+                dtype_corrected_inputs[k] = v
+        
         # Extract labels for fallback loss computation (if needed)
         text_labels = batch.get('label_ids')
         audio_labels = batch.get('label_audio_ids')
@@ -262,13 +266,9 @@ class HiggsAudioTrainer:
         # BYPASS PEFT: Call the forward method directly on the base model
         # This completely avoids PEFT's parameter injection
         try:
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            with torch.autocast(device_type='cuda', dtype=target_dtype):
                 # Direct call to HiggsAudioModel.forward, bypassing all wrappers
-                if hasattr(base_model, 'forward'):
-                    outputs = base_model.forward(**clean_inputs)
-                else:
-                    # Fallback if base_model is not properly unwrapped
-                    outputs = base_model(**clean_inputs)
+                outputs = base_model.forward(**dtype_corrected_inputs)
         except Exception as e:
             logger.error(f"Direct forward call failed: {e}")
             raise
@@ -533,18 +533,26 @@ class HiggsAudioTrainer:
             batch_dict = {}
             for key, value in batch.__dict__.items():
                 if isinstance(value, torch.Tensor):
-                    # Move tensor to device without dtype casting
-                    batch_dict[key] = value.to(self.device, non_blocking=True)
+                    # DTYPE FIX: Ensure consistent dtype for mixed precision training
+                    if value.dtype == torch.float32:
+                        # Cast float32 to bfloat16 for consistency
+                        batch_dict[key] = value.to(device=self.device, dtype=torch.bfloat16, non_blocking=True)
+                    else:
+                        batch_dict[key] = value.to(self.device, non_blocking=True)
                 else:
                     batch_dict[key] = value
             batch = batch_dict
         elif isinstance(batch, dict):
-            # Handle regular dict batch
+            # Handle regular dict batch with dtype consistency
             processed_batch = {}
             for k, v in batch.items():
                 if isinstance(v, torch.Tensor):
-                    # Move tensor to device without dtype casting
-                    processed_batch[k] = v.to(self.device, non_blocking=True)
+                    # DTYPE FIX: Ensure consistent dtype for mixed precision training
+                    if v.dtype == torch.float32:
+                        # Cast float32 to bfloat16 for consistency
+                        processed_batch[k] = v.to(device=self.device, dtype=torch.bfloat16, non_blocking=True)
+                    else:
+                        processed_batch[k] = v.to(self.device, non_blocking=True)
                 else:
                     processed_batch[k] = v
             batch = processed_batch
@@ -555,8 +563,11 @@ class HiggsAudioTrainer:
                 for k, v in batch.__dict__.items():
                     if not k.startswith('_'):
                         if isinstance(v, torch.Tensor):
-                            # Move tensor to device without dtype casting
-                            processed_batch[k] = v.to(self.device, non_blocking=True)
+                            # DTYPE FIX: Ensure consistent dtype
+                            if v.dtype == torch.float32:
+                                processed_batch[k] = v.to(device=self.device, dtype=torch.bfloat16, non_blocking=True)
+                            else:
+                                processed_batch[k] = v.to(self.device, non_blocking=True)
                         else:
                             processed_batch[k] = v
                 batch = processed_batch
@@ -627,10 +638,6 @@ class HiggsAudioTrainer:
     
     def save_checkpoint(self):
         """Save checkpoint with minimal logging."""
-        # Only save checkpoint on global rank 0
-        if dist.get_rank() != 0:
-            return True
-            
         try:
             # Capture the step number at the beginning to ensure consistency
             step_at_call = self.global_step
@@ -689,7 +696,7 @@ class HiggsAudioTrainer:
         accum_step = 0
         
         # Log training configuration only once
-        if dist.get_rank() == 0:
+        if self.local_rank == 0:
             logger.info("=" * 60)
             logger.info("  TRAINING STARTED")
             logger.info("=" * 60)
@@ -704,30 +711,19 @@ class HiggsAudioTrainer:
             # Check if sampler has set_epoch method before calling it
             if (self.world_size > 1 and 
                 hasattr(self.train_dataloader, 'sampler') and
-                self.train_dataloader.sampler is not None and
                 hasattr(self.train_dataloader.sampler, 'set_epoch') and 
                 callable(getattr(self.train_dataloader.sampler, 'set_epoch', None))):
                 self.train_dataloader.sampler.set_epoch(epoch)
             
             # Create progress bar for this epoch
-            if dist.get_rank() == 0:
+            if self.local_rank == 0:
                 pbar = tqdm(self.train_dataloader, desc=f"Epoch {epoch+1}/{self.args.epochs}")
             else:
                 pbar = self.train_dataloader
             
             for batch in pbar:
-                # Training step with gradient accumulation
-                if accum_step % self.args.grad_accum == 0:
-                    # This is the first step of a new accumulation window, no need to sync
-                    loss_dict = self.train_step(batch)
-                else:
-                    # This is a continuation step, use no_sync to avoid all-reduce
-                    if self.world_size > 1:
-                        with self.model.no_sync():
-                            loss_dict = self.train_step(batch)
-                    else:
-                        loss_dict = self.train_step(batch)
-                
+                # Training step
+                loss_dict = self.train_step(batch)
                 accum_step += 1
                 
                 # Gradient accumulation
@@ -743,30 +739,25 @@ class HiggsAudioTrainer:
                     self.global_step += 1
                     
                     # Logging - only essential information
-                    if self.global_step % self.args.log_steps == 0 and dist.get_rank() == 0:
+                    if self.global_step % self.args.log_steps == 0 and self.local_rank == 0:
                         logger.info(f"Step {self.global_step} - Loss: {loss_dict.get('total_loss', 0.0):.4f}")
                         # Check if pbar has set_postfix method before calling it
                         if hasattr(pbar, 'set_postfix') and callable(getattr(pbar, 'set_postfix', None)):
-                            try:
-                                pbar.set_postfix({"loss": loss_dict.get('total_loss', 0.0)})
-                            except:
-                                pass
+                            pbar.set_postfix({"loss": loss_dict.get('total_loss', 0.0)})
                     
                     # Validation
-                    if self.global_step % self.args.val_steps == 0:
-                        # Only run validation on global rank 0
-                        if dist.get_rank() == 0:
-                            val_loss, val_text_loss, val_audio_loss = self.validate()
-                            logger.info(f"Step {self.global_step} - Val Loss: {val_loss:.4f}, Text: {val_text_loss:.4f}, Audio: {val_audio_loss:.4f}")
+                    if self.global_step % self.args.val_steps == 0 and self.local_rank == 0:
+                        val_loss, val_text_loss, val_audio_loss = self.validate()
+                        logger.info(f"Step {self.global_step} - Val Loss: {val_loss:.4f}, Text: {val_text_loss:.4f}, Audio: {val_audio_loss:.4f}")
                     
                     # Checkpointing
                     if self.global_step % self.args.save_steps == 0:
                         checkpoint_success = self.save_checkpoint()
                         
-                        # In distributed training, synchronize all processes after rank 0 finishes saving
+                        # In distributed training, synchronize all processes
                         if self.world_size > 1:
                             torch.distributed.barrier()
-                            if dist.get_rank() == 0:  # Only log from main process
+                            if self.local_rank == 0:  # Only log from main process
                                 if checkpoint_success:
                                     logger.info("Checkpoint saved and synchronized across all processes")
                                 else:

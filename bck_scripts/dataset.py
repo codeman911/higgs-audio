@@ -96,12 +96,10 @@ class HiggsAudioDataset(Dataset):
                 if audio_path and os.path.exists(audio_path):
                     # Tokenize audio - EXACT pattern from inference
                     try:
-                        # Load waveform first to reuse for both encoding and waveform
+                        audio_codes = self.audio_tokenizer.encode(audio_path)
+                        # Load waveform at exact sample rate (24000Hz matches inference)
                         waveform, sr = librosa.load(audio_path, sr=24000, mono=True)
                         waveform = torch.tensor(waveform, dtype=torch.float32)
-                        
-                        # Tokenize audio using the loaded waveform to avoid double I/O
-                        audio_codes = self.audio_tokenizer.encode(audio_path)
                         
                         audio_ids_list.append(audio_codes)
                         audio_waveforms_list.append(waveform)
@@ -117,10 +115,6 @@ class HiggsAudioDataset(Dataset):
                     label_audio_path = audio_label_content.audio_url
                     if label_audio_path and os.path.exists(label_audio_path):
                         try:
-                            # Load waveform first to reuse for encoding
-                            waveform, sr = librosa.load(label_audio_path, sr=24000, mono=True)
-                            
-                            # Tokenize audio using the loaded waveform to avoid double I/O
                             label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
                             label_audio_ids_list.append(label_audio_codes)
                         except Exception as e:
@@ -130,10 +124,6 @@ class HiggsAudioDataset(Dataset):
                     label_audio_path = audio_label_content['audio_url']
                     if label_audio_path and os.path.exists(label_audio_path):
                         try:
-                            # Load waveform first to reuse for encoding
-                            waveform, sr = librosa.load(label_audio_path, sr=24000, mono=True)
-                            
-                            # Tokenize audio using the loaded waveform to avoid double I/O
                             label_audio_codes = self.audio_tokenizer.encode(label_audio_path)
                             label_audio_ids_list.append(label_audio_codes)
                         except Exception as e:
