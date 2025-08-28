@@ -793,3 +793,65 @@ class HiggsAudioTrainer:
                     logger.warning(f"Using default output directory: {default_output_dir}")
             except Exception as fallback_error:
                 raise
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Higgs-Audio LoRA Training")
+    
+    # Data arguments
+    parser.add_argument("--train_manifest", type=str, required=True,
+                        help="Path to training manifest JSON file")
+    parser.add_argument("--output_dir", type=str, required=True,
+                        help="Output directory for model and checkpoints")
+    
+    # Model arguments
+    parser.add_argument("--base_ckpt", type=str, default="bosonai/higgs-audio-v2-generation-3B-base",
+                        help="Base model checkpoint path")
+    
+    # Training arguments
+    parser.add_argument("--batch_size", type=int, default=4,
+                        help="Batch size per device")
+    parser.add_argument("--lr", type=float, default=2e-4,
+                        help="Learning rate")
+    parser.add_argument("--wd", type=float, default=0.01,
+                        help="Weight decay")
+    parser.add_argument("--epochs", type=int, default=1,
+                        help="Number of training epochs")
+    parser.add_argument("--grad_accum", type=int, default=8,
+                        help="Gradient accumulation steps")
+    parser.add_argument("--warmup", type=int, default=100,
+                        help="Warmup steps")
+    
+    # LoRA arguments
+    parser.add_argument("--lora_r", type=int, default=32,
+                        help="LoRA rank")
+    parser.add_argument("--lora_alpha", type=int, default=64,
+                        help="LoRA alpha")
+    parser.add_argument("--lora_dropout", type=float, default=0.05,
+                        help="LoRA dropout")
+    
+    # Logging and validation arguments
+    parser.add_argument("--log_steps", type=int, default=30,
+                        help="Log every N steps")
+    parser.add_argument("--val_steps", type=int, default=500,
+                        help="Validate every N steps")
+    parser.add_argument("--save_steps", type=int, default=500,
+                        help="Save checkpoint every N steps")
+    
+    return parser.parse_args()
+
+
+def main():
+    """Main training function."""
+    args = parse_args()
+    
+    # Initialize trainer
+    trainer = HiggsAudioTrainer(args)
+    
+    # Start training
+    trainer.train()
+
+
+if __name__ == "__main__":
+    main()
