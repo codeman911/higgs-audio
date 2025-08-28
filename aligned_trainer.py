@@ -68,23 +68,19 @@ class AlignedHiggsAudioTrainer(Trainer):
         # Forward pass - model will compute loss internally if labels are provided
         outputs = model(**inputs_dict)
         
-        # Extract loss from model outputs
-        # Handle different possible return types:
-        # 1. Scalar tensor (direct loss)
-        # 2. Dictionary with "loss" key
-        # 3. Object with loss attribute
+        # Extract loss from model outputs - handle different possible return types
         if isinstance(outputs, torch.Tensor):
             # Model returned loss directly as a scalar tensor
             loss = outputs
-        elif isinstance(outputs, dict) and "loss" in outputs:
-            # Model returned a dictionary with loss key
+        elif isinstance(outputs, dict) and "loss" in outputs and isinstance(outputs["loss"], torch.Tensor):
+            # Model returned a dictionary with loss key containing a tensor
             loss = outputs["loss"]
-        elif hasattr(outputs, "loss"):
-            # Model returned an object with loss attribute
+        elif hasattr(outputs, "loss") and isinstance(outputs.loss, torch.Tensor):
+            # Model returned an object with loss attribute containing a tensor
             loss = outputs.loss
         else:
-            # Fallback if no loss computed by model
-            raise ValueError("Model did not compute loss. Check input labels.")
+            # Fallback - this should not happen in normal operation
+            raise ValueError(f"Model did not compute loss correctly. Output type: {type(outputs)}")
         
         return (loss, outputs) if return_outputs else loss
 
@@ -319,7 +315,7 @@ class HiggsAudioTrainingPipeline:
             args=self.training_args,
             train_dataset=self.train_dataloader.dataset,
             eval_dataset=self.val_dataloader.dataset if self.args.val_steps > 0 else None,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,  # Use processing_class instead of tokenizer to avoid deprecation warning
             data_collator=self.collator,
         )
         

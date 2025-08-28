@@ -161,16 +161,11 @@ class HiggsAudioModelWrapper(torch.nn.Module):
                 self.model = self.model.to(kwargs['input_ids'].device)
             result = self.model(**model_kwargs)
             
-            # Ensure we return a proper format that Trainer expects
-            # If result is a ModelOutput object with loss, extract the loss tensor
-            if hasattr(result, 'loss') and result.loss is not None:
-                # Return just the loss tensor directly, not the entire object
+            # If we're computing loss (labels are provided), return just the loss tensor
+            # Otherwise return the full result
+            if "label_ids" in model_kwargs and hasattr(result, 'loss') and result.loss is not None:
                 return result.loss
-            elif isinstance(result, dict) and "loss" in result:
-                # If it's a dict, return the loss from the dict
-                return result["loss"]
             else:
-                # Return the result as is
                 return result
         else:
             # Fallback logic similar to train-higgs-audio
@@ -187,7 +182,12 @@ class HiggsAudioModelWrapper(torch.nn.Module):
                 loss_fct = nn.CrossEntropyLoss()
                 loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
                 
-            return {"loss": loss, "logits": outputs.logits}
+            # If we're computing loss, return just the loss tensor
+            # Otherwise return the full result
+            if loss is not None:
+                return loss
+            else:
+                return {"loss": loss, "logits": outputs.logits}
     
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped model for PEFT compatibility"""
