@@ -162,10 +162,12 @@ class HiggsAudioModelWrapper(torch.nn.Module):
         return self.model.device
           
     def forward(self, **kwargs):
-        # --- Ultimate fix for dtype alignment ---
-        # Force all float tensors to match model's dtype before forwarding
-        # This is the most reliable way to solve persistent dtype mismatch issues
-        model_dtype = next(self.model.parameters()).dtype
+        # Check if HIGGS_AVAILABLE pattern should be used
+        try:
+            from boson_multimodal.model.higgs_audio import HiggsAudioModel
+            HIGGS_AVAILABLE = True
+        except ImportError:
+            HIGGS_AVAILABLE = False
         
         # Filter out parameters that the Higgs Audio model doesn't expect
         # Hugging Face Trainer may pass a "labels" parameter that we need to filter out
@@ -175,32 +177,27 @@ class HiggsAudioModelWrapper(torch.nn.Module):
             # The model should receive label_ids instead
             if key == "labels":
                 continue
-            # Only convert floating point tensors, ignore integer types (like input_ids)
-            if isinstance(value, torch.Tensor) and value.is_floating_point():
-                model_kwargs[key] = value.to(model_dtype)
-            else:
-                model_kwargs[key] = value
-        # --- End ultimate fix ---
-
-        # Check if HIGGS_AVAILABLE pattern should be used
-        try:
-            from boson_multimodal.model.higgs_audio import HiggsAudioModel
-            HIGGS_AVAILABLE = True
-        except ImportError:
-            HIGGS_AVAILABLE = False
+            model_kwargs[key] = value
         
         if HIGGS_AVAILABLE:
             # Forward pass - model will compute loss internally if labels are provided
-            # Make sure we're passing the right parameters
+            # Pass the filtered kwargs to avoid the labels parameter issue
             return self.model(**model_kwargs)
         else:
             # Fallback logic similar to train-higgs-audio
-            outputs = self.model(input_ids=model_kwargs.get('input_ids'), attention_mask=model_kwargs.get('attention_mask'))
+            input_ids = model_kwargs.get('input_ids')
+            attention_mask = model_kwargs.get('attention_mask')
+            labels = model_kwargs.get('label_ids')
+            
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+            
             loss = None
-            if model_kwargs.get('label_ids') is not None:
-                logits = outputs.logits[..., :-1, :].contiguous()
-                labels = model_kwargs.get('label_ids')[..., 1:].contiguous()
-                loss = nn.CrossEntropyLoss()(logits.view(-1, logits.size(-1)), labels.view(-1))
+            if labels is not None:
+                shift_logits = outputs.logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+                loss_fct = nn.CrossEntropyLoss()
+                loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                
             return {"loss": loss, "logits": outputs.logits}
     
     def __getattr__(self, name):
