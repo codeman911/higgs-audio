@@ -54,7 +54,11 @@ class AlignedHiggsAudioTrainer(Trainer):
         if hasattr(inputs, 'to_dict'):
             inputs_dict = inputs.to_dict()
         else:
-            inputs_dict = inputs
+            inputs_dict = dict(inputs)
+        
+        # Handle labels parameter conversion to label_ids (match train-higgs-audio approach)
+        if 'labels' in inputs_dict:
+            inputs_dict['label_ids'] = inputs_dict.pop('labels')
         
         # Ensure all inputs are on the correct device
         for key, value in inputs_dict.items():

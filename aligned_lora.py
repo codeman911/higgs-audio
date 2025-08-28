@@ -75,14 +75,19 @@ def apply_aligned_lora(model, lora_config=None):
     # Apply LoRA - match train-higgs-audio approach by checking for inner model components
     # Handle our HiggsAudioModelWrapper specifically
     if isinstance(model, HiggsAudioModelWrapper):
-        # Apply LoRA to the actual model inside our wrapper
-        if hasattr(model.model, 'model') and hasattr(model.model.model, 'text_model'):
-            model.model.model.text_model = get_peft_model(model.model.model.text_model, lora_config)
-        elif hasattr(model.model, 'model'):
-            model.model.model = get_peft_model(model.model.model, lora_config)
+        # For our wrapper, apply LoRA to the actual model inside
+        inner_model = model.model
+        
+        # Apply the same logic as train-higgs-audio
+        if hasattr(inner_model, 'model') and hasattr(inner_model.model, 'text_model'):
+            inner_model.model.text_model = get_peft_model(inner_model.model.text_model, lora_config)
+        elif hasattr(inner_model, 'model'):
+            inner_model.model = get_peft_model(inner_model.model, lora_config)
         else:
-            # Fallback to direct application to the inner model
-            model.model = get_peft_model(model.model, lora_config)
+            inner_model = get_peft_model(inner_model, lora_config)
+            
+        # Update the wrapper's model reference
+        model.model = inner_model
         return model
     else:
         # Standard approach for non-wrapped models
@@ -167,6 +172,7 @@ class HiggsAudioModelWrapper(torch.nn.Module):
         model_kwargs = {}
         for key, value in kwargs.items():
             # Skip the "labels" parameter that Hugging Face Trainer might add
+            # The model should receive label_ids instead
             if key == "labels":
                 continue
             # Only convert floating point tensors, ignore integer types (like input_ids)
@@ -185,6 +191,7 @@ class HiggsAudioModelWrapper(torch.nn.Module):
         
         if HIGGS_AVAILABLE:
             # Forward pass - model will compute loss internally if labels are provided
+            # Make sure we're passing the right parameters
             return self.model(**model_kwargs)
         else:
             # Fallback logic similar to train-higgs-audio
