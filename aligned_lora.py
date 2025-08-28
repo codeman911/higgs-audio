@@ -4,6 +4,7 @@ Uses PEFT library with precise module targeting similar to train-higgs-audio.
 """
 
 import torch
+import torch.nn as nn
 from peft import LoraConfig, get_peft_model, TaskType
 from transformers import AutoTokenizer
 import logging
@@ -155,5 +156,22 @@ class HiggsAudioModelWrapper(torch.nn.Module):
                 model_kwargs[key] = value
         # --- End ultimate fix ---
 
-        # Forward pass - model will compute loss internally if labels are provided
-        return self.model(**model_kwargs)
+        # Check if HIGGS_AVAILABLE pattern should be used
+        try:
+            from boson_multimodal.model.higgs_audio import HiggsAudioModel
+            HIGGS_AVAILABLE = True
+        except ImportError:
+            HIGGS_AVAILABLE = False
+        
+        if HIGGS_AVAILABLE:
+            # Forward pass - model will compute loss internally if labels are provided
+            return self.model(**model_kwargs)
+        else:
+            # Fallback logic similar to train-higgs-audio
+            outputs = self.model(input_ids=model_kwargs.get('input_ids'), attention_mask=model_kwargs.get('attention_mask'))
+            loss = None
+            if model_kwargs.get('label_ids') is not None:
+                logits = outputs.logits[..., :-1, :].contiguous()
+                labels = model_kwargs.get('label_ids')[..., 1:].contiguous()
+                loss = nn.CrossEntropyLoss()(logits.view(-1, logits.size(-1)), labels.view(-1))
+            return {"loss": loss, "logits": outputs.logits}

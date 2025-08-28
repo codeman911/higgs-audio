@@ -144,16 +144,16 @@ class HiggsAudioTrainingPipeline:
             "openai/whisper-large-v3", trust_remote_code=True
         )
         
-        # Apply LoRA
+        # Wrap with our optimized model wrapper FIRST
+        model = HiggsAudioModelWrapper(model)
+        
+        # THEN apply LoRA to the wrapped model
         lora_config = create_aligned_lora_config(
             r=self.args.lora_r,
             lora_alpha=self.args.lora_alpha,
             lora_dropout=self.args.lora_dropout
         )
-        model = apply_aligned_lora(model, lora_config)
-        
-        # Wrap with our optimized model wrapper
-        self.model = HiggsAudioModelWrapper(model)
+        self.model = apply_aligned_lora(model, lora_config)
         
         # Only log on global rank 0
         if dist.get_rank() == 0:
