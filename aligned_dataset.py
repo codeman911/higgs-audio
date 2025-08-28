@@ -299,3 +299,11 @@ class ExtendedHiggsAudioBatchInput:
     def keys(self):
         """Return all attribute names for compatibility"""
         return [attr for attr in dir(self) if not attr.startswith('_') and not callable(getattr(self, attr))]
+    
+    def items(self):
+        """Return all key-value pairs for dictionary-like iteration"""
+        return [(key, getattr(self, key)) for key in self.keys()]
+    
+    def to_dict(self):
+        """Convert to dictionary for compatibility with Hugging Face Trainer"""
+        return {key: getattr(self, key) for key in self.keys() if hasattr(self, key)}

@@ -50,13 +50,19 @@ class AlignedHiggsAudioTrainer(Trainer):
     
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """Custom loss computation using model's internal loss when available"""
+        # Convert ExtendedHiggsAudioBatchInput to dict if needed
+        if hasattr(inputs, 'to_dict'):
+            inputs_dict = inputs.to_dict()
+        else:
+            inputs_dict = inputs
+        
         # Ensure all inputs are on the correct device
-        for key, value in inputs.items():
+        for key, value in inputs_dict.items():
             if isinstance(value, torch.Tensor):
-                inputs[key] = value.to(model.device)
+                inputs_dict[key] = value.to(model.device)
         
         # Forward pass - model will compute loss internally if labels are provided
-        outputs = model(**inputs)
+        outputs = model(**inputs_dict)
         
         # Extract loss from model outputs
         if isinstance(outputs, dict) and "loss" in outputs:
@@ -246,7 +252,7 @@ class HiggsAudioTrainingPipeline:
             logging_steps=self.args.log_steps,
             save_steps=self.args.save_steps,
             eval_steps=self.args.val_steps if self.args.val_steps > 0 else None,
-            evaluation_strategy="steps" if self.args.val_steps > 0 else "no",
+            eval_strategy="steps" if self.args.val_steps > 0 else "no",
             save_total_limit=3,
             load_best_model_at_end=False,  # Disable for DDP compatibility
             metric_for_best_model=None,
