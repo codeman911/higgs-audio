@@ -197,5 +197,8 @@ torch_compile_debug/
 # Out Dir
 result/
 
+#venv
+.venv
+
 # Ruff
 .ruff_cache/
