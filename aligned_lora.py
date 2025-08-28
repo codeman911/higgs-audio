@@ -141,11 +141,19 @@ class HiggsAudioModelWrapper(torch.nn.Module):
         # This is the most reliable way to solve persistent dtype mismatch issues
         model_dtype = next(self.model.parameters()).dtype
         
+        # Filter out parameters that the Higgs Audio model doesn't expect
+        # Hugging Face Trainer may pass a "labels" parameter that we need to filter out
+        model_kwargs = {}
         for key, value in kwargs.items():
+            # Skip the "labels" parameter that Hugging Face Trainer might add
+            if key == "labels":
+                continue
             # Only convert floating point tensors, ignore integer types (like input_ids)
             if isinstance(value, torch.Tensor) and value.is_floating_point():
-                kwargs[key] = value.to(model_dtype)
+                model_kwargs[key] = value.to(model_dtype)
+            else:
+                model_kwargs[key] = value
         # --- End ultimate fix ---
 
         # Forward pass - model will compute loss internally if labels are provided
-        return self.model(**kwargs)
+        return self.model(**model_kwargs)
