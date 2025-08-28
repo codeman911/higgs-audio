@@ -48,7 +48,7 @@ class AlignedHiggsAudioTrainer(Trainer):
         super().__init__(**kwargs)
         self.config = self.model.config
     
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """Custom loss computation using model's internal loss when available"""
         # Ensure all inputs are on the correct device
         for key, value in inputs.items():
