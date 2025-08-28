@@ -26,54 +26,13 @@ from boson_multimodal.audio_processing.higgs_audio_tokenizer import load_higgs_a
 from dataset import HiggsAudioDataset, create_collator
 from lora import apply_lora, create_lora_config, save_lora_adapters
 
-# Enhanced logging configuration
+# Simplified logging configuration
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
-
-# Prettified logging functions
-def log_info_header(message):
-    """Log an info header with decorative formatting"""
-    logger.info("=" * 60)
-    logger.info(f"  {message}")
-    logger.info("=" * 60)
-
-def log_section_header(message):
-    """Log a section header with decorative formatting"""
-    logger.info("-" * 50)
-    logger.info(f"  {message}")
-    logger.info("-" * 50)
-
-def log_checkpoint_info(message):
-    """Log checkpoint-related information with special formatting"""
-    logger.info(f"💾 CHECKPOINT: {message}")
-
-def log_training_info(message):
-    """Log training-related information with special formatting"""
-    logger.info(f"📈 TRAINING: {message}")
-
-def log_validation_info(message):
-    """Log validation-related information with special formatting"""
-    logger.info(f"🔍 VALIDATION: {message}")
-
-def log_success(message):
-    """Log success messages with special formatting"""
-    logger.info(f"✅ SUCCESS: {message}")
-
-def log_warning(message):
-    """Log warning messages with special formatting"""
-    logger.warning(f"⚠️  WARNING: {message}")
-
-def log_error(message):
-    """Log error messages with special formatting"""
-    logger.error(f"❌ ERROR: {message}")
-
-def log_detailed_info(message):
-    """Log detailed information with indentation"""
-    logger.info(f"    → {message}")
 
 class HiggsAudioTrainer:
     """Minimal trainer for DualFFN LoRA fine-tuning."""
@@ -100,11 +59,13 @@ class HiggsAudioTrainer:
             self.world_size = 1
         
         self.device = torch.device(f"cuda:{self.local_rank}")
-        log_detailed_info(f"Distributed setup complete - Local rank: {self.local_rank}, World size: {self.world_size}")
+        if self.local_rank == 0:
+            logger.info(f"Distributed setup complete - Local rank: {self.local_rank}, World size: {self.world_size}")
     
     def load_model_and_tokenizers(self):
         """Load model and tokenizers exactly as inference does."""
-        log_section_header("MODEL LOADING")
+        if self.local_rank == 0:
+            logger.info("Loading model and tokenizers...")
         
         # Load configuration
         self.config = HiggsAudioConfig.from_pretrained(self.args.base_ckpt)
@@ -115,8 +76,8 @@ class HiggsAudioTrainer:
         # CRITICAL FIX: Enable cross-modal conditioning (audio attention)
         # This is essential for text to learn from audio context
         if not getattr(self.config, 'use_audio_out_self_attention', None):
-            log_info_header("ENABLING CROSS-MODAL CONDITIONING")
-            logger.info("🔧 Setting use_audio_out_self_attention=True for cross-modal learning")
+            if self.local_rank == 0:
+                logger.info("Enabling cross-modal conditioning (use_audio_out_self_attention=True)")
             self.config.use_audio_out_self_attention = True
         
         # Load model with exact inference initialization
@@ -151,11 +112,13 @@ class HiggsAudioTrainer:
         if self.world_size > 1:
             self.model = DDP(self.model, device_ids=[self.local_rank])
         
-        log_success("Model and tokenizers loaded successfully")
+        if self.local_rank == 0:
+            logger.info("Model and tokenizers loaded successfully")
     
     def setup_dataset(self):
         """Setup dataset and dataloader."""
-        log_section_header("DATASET SETUP")
+        if self.local_rank == 0:
+            logger.info("Setting up dataset...")
         
         # Create full dataset
         full_dataset = HiggsAudioDataset(
@@ -198,17 +161,15 @@ class HiggsAudioTrainer:
         ) if self.world_size > 1 else None
         
         # Optimize DataLoader settings for performance
-        # Using moderate num_workers to balance CPU utilization and overhead
-        # Keeping persistent_workers=False to prevent deadlocks in distributed training
         self.train_dataloader = DataLoader(
             train_dataset,
             batch_size=self.args.batch_size,
             sampler=train_sampler,
             shuffle=(train_sampler is None),
             collate_fn=self.collator,
-            num_workers=8,  # Moderate value for balanced performance
+            num_workers=8,
             pin_memory=True,
-            persistent_workers=False  # Disabled to prevent deadlock
+            persistent_workers=False
         )
         
         self.val_dataloader = DataLoader(
@@ -217,16 +178,18 @@ class HiggsAudioTrainer:
             sampler=val_sampler,
             shuffle=False,
             collate_fn=self.collator,
-            num_workers=4,  # Lower value for validation
+            num_workers=4,
             pin_memory=True,
-            persistent_workers=False  # Disabled to prevent deadlock
+            persistent_workers=False
         )
         
-        log_success(f"Dataset setup complete - Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+        if self.local_rank == 0:
+            logger.info(f"Dataset setup complete - Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
     
     def setup_training(self):
         """Setup optimizer and scheduler."""
-        log_section_header("TRAINING SETUP")
+        if self.local_rank == 0:
+            logger.info("Setting up training...")
         
         # Optimizer - target only LoRA parameters
         optimizer_params = []
@@ -253,7 +216,8 @@ class HiggsAudioTrainer:
         self.text_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
         self.audio_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
         
-        log_success(f"Training setup complete - Total steps: {total_steps}")
+        if self.local_rank == 0:
+            logger.info(f"Training setup complete - Total steps: {total_steps}")
     
     def compute_loss(self, batch):
         """Compute dual loss with complete PEFT bypass via custom forward implementation."""
@@ -365,42 +329,6 @@ class HiggsAudioTrainer:
         # Use the model's expanded_labels instead of the original batch labels
         model_expanded_labels = getattr(outputs, 'expanded_labels', None)
         
-        # ENHANCED LOGGING: Add detailed diagnostics for audio training
-        if self.global_step % self.args.log_steps == 0 and self.local_rank == 0:
-            logger.info(f"=== AUDIO TRAINING DIAGNOSTICS (Step {self.global_step}) ===")
-            logger.info(f"Audio logits shape: {audio_logits.shape if audio_logits is not None else 'None'}")
-            logger.info(f"Audio labels shape: {audio_labels.shape if audio_labels is not None else 'None'}")
-            logger.info(f"Audio logits numel: {audio_logits.numel() if audio_logits is not None else 0}")
-            logger.info(f"Audio labels numel: {audio_labels.numel() if audio_labels is not None else 0}")
-            
-            # Check for empty logits
-            if audio_logits is not None and audio_logits.numel() == 0:
-                log_warning("CRITICAL: Audio logits are empty! This will cause zero audio loss.")
-                logger.warning("Check: 1) audio_out_ids in batch, 2) audio_out_mask generation")
-            
-            # Check label masking
-            if audio_labels is not None and audio_labels.numel() > 0:
-                masked_count = (audio_labels == -100).sum().item()
-                total_count = audio_labels.numel()
-                mask_percentage = (masked_count / max(total_count, 1)) * 100
-                logger.info(f"Audio labels masking: {masked_count}/{total_count} ({mask_percentage:.1f}%) masked")
-                
-                if mask_percentage > 90:
-                    log_warning("HIGH AUDIO LABEL MASKING: Over 90% of audio labels are masked!")
-                    logger.warning("This may prevent effective audio learning.")
-                
-                # Log some sample audio label values for debugging
-                if total_count > 0:
-                    sample_labels = audio_labels.flatten()[:10].tolist()
-                    logger.info(f"Sample audio labels (first 10): {sample_labels}")
-            
-            # Log text diagnostics as well
-            if text_logits is not None and model_expanded_labels is not None:
-                text_masked_count = (model_expanded_labels == -100).sum().item()
-                text_total_count = model_expanded_labels.numel()
-                text_mask_percentage = (text_masked_count / max(text_total_count, 1)) * 100
-                logger.info(f"Text labels masking: {text_masked_count}/{text_total_count} ({text_mask_percentage:.1f}%) masked")
-        
         # Text loss with OPTIMAL teacher forcing alignment
         if text_logits is not None and model_expanded_labels is not None:
             # BEST CASE: Use model's expanded_labels which are already correctly aligned!
@@ -440,19 +368,10 @@ class HiggsAudioTrainer:
                 audio_loss = self._compute_audio_loss(audio_logits, audio_labels)
                 total_loss = total_loss + audio_loss
                 loss_dict['audio_loss'] = audio_loss.item()
-                
-                # CRITICAL FIX: Add validation for near-zero audio loss
-                if audio_loss.item() < 0.001:  # Near zero threshold
-                    log_warning(f"NEAR-ZERO AUDIO LOSS DETECTED: {audio_loss.item():.6f}")
-                    logger.warning("This indicates potential issues with audio learning.")
-                    logger.warning("Possible causes: 1) Over-masking 2) Empty logits 3) Data issues")
             else:
                 loss_dict['audio_loss'] = 0.0
-                log_warning("Audio logits are empty - audio loss set to 0.0")
         else:
             loss_dict['audio_loss'] = 0.0
-            if self.global_step % self.args.log_steps == 0 and self.local_rank == 0:
-                log_warning("Audio logits or labels are None - audio loss set to 0.0")
         
         # Final loss summary
         loss_dict['total_loss'] = total_loss.item()
@@ -517,7 +436,6 @@ class HiggsAudioTrainer:
             
         # Handle empty sequences
         if audio_logits.numel() == 0 or audio_labels.numel() == 0:
-            log_warning("Audio logits or labels are empty - returning zero loss")
             return torch.tensor(0.0, device=self.device)
         
         audio_loss = torch.tensor(0.0, device=self.device)
@@ -543,24 +461,7 @@ class HiggsAudioTrainer:
                     audio_labels = audio_labels[:, :seq_len_logits]
                     seq_len_labels = seq_len_logits
                 
-                # CRITICAL FIX: Enhanced validation for audio label quality
-                total_tokens = audio_labels.numel()
-                valid_tokens = (audio_labels != -100).sum().item()
-                mask_ratio = 1.0 - (valid_tokens / max(total_tokens, 1))
-                
-                if self.global_step % self.args.log_steps == 0 and self.local_rank == 0:
-                    logger.info(f"Audio label quality - Valid: {valid_tokens}/{total_tokens} ({(valid_tokens/max(total_tokens, 1))*100:.1f}%)")
-                
-                if mask_ratio > 0.95:  # Over 95% masked
-                    log_warning(f"CRITICAL: Audio labels are {mask_ratio*100:.1f}% masked! This will prevent learning.")
-                    if self.local_rank == 0:
-                        logger.warning("Suggested actions:")
-                        logger.warning("1. Check dataset for proper audio label generation")
-                        logger.warning("2. Verify collator mask_audio_out_token_label=False")
-                        logger.warning("3. Ensure audio files exist and are accessible")
-                
                 valid_codebooks = 0
-                codebook_losses = []
                 
                 for cb in range(num_codebooks):
                     cb_logits = audio_logits[:, cb, :]  # [seq_len, vocab_size]
@@ -575,41 +476,11 @@ class HiggsAudioTrainer:
                         if torch.isfinite(cb_loss):
                             audio_loss += cb_loss
                             valid_codebooks += 1
-                            codebook_losses.append(cb_loss.item())
-                            
-                            # Log individual codebook loss for debugging
-                            if self.global_step % (self.args.log_steps * 10) == 0 and self.local_rank == 0:
-                                logger.info(f"  Codebook {cb} loss: {cb_loss.item():.4f} ({valid_token_count} valid tokens)")
-                    elif self.global_step % (self.args.log_steps * 10) == 0 and self.local_rank == 0:
-                        logger.info(f"  Codebook {cb}: No valid tokens (all masked)")
                 
                 if valid_codebooks > 0:
                     audio_loss = audio_loss / valid_codebooks
-                    
-                    # CRITICAL FIX: Add validation for near-zero audio loss
-                    avg_loss = audio_loss.item()
-                    if avg_loss < 0.001:  # Near zero threshold
-                        log_warning(f"NEAR-ZERO AUDIO LOSS DETECTED: {avg_loss:.6f}")
-                        logger.warning("This indicates potential issues with audio learning.")
-                        logger.warning("Possible causes: 1) Over-masking 2) Empty logits 3) Data issues")
-                        
-                        # Add detailed diagnostics
-                        if codebook_losses:
-                            logger.info(f"  Individual codebook losses: {[f'{loss:.6f}' for loss in codebook_losses]}")
-                        
-                        # Suggest corrective actions
-                        if self.local_rank == 0:
-                            logger.warning("Suggested corrective actions:")
-                            logger.warning("1. Verify audio files exist and are readable")
-                            logger.warning("2. Check that audio_label_contents is properly extracted in dataset")
-                            logger.warning("3. Ensure mask_audio_out_token_label=False in collator")
-                            logger.warning("4. Validate audio tokenizer is working correctly")
-                else:
-                    log_warning("No valid codebooks found for audio loss computation")
-                    return torch.tensor(0.0, device=self.device)
         else:
             # Fallback: treat as single output
-            log_warning(f"Unexpected audio logits shape: {audio_logits.shape}")
             audio_loss = self.audio_loss_fn(
                 audio_logits.view(-1, audio_logits.size(-1)),
                 audio_labels.view(-1)
@@ -766,47 +637,29 @@ class HiggsAudioTrainer:
             return 0.0, 0.0, 0.0
     
     def save_checkpoint(self):
-        """Save checkpoint with enhanced verification and logging."""
+        """Save checkpoint with minimal logging."""
         try:
             # Capture the step number at the beginning to ensure consistency
             step_at_call = self.global_step
-            log_checkpoint_info(f"Saving checkpoint at step {step_at_call}")
             
             # Ensure output directory exists
             os.makedirs(self.args.output_dir, exist_ok=True)
-            log_detailed_info(f"Created output directory: {self.args.output_dir}")
             
             # Check write permissions
             if not os.access(self.args.output_dir, os.W_OK):
-                log_error(f"No write permission for output directory: {self.args.output_dir}")
                 raise PermissionError(f"No write permission for output directory: {self.args.output_dir}")
                 
             # Create checkpoint directory with the captured step number
             checkpoint_dir = f"{self.args.output_dir}/checkpoint-{step_at_call}"
             os.makedirs(checkpoint_dir, exist_ok=True)
-            log_detailed_info(f"Created checkpoint directory: {checkpoint_dir}")
-            
-            # Verify checkpoint directory is writable
-            test_file = os.path.join(checkpoint_dir, ".write_test")
-            try:
-                with open(test_file, "w") as f:
-                    f.write("test")
-                os.remove(test_file)
-                log_success("Write permission test passed")
-            except Exception as perm_error:
-                log_error(f"No write permission for checkpoint directory: {checkpoint_dir}, Error: {perm_error}")
-                raise PermissionError(f"No write permission for checkpoint directory: {checkpoint_dir}")
             
             # Save LoRA adapters
             model_to_save = self.model.module if self.world_size > 1 else self.model
-            log_detailed_info("Attempting to save LoRA adapters...")
             save_lora_adapters(model_to_save, checkpoint_dir)
-            log_success(f"Checkpoint saved successfully to: {checkpoint_dir}")
             
             # Verify checkpoint files were created
             if os.path.exists(checkpoint_dir):
                 files = os.listdir(checkpoint_dir)
-                log_detailed_info(f"Checkpoint directory contains files: {files}")
                 
                 # Check for required files
                 required_files = ["adapter_config.json"]
@@ -816,7 +669,6 @@ class HiggsAudioTrainer:
                 has_model = any(f in files for f in model_files)
                 
                 if has_config and has_model:
-                    log_success("All required checkpoint files found")
                     # Save checkpoint metadata
                     metadata = {
                         "step": step_at_call,
@@ -827,28 +679,15 @@ class HiggsAudioTrainer:
                     metadata_path = os.path.join(checkpoint_dir, "checkpoint_metadata.json")
                     with open(metadata_path, "w") as f:
                         json.dump(metadata, f, indent=2)
-                    log_detailed_info(f"Checkpoint metadata saved to: {metadata_path}")
                     return True
-                elif not files or (len(files) == 1 and '.write_test' in files):
-                    log_warning(f"Checkpoint directory may be incomplete: {checkpoint_dir}")
-                    logger.warning("Expected files: adapter_config.json, adapter_model.bin (or adapter_model.safetensors)")
-                    return False
                 else:
-                    log_warning("Checkpoint directory has some files but may be incomplete")
-                    return True
+                    return False
             else:
-                log_error(f"Checkpoint directory was not created: {checkpoint_dir}")
                 raise FileNotFoundError(f"Checkpoint directory was not created: {checkpoint_dir}")
                 
         except Exception as e:
-            step_at_call = self.global_step  # Fallback to current step if not captured
-            log_error(f"Failed to save checkpoint at step {step_at_call}")
-            logger.error(f"Error type: {type(e).__name__}")
-            logger.error(f"Error message: {str(e)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
-    
+
     def train(self):
         """Main training loop."""
         
@@ -858,7 +697,9 @@ class HiggsAudioTrainer:
         
         # Log training configuration only once
         if self.local_rank == 0:
-            log_info_header("TRAINING STARTED")
+            logger.info("=" * 60)
+            logger.info("  TRAINING STARTED")
+            logger.info("=" * 60)
             logger.info(f"Output directory: {self.args.output_dir}")
             logger.info(f"Save steps: {self.args.save_steps}")
             logger.info(f"Log steps: {self.args.log_steps}")
@@ -899,7 +740,7 @@ class HiggsAudioTrainer:
                     
                     # Logging - only essential information
                     if self.global_step % self.args.log_steps == 0 and self.local_rank == 0:
-                        log_training_info(f"Step {self.global_step} - Loss: {loss_dict.get('total_loss', 0.0):.4f}")
+                        logger.info(f"Step {self.global_step} - Loss: {loss_dict.get('total_loss', 0.0):.4f}")
                         # Check if pbar has set_postfix method before calling it
                         if hasattr(pbar, 'set_postfix') and callable(getattr(pbar, 'set_postfix', None)):
                             pbar.set_postfix({"loss": loss_dict.get('total_loss', 0.0)})
@@ -907,7 +748,7 @@ class HiggsAudioTrainer:
                     # Validation
                     if self.global_step % self.args.val_steps == 0 and self.local_rank == 0:
                         val_loss, val_text_loss, val_audio_loss = self.validate()
-                        log_validation_info(f"Step {self.global_step} - Val Loss: {val_loss:.4f}, Text: {val_text_loss:.4f}, Audio: {val_audio_loss:.4f}")
+                        logger.info(f"Step {self.global_step} - Val Loss: {val_loss:.4f}, Text: {val_text_loss:.4f}, Audio: {val_audio_loss:.4f}")
                     
                     # Checkpointing
                     if self.global_step % self.args.save_steps == 0:
@@ -918,15 +759,15 @@ class HiggsAudioTrainer:
                             torch.distributed.barrier()
                             if self.local_rank == 0:  # Only log from main process
                                 if checkpoint_success:
-                                    log_success("Checkpoint saved and synchronized across all processes")
+                                    logger.info("Checkpoint saved and synchronized across all processes")
                                 else:
-                                    log_warning("Checkpoint saving may have failed but synchronization completed")
+                                    logger.warning("Checkpoint saving may have failed but synchronization completed")
                         else:
                             # For single process, just log the result
                             if checkpoint_success:
-                                log_success("Checkpoint saved successfully")
+                                logger.info("Checkpoint saved successfully")
                             else:
-                                log_error("Checkpoint saving failed")
+                                logger.error("Checkpoint saving failed")
     
     def verify_output_directory(self):
         """Verify that the output directory is properly configured and writable."""
@@ -940,76 +781,15 @@ class HiggsAudioTrainer:
                 f.write("test")
             os.remove(test_file)
             
-            log_success(f"Output directory verified: {self.args.output_dir}")
+            if self.local_rank == 0:
+                logger.info(f"Output directory verified: {self.args.output_dir}")
         except Exception as e:
             # Try to create a default output directory
             default_output_dir = "./output"
             try:
                 os.makedirs(default_output_dir, exist_ok=True)
                 self.args.output_dir = default_output_dir
-                log_warning(f"Using default output directory: {default_output_dir}")
+                if self.local_rank == 0:
+                    logger.warning(f"Using default output directory: {default_output_dir}")
             except Exception as fallback_error:
-                log_error(f"Failed to create output directory: {e}")
                 raise
-
-
-def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Higgs-Audio LoRA Training")
-    
-    # Data arguments
-    parser.add_argument("--train_manifest", type=str, required=True,
-                        help="Path to training manifest JSON file")
-    parser.add_argument("--output_dir", type=str, required=True,
-                        help="Output directory for model and checkpoints")
-    
-    # Model arguments
-    parser.add_argument("--base_ckpt", type=str, default="bosonai/higgs-audio-v2-generation-3B-base",
-                        help="Base model checkpoint path")
-    
-    # Training arguments
-    parser.add_argument("--batch_size", type=int, default=4,
-                        help="Batch size per device")
-    parser.add_argument("--lr", type=float, default=2e-4,
-                        help="Learning rate")
-    parser.add_argument("--wd", type=float, default=0.01,
-                        help="Weight decay")
-    parser.add_argument("--epochs", type=int, default=1,
-                        help="Number of training epochs")
-    parser.add_argument("--grad_accum", type=int, default=8,
-                        help="Gradient accumulation steps")
-    parser.add_argument("--warmup", type=int, default=100,
-                        help="Warmup steps")
-    
-    # LoRA arguments
-    parser.add_argument("--lora_r", type=int, default=32,
-                        help="LoRA rank")
-    parser.add_argument("--lora_alpha", type=int, default=64,
-                        help="LoRA alpha")
-    parser.add_argument("--lora_dropout", type=float, default=0.05,
-                        help="LoRA dropout")
-    
-    # Logging and validation arguments
-    parser.add_argument("--log_steps", type=int, default=30,
-                        help="Log every N steps")
-    parser.add_argument("--val_steps", type=int, default=500,
-                        help="Validate every N steps")
-    parser.add_argument("--save_steps", type=int, default=500,
-                        help="Save checkpoint every N steps")
-    
-    return parser.parse_args()
-
-
-def main():
-    """Main training function."""
-    args = parse_args()
-    
-    # Initialize trainer
-    trainer = HiggsAudioTrainer(args)
-    
-    # Start training
-    trainer.train()
-
-
-if __name__ == "__main__":
-    main()
